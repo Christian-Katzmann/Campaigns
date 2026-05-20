@@ -1,0 +1,3658 @@
+const PREFS_KEY = 'campaigns-prefs:v1';
+const LEGACY_PREFS_KEY = 'campaign-guide-prefs:v1';
+const MIGRATION_FLAG_KEY = 'campaigns-migrated:v1';
+const AUTOSAVE_DELAY_MS = 700;
+const TODAY_INACTIVITY_MS = 12 * 60 * 60 * 1000;
+
+const PLACEHOLDER_REGEX = /<([A-Z][A-Z0-9_]+)>/g;
+const CHECK_LINE_REGEX = /^(\s*[-*]\s+\[)( |x|X)(\]\s+)(.+)$/;
+const RESERVED_TOKENS = new Set(['STEP', 'PHASE']);
+
+const state = {
+  activeStepId: null,
+  baseHash: '',
+  dirty: false,
+  editingCodeKey: null,
+  editingValue: '',
+  expandedCodeKeys: new Set(),
+  filePath: '',
+  lastModified: '',
+  lastPhaseSnapshot: null,
+  lastSaveError: '',
+  markdown: '',
+  phaseBannerTimer: null,
+  prefs: defaultPrefs(),
+  resumeCardTimer: null,
+  reviewTemplates: { step: null, phase: null },
+  saveStatus: 'idle',
+  serverBacked: true,
+  stepCheckMap: new Map(),
+  stepSections: [],
+  id: '',
+  homeDir: '',
+};
+
+const elements = {
+  conflictModal: document.querySelector('#conflict-modal'),
+  document: document.querySelector('#document'),
+  documentPath: document.querySelector('#document-path'),
+  documentTitle: document.querySelector('#document-title'),
+  exportButton: document.querySelector('#export-button'),
+  fileInput: document.querySelector('#file-input'),
+  focusButton: document.querySelector('#focus-button'),
+  homeButton: document.querySelector('#home-button'),
+  mobileBottombar: document.querySelector('#mobile-bottombar'),
+  openFileButton: document.querySelector('#open-file-button'),
+  phaseBanner: document.querySelector('#phase-banner'),
+  progressFill: document.querySelector('#progress-fill'),
+  progressLabel: document.querySelector('#progress-label'),
+  resumeButton: document.querySelector('#resume-button'),
+  resumeCard: document.querySelector('#resume-card'),
+  resumePreview: document.querySelector('#resume-preview'),
+  saveButton: document.querySelector('#save-button'),
+  saveStatus: document.querySelector('#save-status'),
+  saveStatusInline: document.querySelector('#save-status-inline'),
+  switchButton: document.querySelector('#switch-button'),
+  switchMenu: document.querySelector('#switch-menu'),
+  library: document.querySelector('#library'),
+  libraryGrid: document.querySelector('#library-grid'),
+  libraryEmpty: document.querySelector('#library-empty'),
+  toast: document.querySelector('#toast'),
+};
+
+const copyIconTemplate = document.querySelector('#copy-icon-template');
+
+let autoSaveTimer = null;
+
+initialize();
+
+async function initialize() {
+  bindGlobalActions();
+
+  const params = new URLSearchParams(window.location.search);
+  if (params.has('library')) {
+    await renderLibrary();
+    return;
+  }
+
+  const id = params.get('id');
+  const url = id ? `/api/document?id=${encodeURIComponent(id)}` : '/api/document';
+
+  let response;
+  try {
+    response = await fetch(url);
+  } catch (error) {
+    showLoadError(error.message);
+    return;
+  }
+
+  if (!id && response.status === 404) {
+    await renderLibrary();
+    return;
+  }
+
+  if (!response.ok) {
+    showLoadError('The Campaigns server could not read the markdown file.');
+    return;
+  }
+
+  const payload = await response.json();
+  state.id = payload.id ?? '';
+  state.baseHash = payload.hash;
+  state.filePath = payload.filePath;
+  state.lastModified = payload.lastModified;
+  state.markdown = normalizeNewlines(payload.markdown);
+  state.serverBacked = true;
+  state.dirty = false;
+  state.saveStatus = 'idle';
+  state.prefs = loadPrefs(state.filePath);
+  if (state.prefs.focusMode) document.body.classList.add('focus-mode');
+
+  const migrated = ensureFinalReviewLines(state.markdown);
+  if (migrated !== state.markdown) {
+    state.markdown = migrated;
+    state.dirty = true;
+    showToast('Added FINAL REVIEW checkboxes to each phase.', 4000);
+    scheduleAutoSave();
+  }
+
+  render();
+  showResumeCardIfNeeded();
+  initSwitcher();
+  initSettings();
+}
+
+function showLoadError(message) {
+  state.serverBacked = false;
+  state.markdown = '# Could not load file\n\nCheck the path and restart with `--file <path>`.';
+  state.filePath = '';
+  state.dirty = false;
+  render();
+  showToast(message);
+}
+
+function documentUrl() {
+  return state.id ? `/api/document?id=${encodeURIComponent(state.id)}` : '/api/document';
+}
+
+function bindGlobalActions() {
+  elements.saveButton.addEventListener('click', () => saveToServer({ manual: true }));
+  elements.exportButton.addEventListener('click', exportMarkdown);
+  elements.openFileButton.addEventListener('click', () => elements.fileInput.click());
+  elements.fileInput.addEventListener('change', openLocalFile);
+  elements.focusButton.addEventListener('click', toggleFocusMode);
+  elements.resumeButton.addEventListener('click', jumpToResume);
+  elements.document.addEventListener('click', handleDocumentClick);
+  elements.document.addEventListener('input', handleDocumentInput);
+
+  window.addEventListener('keydown', handleGlobalKeydown);
+}
+
+function handleGlobalKeydown(event) {
+  if ((event.metaKey || event.ctrlKey) && event.key === 's') {
+    event.preventDefault();
+    saveToServer({ manual: true });
+    return;
+  }
+
+  // Skip step-nav shortcuts when the user is typing in inputs / textareas / contenteditable.
+  const target = event.target;
+  const isTyping =
+    target instanceof HTMLInputElement ||
+    target instanceof HTMLTextAreaElement ||
+    (target instanceof HTMLElement && target.isContentEditable);
+  if (isTyping) return;
+
+  // Don't interfere when modifier keys are held.
+  if (event.metaKey || event.ctrlKey || event.altKey) return;
+
+  if (event.key === 'Escape' && state.prefs.focusMode) {
+    event.preventDefault();
+    toggleFocusMode();
+    return;
+  }
+
+  const goPrev = event.key === 'ArrowLeft' || event.key === 'a' || event.key === 'A';
+  const goNext = event.key === 'ArrowRight' || event.key === 'd' || event.key === 'D';
+
+  if (goPrev || goNext) {
+    const { prev, next } = neighbouringSteps();
+    const stepTarget = goPrev ? prev : next;
+    if (stepTarget) {
+      event.preventDefault();
+      jumpToAnchor(stepTarget.anchorId);
+    }
+  }
+}
+
+function render() {
+  applyTheme(state.prefs.theme);
+  const blocks = parseMarkdown(state.markdown);
+  const phases = classifyPhases(extractPhases(blocks));
+  const stepSections = extractStepSections(blocks, state.markdown);
+  const stats = getProgressStats(blocks);
+  const resume = findResumeTarget(blocks, stepSections);
+  const stepCheckMap = linkChecksToSteps(blocks, stepSections);
+
+  state.stepSections = stepSections;
+  state.stepCheckMap = stepCheckMap;
+  state.reviewTemplates = extractReviewTemplates(blocks);
+  state.phaseReviewCheckMap = linkChecksToPhaseReviews(blocks);
+  state.finalReview = extractFinalReview(blocks);
+  state.campaignFinalReviewCheck = findCampaignFinalReviewCheck(blocks);
+  state.isNewShape = isNewShapeCampaign(blocks);
+  recordTodayActivity(stats.done);
+
+  detectPhaseCompletions(phases);
+
+  const firstHeading = blocks.find((block) => block.type === 'heading' && block.level === 1);
+  const title = firstHeading
+    ? firstHeading.text
+    : (fileNameFromPath(state.filePath) || 'Campaigns').replace(/\.md$/i, '');
+  elements.documentTitle.textContent = title;
+  document.title = firstHeading ? `${firstHeading.text} · Campaigns` : 'Campaigns';
+  elements.documentPath.textContent = state.filePath;
+  renderProgressLabel(stats);
+  elements.progressFill.style.width =
+    stats.total === 0 ? '0%' : `${Math.round((stats.done / stats.total) * 100)}%`;
+  elements.saveButton.disabled = !state.serverBacked;
+  elements.saveButton.textContent = state.serverBacked ? 'Save file' : 'Save unavailable';
+
+  updateSaveStatus();
+  renderResumePreview(resume);
+  applyFilterClasses();
+
+  const phaseTitles = new Map();
+  for (const phase of phases) {
+    if (phase.number) phaseTitles.set(phase.number, phaseDescriptiveTitle(phase.title));
+  }
+  const stepIdSet = new Set(stepSections.map((section) => section.anchorId));
+  // Strip the `## Final review` heading and its prompt code block from inline
+  // rendering — the card we append at the end owns that content. Also strip
+  // the per-step `Model:` / `Parallel:` source lines: the chips under each
+  // step heading own that content (see renderStepGroup).
+  const finalReviewStripped = state.isNewShape && state.finalReview
+    ? stripFinalReviewBlocks(blocks, state.finalReview)
+    : blocks;
+  const sourceBlocks = stripStepMetaBlocks(finalReviewStripped, stepSections);
+  const withButtons = injectStepButtons(sourceBlocks, stepSections, stepCheckMap, phaseTitles);
+  const wrapped = wrapSteps(withButtons, stepIdSet, stepCheckMap);
+  const grouped = groupChecklistByPhase(wrapped, phases);
+  const sectioned = wrapDocSections(grouped);
+  const withPath = injectDocumentPath(sectioned);
+  const finalReviewCardBlock = buildFinalReviewCardBlock();
+  if (finalReviewCardBlock) withPath.push(finalReviewCardBlock);
+  elements.document.replaceChildren(...withPath.map((block) => renderBlock(block, stepSections)));
+
+  applyFocusMode();
+  renderMobileBottombar();
+  attachStepObserver();
+}
+
+function renderProgressLabel(stats) {
+  const delta = todayDelta(stats.done);
+  elements.progressLabel.textContent = `${stats.done} of ${stats.total} done`;
+  if (delta > 0) {
+    const chip = element('span', { className: 'today-delta', text: `+${delta} today` });
+    elements.progressLabel.append(chip);
+  }
+}
+
+function detectPhaseCompletions(phases) {
+  const previous = state.lastPhaseSnapshot;
+  const snapshot = {};
+  for (const phase of phases) {
+    snapshot[phase.anchorId] = { done: phase.done, total: phase.total };
+    if (!previous) continue;
+    const before = previous[phase.anchorId];
+    if (
+      before &&
+      phase.total > 0 &&
+      before.done < before.total &&
+      phase.done === phase.total
+    ) {
+      showPhaseBanner(phase);
+    }
+  }
+  state.lastPhaseSnapshot = snapshot;
+}
+
+function renderBlock(block, stepSections) {
+  switch (block.type) {
+    case 'heading':
+      return renderHeading(block);
+    case 'paragraph':
+      return element('p', { html: inlineMarkdown(block.text) });
+    case 'quote':
+      return renderQuote(block);
+    case 'hr':
+      return element('hr');
+    case 'check':
+      return renderCheckRow(block, stepSections);
+    case 'list':
+      return renderList(block);
+    case 'table':
+      return renderTable(block);
+    case 'code':
+      return renderCodeBlock(block);
+    case 'phase-group':
+      return renderPhaseGroup(block, stepSections);
+    case 'filter-chips':
+      return renderFilterChipsInline();
+    case 'step-complete':
+      return renderStepCompleteButton(block);
+    case 'step-review':
+      return renderReviewCard({ mode: 'step', stepNumber: block.stepNumber, stepId: block.stepId });
+    case 'phase-review':
+      return renderReviewCard({ mode: 'phase', phaseNumber: block.phaseNumber });
+    case 'final-review-card':
+      return renderFinalReviewCard(block);
+    case 'phase-header':
+      return renderPhaseHeader(block);
+    case 'phase-complete':
+      return renderPhaseCompleteButton(block);
+    case 'step-group':
+      return renderStepGroup(block, stepSections);
+    case 'doc-section':
+      return renderDocSection(block, stepSections);
+    case 'work-divider':
+      return renderWorkDivider();
+    case 'document-path':
+      return renderDocumentPath(block);
+    default:
+      return document.createTextNode('');
+  }
+}
+
+function renderHeading(block) {
+  const tag = `h${Math.min(block.level, 4)}`;
+  const attrs = block.level <= 2 ? { id: block.id } : {};
+  return element(tag, { ...attrs, html: inlineMarkdown(block.text) });
+}
+
+function renderQuote(block) {
+  const wrapper = element('blockquote', { className: 'quote' });
+
+  for (const paragraph of splitParagraphs(block.text)) {
+    wrapper.append(element('p', { html: inlineMarkdown(paragraph) }));
+  }
+
+  return wrapper;
+}
+
+function renderCheckRow(block, stepSections) {
+  const isFinalReview = /^final\s+review/i.test(block.text);
+  const row = element('div', {
+    className: `check-row${block.checked ? ' done' : ''}${isFinalReview ? ' check-row-final-review' : ''}`,
+    id: block.id,
+  });
+  const button = element('button', {
+    ariaLabel: block.checked ? 'Mark incomplete' : 'Mark complete',
+    className: 'check-button',
+    dataset: { action: 'toggle-line-check', line: block.lineStart },
+    type: 'button',
+  });
+
+  const target = stepSections ? findCheckLinkTarget(block.text, stepSections) : null;
+  const label = element('div', { className: 'check-label' });
+  let labelText = block.text;
+  if (isFinalReview) {
+    const phaseMatch = block.text.match(/phase\s+(\d+(?:\.\d+)?)/i);
+    labelText = phaseMatch ? `FINAL REVIEW — Phase ${phaseMatch[1]}` : 'FINAL REVIEW';
+  }
+
+  if (target) {
+    const inner = element('a', {
+      className: 'step-link',
+      dataset: { action: 'jump-to-step', stepId: target.anchorId },
+      href: `#${target.anchorId}`,
+      html: inlineMarkdown(labelText),
+    });
+    label.append(inner);
+  } else {
+    label.innerHTML = inlineMarkdown(labelText);
+  }
+
+  row.append(button, label);
+  return row;
+}
+
+function renderList(block) {
+  const list = element(block.ordered ? 'ol' : 'ul', {
+    className: block.ordered ? 'ordered-list' : 'plain-list',
+  });
+
+  for (const item of block.items) {
+    list.append(element('li', { html: inlineMarkdown(item.text) }));
+  }
+
+  return list;
+}
+
+function renderTable(block) {
+  const wrapper = element('div', { className: 'table-wrap' });
+  const table = element('table');
+  const thead = element('thead');
+  const tbody = element('tbody');
+  const header = element('tr');
+
+  for (const cell of block.headers) {
+    header.append(element('th', { html: inlineMarkdown(cell.content.trim()) }));
+  }
+
+  thead.append(header);
+
+  for (const row of block.rows) {
+    const tr = element('tr');
+
+    for (const cell of row.cells) {
+      const td = element('td');
+      const trimmed = cell.content.trim();
+
+      if (trimmed === '☐' || trimmed === '☑') {
+        const checked = trimmed === '☑';
+        const glyphIndex = cell.content.indexOf(trimmed);
+        td.append(
+          element('button', {
+            ariaLabel: checked ? 'Mark incomplete' : 'Mark complete',
+            className: `glyph-check${checked ? ' done' : ''}`,
+            dataset: {
+              action: 'toggle-glyph-check',
+              char: cell.start + glyphIndex,
+              line: row.lineIndex,
+            },
+            type: 'button',
+          }),
+        );
+      } else {
+        td.innerHTML = inlineMarkdown(trimmed);
+      }
+
+      tr.append(td);
+    }
+
+    tbody.append(tr);
+  }
+
+  table.append(thead, tbody);
+  wrapper.append(table);
+  return wrapper;
+}
+
+function renderCodeBlock(block) {
+  const key = codeKey(block);
+  const isEditing = state.editingCodeKey === key;
+  const reviewMode = detectReviewMode(block.content);
+  const isTemplate = reviewMode !== null;
+
+  if (isEditing) {
+    const card = element('section', {
+      className: `prompt-card prompt-card-editing${isTemplate ? ' prompt-template' : ''}`,
+      id: block.id,
+    });
+    const toolbar = element('div', { className: 'prompt-toolbar' });
+    const copyButton = element('button', {
+      ariaLabel: 'Copy prompt',
+      className: 'icon-button',
+      dataset: { action: 'copy-code', key },
+      title: 'Copy prompt',
+      type: 'button',
+    });
+    copyButton.append(copyIconTemplate.content.firstElementChild.cloneNode(true));
+    toolbar.append(
+      copyButton,
+      element('button', {
+        className: 'text-button',
+        dataset: { action: 'save-code-edit', key },
+        text: 'Save edit',
+        type: 'button',
+      }),
+      element('button', {
+        className: 'text-button',
+        dataset: { action: 'cancel-code-edit' },
+        text: 'Cancel',
+        type: 'button',
+      }),
+    );
+    const editor = element('textarea', {
+      className: 'prompt-editor',
+      dataset: { action: 'edit-code-input', key },
+    });
+    editor.value = state.editingValue;
+    card.append(toolbar, editor);
+    return card;
+  }
+
+  const card = element('details', {
+    className: `prompt-card${isTemplate ? ' prompt-template' : ''}`,
+    id: block.id,
+  });
+  card.dataset.codeKey = key;
+  if (state.expandedCodeKeys.has(key)) {
+    card.open = true;
+  }
+
+  const summary = element('summary', { className: 'prompt-summary' });
+  summary.append(element('span', { className: 'prompt-chevron', ariaHidden: 'true', text: '›' }));
+
+  let label;
+  if (isTemplate) {
+    label = reviewMode === 'phase' ? 'Phase review template' : 'Step review template';
+  } else {
+    label = 'Prompt';
+  }
+  summary.append(element('span', { className: 'prompt-card-label', text: label }));
+
+  if (!isTemplate) {
+    const tokens = detectPlaceholders(block.content);
+    if (tokens.length > 0) {
+      summary.append(renderPlaceholderBar(tokens));
+    }
+  }
+
+  const toolbar = element('div', { className: 'prompt-toolbar' });
+  const copyButton = element('button', {
+    ariaLabel: 'Copy prompt',
+    className: 'icon-button',
+    dataset: { action: 'copy-code', key },
+    title: 'Copy prompt',
+    type: 'button',
+  });
+  copyButton.append(copyIconTemplate.content.firstElementChild.cloneNode(true));
+  toolbar.append(
+    copyButton,
+    element('button', {
+      className: 'text-button',
+      dataset: { action: 'edit-code', key },
+      text: 'Edit',
+      type: 'button',
+    }),
+  );
+  summary.append(toolbar);
+
+  card.append(summary, renderPromptBody(block.content));
+
+  card.addEventListener('toggle', () => {
+    if (card.open) state.expandedCodeKeys.add(key);
+    else state.expandedCodeKeys.delete(key);
+  });
+
+  return card;
+}
+
+function renderReviewCard({ mode, stepNumber, phaseNumber, stepId }) {
+  const templates = state.reviewTemplates;
+  const tpl = mode === 'phase' ? templates.phase : templates.step;
+  if (!tpl.content) return document.createTextNode('');
+
+  const text = buildReviewPromptText(mode, stepNumber, phaseNumber);
+  const cardKey = mode === 'phase' ? `phase-review-${phaseNumber}` : `step-review-${stepNumber}`;
+  const label = mode === 'phase' ? `Phase ${phaseNumber} review` : 'Review';
+
+  const card = element('details', {
+    className: `prompt-card prompt-review prompt-${mode}-review`,
+  });
+  card.dataset.cardKey = cardKey;
+  card.dataset.reviewMode = mode;
+  if (stepNumber) card.dataset.stepNumber = stepNumber;
+  if (phaseNumber) card.dataset.phaseNumber = phaseNumber;
+  if (stepId) card.dataset.stepId = stepId;
+  if (state.expandedCodeKeys.has(cardKey)) card.open = true;
+
+  if (mode === 'phase' && phaseNumber) {
+    card.id = `phase-review-${phaseNumber}`;
+    const check = state.phaseReviewCheckMap.get(card.id);
+    card.dataset.completed = String(!!(check && check.checked));
+  }
+
+  const summary = element('summary', { className: 'prompt-summary' });
+  summary.append(
+    element('span', { className: 'prompt-chevron', ariaHidden: 'true', text: '›' }),
+    element('span', { className: 'prompt-card-label', text: label }),
+  );
+
+  const toolbar = element('div', { className: 'prompt-toolbar' });
+  const copyButton = element('button', {
+    ariaLabel: 'Copy review prompt',
+    className: 'icon-button',
+    dataset: { action: 'copy-review-card' },
+    title: 'Copy review prompt',
+    type: 'button',
+  });
+  copyButton.append(copyIconTemplate.content.firstElementChild.cloneNode(true));
+  toolbar.append(
+    copyButton,
+    element('button', {
+      className: 'text-button',
+      dataset: { action: 'edit-review-template', templateMode: mode },
+      text: 'Edit',
+      title: `Edit the ${mode} review template`,
+      type: 'button',
+    }),
+  );
+  summary.append(toolbar);
+
+  const pre = element('pre', { className: 'prompt-code' });
+  pre.textContent = text;
+
+  card.append(summary, pre);
+
+  card.addEventListener('toggle', () => {
+    if (card.open) state.expandedCodeKeys.add(cardKey);
+    else state.expandedCodeKeys.delete(cardKey);
+  });
+
+  return card;
+}
+
+function detectPlaceholders(text) {
+  const found = new Set();
+  for (const match of text.matchAll(PLACEHOLDER_REGEX)) {
+    if (RESERVED_TOKENS.has(match[1])) continue;
+    found.add(match[1]);
+  }
+  return [...found];
+}
+
+function detectReviewMode(content) {
+  if (!content) return null;
+  const tokens = new Set();
+  for (const match of content.matchAll(PLACEHOLDER_REGEX)) {
+    tokens.add(match[1]);
+  }
+  if (tokens.has('STEP') && !tokens.has('PHASE')) return 'step';
+  if (tokens.has('PHASE') && !tokens.has('STEP')) return 'phase';
+  return null;
+}
+
+function extractReviewTemplates(blocks) {
+  const templates = {
+    step: { content: null, key: null },
+    phase: { content: null, key: null },
+  };
+  for (const block of blocks) {
+    if (block.type !== 'code') continue;
+    const mode = detectReviewMode(block.content);
+    if (mode === 'step' && !templates.step.content) {
+      templates.step.content = block.content;
+      templates.step.key = codeKey(block);
+    } else if (mode === 'phase' && !templates.phase.content) {
+      templates.phase.content = block.content;
+      templates.phase.key = codeKey(block);
+    }
+  }
+  return templates;
+}
+
+function phaseForStep(stepNumber) {
+  if (!stepNumber) return '';
+  return String(stepNumber).split('.')[0];
+}
+
+function buildReviewPromptText(mode, stepNumber, phaseNumber) {
+  const templates = state.reviewTemplates;
+  if (mode === 'phase' && templates.phase.content) {
+    return templates.phase.content.replace(/<PHASE>/g, phaseNumber || '');
+  }
+  if (mode === 'step' && templates.step.content) {
+    return templates.step.content.replace(/<STEP>/g, stepNumber || '');
+  }
+  return '';
+}
+
+function renderPlaceholderBar(tokens) {
+  const bar = element('div', { className: 'prompt-placeholders' });
+  for (const token of tokens) {
+    const field = element('label', { className: 'placeholder-field' });
+    const labelText = element('span', { text: token });
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.value = state.prefs.placeholders[token] || '';
+    input.placeholder = `<${token}>`;
+    input.dataset.placeholderToken = token;
+    input.addEventListener('input', () => {
+      state.prefs.placeholders[token] = input.value;
+      savePrefs();
+      refreshPromptBodies();
+    });
+    field.append(labelText, input);
+    bar.append(field);
+  }
+  return bar;
+}
+
+function refreshPromptBodies() {
+  for (const pre of elements.document.querySelectorAll('.prompt-code')) {
+    const raw = pre.dataset.rawContent ?? '';
+    const fresh = renderPromptBody(raw);
+    pre.replaceWith(fresh);
+  }
+}
+
+function renderPromptBody(rawContent) {
+  const pre = element('pre', { className: 'prompt-code' });
+  pre.dataset.rawContent = rawContent;
+  const fragments = splitOnPlaceholders(rawContent);
+  for (const fragment of fragments) {
+    if (fragment.kind === 'text') {
+      pre.append(document.createTextNode(fragment.value));
+    } else {
+      const fill = state.prefs.placeholders[fragment.token];
+      if (fill) {
+        pre.append(element('span', { className: 'placeholder-fill', text: fill }));
+      } else {
+        pre.append(element('span', { className: 'placeholder-empty', text: `<${fragment.token}>` }));
+      }
+    }
+  }
+  return pre;
+}
+
+function splitOnPlaceholders(text) {
+  const fragments = [];
+  let cursor = 0;
+  for (const match of text.matchAll(PLACEHOLDER_REGEX)) {
+    if (match.index > cursor) {
+      fragments.push({ kind: 'text', value: text.slice(cursor, match.index) });
+    }
+    fragments.push({ kind: 'token', token: match[1] });
+    cursor = match.index + match[0].length;
+  }
+  if (cursor < text.length) {
+    fragments.push({ kind: 'text', value: text.slice(cursor) });
+  }
+  return fragments;
+}
+
+function substitutePlaceholders(text) {
+  return text.replace(PLACEHOLDER_REGEX, (raw, token) => {
+    const fill = state.prefs.placeholders[token];
+    return fill ? fill : raw;
+  });
+}
+
+function renderPhaseGroup(group, stepSections) {
+  const isCollapsed = isPhaseCollapsed(group.phase);
+  const wrapper = element('section', {
+    className: 'phase-group',
+    dataset: {
+      collapsed: String(isCollapsed),
+      phaseId: group.phase.anchorId,
+      state: group.phase.state || 'todo',
+    },
+  });
+
+  const summary = element('button', {
+    className: 'phase-summary',
+    dataset: { action: 'toggle-phase', phaseId: group.phase.anchorId },
+    type: 'button',
+  });
+
+  summary.append(
+    element('span', { className: 'phase-chevron', text: '›', ariaHidden: 'true' }),
+    element('h3', { className: 'phase-title', html: inlineMarkdown(group.phase.title), id: group.phase.anchorId }),
+    element('span', {
+      className: 'phase-progress',
+      text: group.phase.total > 0 ? `${group.phase.done} / ${group.phase.total}` : '',
+    }),
+  );
+
+  const body = element('div', { className: 'phase-body' });
+  for (const child of group.children) {
+    body.append(renderBlock(child, stepSections));
+  }
+
+  wrapper.append(summary, body);
+  return wrapper;
+}
+
+function renderResumePreview(resume) {
+  if (!elements.resumePreview) return;
+
+  if (!resume) {
+    elements.resumePreview.replaceChildren();
+    elements.resumeButton.disabled = false;
+    elements.resumeButton.dataset.targetId = '';
+    return;
+  }
+
+  const title = resume.step ? resume.step.title : resume.checkText;
+  const meta = resume.step?.skill ?? '';
+
+  elements.resumePreview.replaceChildren(
+    document.createTextNode(title),
+    element('span', { className: 'resume-meta', text: meta }),
+  );
+  elements.resumeButton.dataset.targetId = resume.targetId || '';
+}
+
+function renderFilterChipsInline() {
+  const wrapper = element('div', {
+    className: 'filter-chips',
+    ariaLabel: 'Filter checklist',
+  });
+  wrapper.setAttribute('role', 'group');
+
+  const filters = [
+    { key: 'todo', label: 'Todo' },
+    { key: 'flight', label: 'In flight' },
+    { key: 'done', label: 'Done' },
+  ];
+
+  for (const filter of filters) {
+    const pressed = state.prefs.filters[filter.key];
+    wrapper.append(
+      element('button', {
+        ariaPressed: String(pressed),
+        className: 'filter-chip',
+        dataset: { filterKey: filter.key },
+        text: filter.label,
+        type: 'button',
+      }),
+    );
+  }
+
+  return wrapper;
+}
+
+function renderPhaseHeader(block) {
+  const wrapper = element('section', {
+    className: 'phase-header',
+    dataset: { phaseNumber: block.phaseNumber || '' },
+  });
+  wrapper.append(
+    element('span', { className: 'phase-header-circle', text: String(block.phaseNumber || '') }),
+    element('span', { className: 'phase-header-eyebrow', text: `Phase ${block.phaseNumber}` }),
+  );
+  if (block.phaseTitle) {
+    wrapper.append(element('span', { className: 'phase-header-title', text: block.phaseTitle }));
+  }
+  return wrapper;
+}
+
+function renderWorkDivider() {
+  const wrapper = element('section', { className: 'work-divider' });
+  wrapper.append(element('span', { className: 'work-divider-label', text: 'Begin execution' }));
+  return wrapper;
+}
+
+function renderDocumentPath(block) {
+  return element('p', {
+    className: 'document-path-inline',
+    text: block.filePath || '',
+  });
+}
+
+function renderStepGroup(block, stepSections) {
+  const heading = block.children.find((c) => c.type === 'heading' && c.level === 2);
+  const stepAnchorId = heading?.id || '';
+  const section = stepSections?.find((s) => s.anchorId === block.stepId);
+  const metaRow = section ? renderStepMeta(section, stepSections) : null;
+
+  if (block.completed) {
+    const details = element('details', {
+      className: 'step-group',
+      dataset: { stepId: block.stepId || '', completed: 'true' },
+    });
+    if (stepAnchorId) details.id = stepAnchorId;
+
+    const summary = element('summary', { className: 'step-group-summary' });
+    summary.append(
+      element('span', { className: 'step-group-checkmark', ariaHidden: 'true', text: '✓' }),
+      element('span', { className: 'step-group-title', text: heading?.text || '' }),
+      element('span', { className: 'step-group-chevron', ariaHidden: 'true', text: '›' }),
+    );
+    details.append(summary);
+    if (metaRow) details.append(metaRow);
+
+    for (const child of block.children) {
+      if (child === heading) continue;
+      details.append(renderBlock(child, stepSections));
+    }
+    return details;
+  }
+
+  const wrapper = element('section', {
+    className: 'step-group',
+    dataset: { stepId: block.stepId || '', completed: 'false' },
+  });
+  for (const child of block.children) {
+    wrapper.append(renderBlock(child, stepSections));
+    if (metaRow && child === heading) wrapper.append(metaRow);
+  }
+  return wrapper;
+}
+
+/**
+ * Renders the `Model:` and `Parallel:` chips that sit directly under a step
+ * heading. Returns null when the step has neither piece of metadata —
+ * legacy campaigns without Model/Parallel lines render unchanged.
+ */
+function renderStepMeta(section, stepSections) {
+  const modelChip = renderModelChip(section.model);
+  const parallelChip = renderParallelChip(section.parallel, stepSections);
+  if (!modelChip && !parallelChip) return null;
+
+  const row = element('div', { className: 'step-meta' });
+  if (modelChip) row.append(modelChip);
+  if (parallelChip) row.append(parallelChip);
+  return row;
+}
+
+function renderModelChip(model) {
+  if (!model || (!model.claudeCode && !model.codex)) return null;
+
+  const titleParts = [];
+  if (model.claudeCode) titleParts.push(`Claude Code: ${model.claudeCode}`);
+  if (model.codex) titleParts.push(`Codex: ${model.codex}`);
+  const chip = element('div', {
+    className: 'meta-chip meta-model',
+    title: titleParts.join(' / '),
+  });
+
+  if (model.claudeCode) {
+    chip.append(
+      element('span', {
+        className: 'agent-glyph agent-glyph-cc',
+        ariaLabel: 'Claude Code',
+        text: 'CC',
+      }),
+      element('span', { className: 'agent-spec', text: model.claudeCode }),
+    );
+  }
+  if (model.claudeCode && model.codex) {
+    chip.append(element('span', { className: 'agent-divider', ariaHidden: 'true' }));
+  }
+  if (model.codex) {
+    chip.append(
+      element('span', {
+        className: 'agent-glyph agent-glyph-cx',
+        ariaLabel: 'Codex',
+        text: 'CX',
+      }),
+      element('span', { className: 'agent-spec', text: model.codex }),
+    );
+  }
+  return chip;
+}
+
+function renderParallelChip(parallel, stepSections) {
+  if (!parallel) return null;
+
+  if (!parallel.isParallel) {
+    return element('div', {
+      className: 'meta-chip meta-parallel meta-sequential',
+      text: 'Sequential',
+      title: 'This step runs after the previous step finishes.',
+    });
+  }
+
+  const chip = element('div', {
+    className: 'meta-chip meta-parallel',
+    title: parallel.siblingSteps.length
+      ? `Can run alongside Step ${parallel.siblingSteps.join(', ')}.`
+      : 'Can run alongside its sibling steps.',
+  });
+  chip.append(element('span', { className: 'meta-parallel-label', text: 'Parallel' }));
+
+  if (parallel.siblingSteps.length > 0) {
+    chip.append(element('span', { className: 'meta-parallel-sep', ariaHidden: 'true', text: '·' }));
+    const linksWrap = element('span', { className: 'meta-parallel-steps' });
+    parallel.siblingSteps.forEach((stepNumber, index) => {
+      const target = stepSections?.find((s) => s.number === stepNumber);
+      if (index > 0) linksWrap.append(document.createTextNode(', '));
+      linksWrap.append(
+        element('a', {
+          className: 'step-link meta-step-link',
+          dataset: target
+            ? { action: 'jump-to-step', stepId: target.anchorId }
+            : { stepRef: stepNumber },
+          href: target ? `#${target.anchorId}` : '#',
+          text: stepNumber,
+        }),
+      );
+    });
+    chip.append(linksWrap);
+  }
+  return chip;
+}
+
+function renderDocSection(block, stepSections) {
+  const sectionId = block.sectionId || '';
+  const override = state.prefs.docSections?.[sectionId];
+  const open = override === undefined ? !!block.defaultOpen : override === true;
+
+  const details = element('details', { className: 'doc-section' });
+  if (sectionId) details.dataset.sectionId = sectionId;
+  if (open) details.open = true;
+
+  const summary = element('summary', { className: 'doc-section-summary' });
+  summary.append(
+    element('span', { className: 'doc-section-chevron', ariaHidden: 'true', text: '›' }),
+    element('span', {
+      className: 'doc-section-title',
+      html: inlineMarkdown(block.heading?.text || ''),
+    }),
+  );
+  details.append(summary);
+
+  const body = element('div', { className: 'doc-section-body' });
+  for (const child of block.children) {
+    body.append(renderBlock(child, stepSections));
+  }
+  details.append(body);
+
+  details.addEventListener('toggle', () => {
+    if (!sectionId) return;
+    state.prefs.docSections = state.prefs.docSections || {};
+    state.prefs.docSections[sectionId] = details.open;
+    savePrefs();
+  });
+
+  return details;
+}
+
+function renderStepCompleteButton(block) {
+  return element('button', {
+    className: 'button button-primary step-complete-button',
+    dataset: {
+      action: 'complete-and-next',
+      line: block.line,
+      stepId: block.stepId,
+    },
+    text: 'Complete & next',
+    type: 'button',
+  });
+}
+
+function renderPhaseCompleteButton(block) {
+  return element('button', {
+    className: 'button button-primary phase-complete-button',
+    dataset: {
+      action: 'complete-phase',
+      line: block.line,
+      phaseNumber: block.phaseNumber,
+    },
+    text: `Close Phase ${block.phaseNumber}`,
+    type: 'button',
+  });
+}
+
+function renderFinalReviewCard(block) {
+  // The campaign-level review card. Distinct from per-phase review cards:
+  // wider visual weight, an explicit eyebrow, the prompt expanded by default,
+  // and a single "Close campaign" button below. Anchored at #campaign-review
+  // so the campaign-level checkbox can scroll-link to it.
+  const wrapper = element('section', {
+    className: `final-review-card${block.completed ? ' done' : ''}`,
+    id: 'campaign-review',
+  });
+  if (block.completed) wrapper.dataset.completed = 'true';
+
+  const header = element('div', { className: 'final-review-header' });
+  header.append(
+    element('span', { className: 'final-review-eyebrow', text: 'Final review' }),
+    element('h2', {
+      className: 'final-review-title',
+      text: 'Close out the campaign',
+    }),
+    element('p', {
+      className: 'final-review-blurb',
+      text: 'Run this prompt in a fresh session to grade the whole plan. When the verdict is in, tick the box.',
+    }),
+  );
+  wrapper.append(header);
+
+  const hasPrompt = !!(block.content && block.content.trim());
+  const promptText = hasPrompt
+    ? block.content
+    : 'Final review prompt not provided. Add a fenced code block under `## Final review` in the markdown.';
+
+  const prompt = element('div', { className: 'final-review-prompt' });
+  if (hasPrompt && block.codeKey) {
+    const toolbar = element('div', { className: 'final-review-toolbar' });
+    const copyButton = element('button', {
+      ariaLabel: 'Copy final review prompt',
+      className: 'icon-button',
+      dataset: { action: 'copy-code', key: block.codeKey },
+      title: 'Copy final review prompt',
+      type: 'button',
+    });
+    copyButton.append(copyIconTemplate.content.firstElementChild.cloneNode(true));
+    toolbar.append(copyButton);
+    prompt.append(toolbar);
+  }
+
+  const pre = element('pre', { className: 'prompt-code final-review-prompt-code' });
+  if (!hasPrompt) pre.classList.add('final-review-prompt-empty');
+  pre.textContent = promptText;
+  prompt.append(pre);
+  wrapper.append(prompt);
+
+  if (block.line != null) {
+    const button = element('button', {
+      className: 'button button-primary close-campaign-button',
+      dataset: {
+        action: 'close-campaign',
+        line: block.line,
+      },
+      text: block.completed ? 'Campaign closed' : 'Close campaign',
+      type: 'button',
+    });
+    if (block.completed) button.disabled = true;
+    wrapper.append(button);
+  }
+
+  return wrapper;
+}
+
+function applyFilterClasses() {
+  document.body.classList.toggle('filter-hide-todo', !state.prefs.filters.todo);
+  document.body.classList.toggle('filter-hide-flight', !state.prefs.filters.flight);
+  document.body.classList.toggle('filter-hide-done', !state.prefs.filters.done);
+}
+
+function applyFocusMode() {
+  if (state.prefs.focusMode && state.stepSections.length > 0) {
+    const present = state.stepSections.some((section) => section.anchorId === state.activeStepId);
+    if (!present) state.activeStepId = state.stepSections[0].anchorId;
+  }
+  document.body.classList.toggle('focus-mode', state.prefs.focusMode);
+  if (elements.focusButton) {
+    elements.focusButton.setAttribute('aria-pressed', String(state.prefs.focusMode));
+  }
+  for (const child of elements.document.children) {
+    child.classList.toggle('step-active', child.dataset.stepId === state.activeStepId);
+  }
+}
+
+function toggleFocusMode() {
+  state.prefs.focusMode = !state.prefs.focusMode;
+  savePrefs();
+  applyFocusMode();
+  if (state.prefs.focusMode && state.activeStepId) {
+    document.getElementById(state.activeStepId)?.scrollIntoView({
+      behavior: 'smooth',
+      block: 'start',
+    });
+  }
+}
+
+function getSaveStatus() {
+  if (!state.serverBacked) {
+    return 'Opened from your browser. Use Export to keep changes.';
+  }
+  if (state.saveStatus === 'saving') return 'Saving…';
+  if (state.saveStatus === 'error') return state.lastSaveError || 'Save failed — retry.';
+  if (state.dirty) return 'Unsaved changes.';
+  if (state.lastModified) return `Saved ${formatTime(state.lastModified)}.`;
+  return 'No changes yet.';
+}
+
+function updateSaveStatus() {
+  if (elements.saveStatus) {
+    elements.saveStatus.textContent = getSaveStatus();
+    elements.saveStatus.dataset.state = state.saveStatus;
+  }
+  if (elements.saveStatusInline) {
+    const inline = getSaveStatusInline();
+    elements.saveStatusInline.textContent = inline.text;
+    elements.saveStatusInline.dataset.state = inline.state;
+  }
+}
+
+function getSaveStatusInline() {
+  if (!state.serverBacked) return { text: '', state: 'idle' };
+  if (state.saveStatus === 'saving') return { text: 'Saving…', state: 'saving' };
+  if (state.saveStatus === 'error') return { text: 'Save failed', state: 'error' };
+  if (state.dirty) return { text: 'Unsaved', state: 'dirty' };
+  if (state.lastModified) return { text: `Saved ${formatTime(state.lastModified)}`, state: 'saved' };
+  return { text: '', state: 'idle' };
+}
+
+function handleDocumentClick(event) {
+  const chip = event.target.closest('.filter-chip');
+  if (chip) {
+    const key = chip.dataset.filterKey;
+    state.prefs.filters[key] = !state.prefs.filters[key];
+    savePrefs();
+    chip.setAttribute('aria-pressed', String(state.prefs.filters[key]));
+    applyFilterClasses();
+    return;
+  }
+
+  const control = event.target.closest('[data-action]');
+
+  if (!control) {
+    return;
+  }
+
+  const { action } = control.dataset;
+
+  if (action === 'jump-to-step') {
+    event.preventDefault();
+    document.getElementById(control.dataset.stepId)?.scrollIntoView({
+      behavior: 'smooth',
+      block: 'start',
+    });
+    return;
+  }
+
+  if (action === 'toggle-phase') {
+    togglePhase(control.dataset.phaseId);
+    return;
+  }
+
+  if (action === 'toggle-line-check') {
+    toggleLineCheck(Number(control.dataset.line));
+  }
+
+  if (action === 'toggle-glyph-check') {
+    toggleGlyphCheck(Number(control.dataset.line), Number(control.dataset.char));
+  }
+
+  if (action === 'copy-code') {
+    copyCode(control.dataset.key);
+  }
+
+  if (action === 'copy-review-card') {
+    const card = control.closest('.prompt-review');
+    if (!card) return;
+    copyReviewPrompt(card);
+    return;
+  }
+
+  if (action === 'edit-review-template') {
+    const mode = control.dataset.templateMode;
+    const tpl = mode === 'phase' ? state.reviewTemplates.phase : state.reviewTemplates.step;
+    if (!tpl?.key) {
+      showToast('No review template found in this campaign.');
+      return;
+    }
+    startCodeEdit(tpl.key);
+    requestAnimationFrame(() => {
+      document.querySelector('.prompt-card-editing')?.scrollIntoView({
+        behavior: 'smooth',
+        block: 'start',
+      });
+    });
+    return;
+  }
+
+  if (action === 'complete-and-next') {
+    toggleLineCheck(Number(control.dataset.line));
+    const next = nextUncheckedStep(control.dataset.stepId);
+    if (next) {
+      jumpToAnchor(next.anchorId);
+    } else {
+      showToast('All later steps are complete.');
+    }
+  }
+
+  if (action === 'complete-phase') {
+    const phaseNumber = control.dataset.phaseNumber;
+    toggleLineCheck(Number(control.dataset.line));
+    const nextPhaseNumber = String(Number(phaseNumber) + 1);
+    requestAnimationFrame(() => {
+      const nextHeader = document.querySelector(
+        `.phase-header[data-phase-number="${cssEscape(nextPhaseNumber)}"]`,
+      );
+      if (nextHeader) {
+        nextHeader.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      } else {
+        showToast('Campaign complete.');
+      }
+    });
+  }
+
+  if (action === 'close-campaign') {
+    toggleLineCheck(Number(control.dataset.line));
+    showToast('Campaign complete.');
+  }
+
+  if (action === 'edit-code') {
+    startCodeEdit(control.dataset.key);
+  }
+
+  if (action === 'save-code-edit') {
+    saveCodeEdit(control.dataset.key);
+  }
+
+  if (action === 'cancel-code-edit') {
+    state.editingCodeKey = null;
+    state.editingValue = '';
+    render();
+  }
+}
+
+function handleDocumentInput(event) {
+  const control = event.target.closest("[data-action='edit-code-input']");
+
+  if (control) {
+    state.editingValue = control.value;
+  }
+}
+
+function toggleLineCheck(lineIndex) {
+  const lines = getLines();
+  const line = lines[lineIndex];
+  const wasChecked = /^\s*[-*]\s+\[\s*[xX]\s*\]/.test(line);
+  const nextLine = line.replace(/^(\s*[-*]\s+\[)( |x|X)(\]\s+)/, (_, before, marker, after) => {
+    return `${before}${marker.toLowerCase() === 'x' ? ' ' : 'x'}${after}`;
+  });
+
+  if (nextLine !== line) {
+    if (!wasChecked) {
+      playAudioFeedback('tick');
+    }
+
+    const prevBlocks = parseMarkdown(state.markdown);
+    const prevPhases = classifyPhases(extractPhases(prevBlocks));
+    const prevStats = getProgressStats(prevBlocks);
+
+    lines[lineIndex] = nextLine;
+    recordSessionTick(!wasChecked ? extractCheckRef(nextLine) : '');
+    setMarkdown(lines.join('\n'));
+
+    const nextBlocks = parseMarkdown(state.markdown);
+    const nextPhases = classifyPhases(extractPhases(nextBlocks));
+    const nextStats = getProgressStats(nextBlocks);
+
+    handleCompletionEffects(prevPhases, nextPhases, prevStats, nextStats);
+  }
+}
+
+function toggleGlyphCheck(lineIndex, charIndex) {
+  const lines = getLines();
+  const line = lines[lineIndex] ?? '';
+  const current = line[charIndex];
+
+  if (current !== '☐' && current !== '☑') {
+    return;
+  }
+
+  const isChecking = current === '☐';
+  if (isChecking) {
+    playAudioFeedback('tick');
+  }
+
+  const prevBlocks = parseMarkdown(state.markdown);
+  const prevPhases = classifyPhases(extractPhases(prevBlocks));
+  const prevStats = getProgressStats(prevBlocks);
+
+  lines[lineIndex] =
+    `${line.slice(0, charIndex)}${current === '☑' ? '☐' : '☑'}${line.slice(charIndex + 1)}`;
+  recordSessionTick('');
+  setMarkdown(lines.join('\n'));
+
+  const nextBlocks = parseMarkdown(state.markdown);
+  const nextPhases = classifyPhases(extractPhases(nextBlocks));
+  const nextStats = getProgressStats(nextBlocks);
+
+  handleCompletionEffects(prevPhases, nextPhases, prevStats, nextStats);
+}
+
+function isPhaseCollapsed(phase) {
+  const defaultCollapsed = phase.state === 'done';
+  const inverted = state.prefs.phaseInverted.includes(phase.anchorId);
+  return inverted ? !defaultCollapsed : defaultCollapsed;
+}
+
+function togglePhase(phaseId) {
+  if (!phaseId) return;
+  const set = new Set(state.prefs.phaseInverted);
+  if (set.has(phaseId)) set.delete(phaseId);
+  else set.add(phaseId);
+  state.prefs.phaseInverted = [...set];
+  savePrefs();
+
+  const node = document.querySelector(`.phase-group[data-phase-id="${cssEscape(phaseId)}"]`);
+  if (node) {
+    const currentlyCollapsed = node.dataset.collapsed === 'true';
+    node.dataset.collapsed = String(!currentlyCollapsed);
+  }
+}
+
+async function copyCode(key) {
+  const block = findCodeBlock(key);
+
+  if (!block) {
+    return;
+  }
+
+  const text = substitutePlaceholders(block.content);
+  try {
+    await navigator.clipboard.writeText(text);
+    showToast('Prompt copied.');
+  } catch {
+    showToast('Copy failed. Select the prompt text manually.');
+  }
+}
+
+async function copyReviewPrompt(card) {
+  const mode = card.dataset.reviewMode;
+  const text = buildReviewPromptText(
+    mode,
+    card.dataset.stepNumber,
+    card.dataset.phaseNumber,
+  );
+  if (!text) {
+    showToast('No review template found in this campaign.');
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(text);
+    const label = mode === 'phase'
+      ? `Phase ${card.dataset.phaseNumber} review copied.`
+      : `Step ${card.dataset.stepNumber} review copied.`;
+    showToast(label);
+  } catch {
+    showToast('Copy failed. Select the prompt text manually.');
+  }
+}
+
+function startCodeEdit(key) {
+  const block = findCodeBlock(key);
+
+  if (!block) {
+    return;
+  }
+
+  state.editingCodeKey = key;
+  state.editingValue = block.content;
+  render();
+  document.querySelector(`[data-action="edit-code-input"][data-key="${cssEscape(key)}"]`)?.focus();
+}
+
+function saveCodeEdit(key) {
+  const block = findCodeBlock(key);
+
+  if (!block) {
+    return;
+  }
+
+  const lines = getLines();
+  const replacement = normalizeNewlines(state.editingValue).split('\n');
+  lines.splice(block.lineStart + 1, block.lineEnd - block.lineStart - 1, ...replacement);
+  state.editingCodeKey = null;
+  state.editingValue = '';
+  setMarkdown(lines.join('\n'));
+}
+
+function findCodeBlock(key) {
+  return parseMarkdown(state.markdown).find(
+    (block) => block.type === 'code' && codeKey(block) === key,
+  );
+}
+
+function codeKey(block) {
+  return `code-${block.lineStart}-${block.lineEnd}`;
+}
+
+function setMarkdown(nextMarkdown) {
+  state.markdown = nextMarkdown;
+  state.dirty = true;
+  state.saveStatus = 'idle';
+  render();
+  scheduleAutoSave();
+}
+
+function scheduleAutoSave() {
+  if (!state.serverBacked) return;
+  if (autoSaveTimer) clearTimeout(autoSaveTimer);
+  autoSaveTimer = window.setTimeout(() => {
+    saveToServer({ silent: true });
+  }, AUTOSAVE_DELAY_MS);
+}
+
+async function saveToServer(options = {}) {
+  if (!state.serverBacked) {
+    if (options.manual) {
+      showToast('This document was opened from your browser. Use Export instead.');
+    }
+    return;
+  }
+  if (!state.dirty && !options.manual && !options.force) return;
+
+  state.saveStatus = 'saving';
+  updateSaveStatus();
+
+  try {
+    const body = { markdown: state.markdown };
+    if (!options.force) body.baseHash = state.baseHash;
+
+    const response = await fetch(documentUrl(), {
+      body: JSON.stringify(body),
+      headers: { 'content-type': 'application/json' },
+      method: 'PUT',
+    });
+    const payload = await response.json();
+
+    if (response.status === 409) {
+      // Fetch the current on-disk version and present a merge UI.
+      const fresh = await fetch(documentUrl());
+      const freshPayload = await fresh.json().catch(() => ({}));
+      state.saveStatus = 'idle';
+      updateSaveStatus();
+      showConflictModal({
+        localMarkdown: state.markdown,
+        serverMarkdown: typeof freshPayload.markdown === 'string' ? freshPayload.markdown : '',
+      });
+      return;
+    }
+
+    if (!response.ok) {
+      throw new Error(payload.error ?? 'Could not save markdown.');
+    }
+
+    state.baseHash = payload.hash;
+    state.lastModified = payload.lastModified;
+    state.dirty = false;
+    state.saveStatus = 'idle';
+    state.lastSaveError = '';
+    updateSaveStatus();
+    if (options.manual) showToast('Saved.');
+  } catch (error) {
+    state.saveStatus = 'error';
+    state.lastSaveError = error.message;
+    updateSaveStatus();
+    if (options.manual || !options.silent) {
+      showToast(error.message);
+    }
+  }
+}
+
+function exportMarkdown() {
+  const blob = new Blob([state.markdown], { type: 'text/markdown;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const anchor = element('a', {
+    download: fileNameFromPath(state.filePath) || 'plan.md',
+    href: url,
+  });
+
+  document.body.append(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
+}
+
+function openLocalFile(event) {
+  const file = event.target.files?.[0];
+
+  if (!file) {
+    return;
+  }
+
+  const reader = new FileReader();
+  reader.addEventListener('load', () => {
+    state.baseHash = '';
+    state.filePath = file.name;
+    state.lastModified = '';
+    state.markdown = normalizeNewlines(String(reader.result ?? ''));
+    state.serverBacked = false;
+    state.dirty = false;
+    state.editingCodeKey = null;
+    state.prefs = loadPrefs(state.filePath);
+    render();
+  });
+  reader.readAsText(file);
+  event.target.value = '';
+}
+
+/* ------------------------------ Phase completion banner ----------------------------- */
+
+function showPhaseBanner(phase) {
+  if (!elements.phaseBanner) return;
+  if (state.phaseBannerTimer) clearTimeout(state.phaseBannerTimer);
+
+  elements.phaseBanner.replaceChildren(
+    element('strong', { text: phase.title }),
+    element('span', { className: 'phase-banner-meta', text: `${phase.done} / ${phase.total} done` }),
+    element('button', {
+      ariaLabel: 'Dismiss',
+      className: 'phase-banner-close',
+      text: '×',
+      type: 'button',
+    }),
+  );
+  elements.phaseBanner.querySelector('.phase-banner-close').addEventListener('click', hidePhaseBanner);
+
+  elements.phaseBanner.classList.add('visible');
+  state.phaseBannerTimer = window.setTimeout(hidePhaseBanner, 6000);
+}
+
+function hidePhaseBanner() {
+  if (!elements.phaseBanner) return;
+  elements.phaseBanner.classList.remove('visible');
+  if (state.phaseBannerTimer) {
+    clearTimeout(state.phaseBannerTimer);
+    state.phaseBannerTimer = null;
+  }
+}
+
+/* ------------------------------ Mobile bottom bar ----------------------------------- */
+
+let stepObserver = null;
+
+function attachStepObserver() {
+  if (!('IntersectionObserver' in window)) return;
+  if (stepObserver) stepObserver.disconnect();
+
+  stepObserver = new IntersectionObserver(
+    (entries) => {
+      const visible = entries
+        .filter((entry) => entry.isIntersecting)
+        .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top);
+      if (visible.length > 0) {
+        state.activeStepId = visible[0].target.id;
+        renderMobileBottombar();
+      }
+    },
+    { rootMargin: '-15% 0px -65% 0px', threshold: 0 },
+  );
+
+  for (const section of state.stepSections) {
+    const node = document.getElementById(section.anchorId);
+    if (node) stepObserver.observe(node);
+  }
+}
+
+function renderMobileBottombar() {
+  if (!elements.mobileBottombar) return;
+
+  const sections = state.stepSections;
+  if (sections.length === 0) {
+    elements.mobileBottombar.replaceChildren();
+    return;
+  }
+
+  const { prev, next } = neighbouringSteps();
+
+  const prevButton = element('button', {
+    ariaLabel: 'Previous step',
+    className: 'bottom-button',
+    text: '‹',
+    type: 'button',
+  });
+  prevButton.disabled = !prev;
+  if (prev) prevButton.addEventListener('click', () => jumpToAnchor(prev.anchorId));
+
+  const nextButton = element('button', {
+    ariaLabel: 'Next step',
+    className: 'bottom-button',
+    text: '›',
+    type: 'button',
+  });
+  nextButton.disabled = !next;
+  if (next) nextButton.addEventListener('click', () => jumpToAnchor(next.anchorId));
+
+  elements.mobileBottombar.replaceChildren(prevButton, nextButton);
+}
+
+function neighbouringSteps() {
+  const sections = state.stepSections;
+  if (sections.length === 0) return { prev: null, next: null };
+  let activeIndex = sections.findIndex((s) => s.anchorId === state.activeStepId);
+  if (activeIndex === -1) activeIndex = 0;
+  return {
+    prev: sections[activeIndex - 1] || null,
+    next: sections[activeIndex + 1] || null,
+  };
+}
+
+function nextUncheckedStep(currentStepId) {
+  const sections = state.stepSections;
+  const map = state.stepCheckMap;
+  if (!map || sections.length === 0) return null;
+  const currentIdx = sections.findIndex((section) => section.anchorId === currentStepId);
+  if (currentIdx === -1) return null;
+  for (let index = currentIdx + 1; index < sections.length; index += 1) {
+    const check = map.get(sections[index].anchorId);
+    if (check && !check.checked) return sections[index];
+  }
+  return null;
+}
+
+function jumpToAnchor(id) {
+  if (state.prefs.focusMode && state.stepSections.some((section) => section.anchorId === id)) {
+    state.activeStepId = id;
+    applyFocusMode();
+  }
+  document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+/* ------------------------------ Conflict (merge) modal ------------------------------ */
+
+function showConflictModal({ localMarkdown, serverMarkdown }) {
+  if (!elements.conflictModal) return;
+
+  const card = element('div', { className: 'conflict-card' });
+  card.append(
+    element('h2', { text: 'The file changed on disk' }),
+    element('p', {
+      text: 'The markdown file changed since this page loaded. Choose which version to keep, or merge by hand.',
+    }),
+  );
+
+  const diff = element('div', { className: 'conflict-diff' });
+
+  const yoursLabel = element('label', { text: 'YOURS (in this tab)' });
+  const yoursTextarea = document.createElement('textarea');
+  yoursTextarea.value = localMarkdown;
+  yoursLabel.append(yoursTextarea);
+
+  const theirsLabel = element('label', { text: 'ON DISK' });
+  const theirsTextarea = document.createElement('textarea');
+  theirsTextarea.value = serverMarkdown;
+  theirsTextarea.readOnly = true;
+  theirsLabel.append(theirsTextarea);
+
+  diff.append(yoursLabel, theirsLabel);
+  card.append(diff);
+
+  const actions = element('div', { className: 'conflict-actions' });
+
+  const cancel = element('button', {
+    className: 'button button-quiet',
+    text: 'Cancel',
+    type: 'button',
+  });
+  cancel.addEventListener('click', hideConflictModal);
+
+  const keepTheirs = element('button', {
+    className: 'button button-quiet',
+    text: 'Keep on-disk version',
+    type: 'button',
+  });
+  keepTheirs.addEventListener('click', () => {
+    state.markdown = normalizeNewlines(serverMarkdown);
+    state.dirty = false;
+    state.baseHash = '';
+    hideConflictModal();
+    render();
+    // Re-fetch hash so subsequent saves work cleanly.
+    refreshBaseline();
+  });
+
+  const keepMine = element('button', {
+    className: 'button button-primary',
+    text: 'Keep my version',
+    type: 'button',
+  });
+  keepMine.addEventListener('click', async () => {
+    const merged = yoursTextarea.value;
+    state.markdown = normalizeNewlines(merged);
+    state.baseHash = '';
+    hideConflictModal();
+    await saveToServer({ manual: true, force: true });
+    render();
+  });
+
+  actions.append(cancel, keepTheirs, keepMine);
+  card.append(actions);
+
+  elements.conflictModal.replaceChildren(card);
+  elements.conflictModal.hidden = false;
+}
+
+function hideConflictModal() {
+  if (!elements.conflictModal) return;
+  elements.conflictModal.hidden = true;
+  elements.conflictModal.replaceChildren();
+}
+
+async function refreshBaseline() {
+  try {
+    const response = await fetch(documentUrl());
+    if (!response.ok) return;
+    const payload = await response.json();
+    state.baseHash = payload.hash;
+    state.lastModified = payload.lastModified;
+    updateSaveStatus();
+  } catch {
+    /* ignore */
+  }
+}
+
+function jumpToResume() {
+  const targetId = elements.resumeButton.dataset.targetId;
+  if (targetId) {
+    document.getElementById(targetId)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    return;
+  }
+  const first = elements.document.querySelector('.check-row:not(.done), .glyph-check:not(.done)');
+  if (!first) {
+    showToast('Everything visible is checked off.');
+    return;
+  }
+  first.scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+
+/* ------------------------------ Resume card on cold load ---------------------------- */
+
+const RESUME_CARD_GAP_MS = 30 * 60 * 1000;
+const RESUME_CARD_AUTODISMISS_MS = 8000;
+
+function showResumeCardIfNeeded() {
+  if (!elements.resumeCard) return;
+  const session = state.prefs.lastSession;
+  if (!session?.time || !session.ticked?.length) return;
+
+  const ageMs = Date.now() - new Date(session.time).getTime();
+  if (Number.isNaN(ageMs) || ageMs < RESUME_CARD_GAP_MS) return;
+
+  const ticked = session.ticked;
+  const tickedRange =
+    ticked.length === 1
+      ? `ticked ${ticked[0]}`
+      : `ticked ${ticked[0]} → ${ticked[ticked.length - 1]}`;
+
+  const blocks = parseMarkdown(state.markdown);
+  const resume = findResumeTarget(blocks, state.stepSections);
+  const nextUp = resume ? (resume.step ? resume.step.title : resume.checkText) : '';
+
+  const text = element('span', { className: 'resume-card-text' });
+  text.append(element('strong', { text: `Last session: ${tickedRange}.` }));
+  if (nextUp) text.append(document.createTextNode(` Next up: ${nextUp}.`));
+
+  const children = [text];
+  if (resume?.targetId) {
+    const button = element('button', {
+      className: 'button button-primary',
+      text: 'Resume',
+      type: 'button',
+    });
+    button.addEventListener('click', () => {
+      hideResumeCard();
+      jumpToAnchor(resume.targetId);
+    });
+    children.push(button);
+  }
+
+  elements.resumeCard.replaceChildren(...children);
+  elements.resumeCard.hidden = false;
+
+  const dismiss = () => {
+    hideResumeCard();
+    window.removeEventListener('scroll', dismiss);
+  };
+  state.resumeCardTimer = window.setTimeout(dismiss, RESUME_CARD_AUTODISMISS_MS);
+  window.addEventListener('scroll', dismiss, { once: true, passive: true });
+}
+
+function hideResumeCard() {
+  if (!elements.resumeCard) return;
+  elements.resumeCard.hidden = true;
+  elements.resumeCard.replaceChildren();
+  if (state.resumeCardTimer) {
+    clearTimeout(state.resumeCardTimer);
+    state.resumeCardTimer = null;
+  }
+}
+
+/* ------------------------------ Library + switcher --------------------------------- */
+
+async function renderLibrary() {
+  document.body.classList.add('view-library');
+  if (!elements.library) return;
+  elements.library.hidden = false;
+
+  let registry;
+  try {
+    const response = await fetch('/api/registry');
+    if (!response.ok) throw new Error('Could not load campaign registry.');
+    registry = await response.json();
+  } catch (error) {
+    if (elements.libraryEmpty) {
+      elements.libraryEmpty.textContent = error.message;
+      elements.libraryEmpty.hidden = false;
+    }
+    return;
+  }
+
+  state.homeDir = typeof registry.homeDir === 'string' ? registry.homeDir : '';
+  const campaigns = Array.isArray(registry.campaigns) ? registry.campaigns : [];
+
+  if (campaigns.length === 0) {
+    elements.libraryEmpty.hidden = false;
+    elements.libraryGrid.hidden = true;
+    return;
+  }
+  elements.libraryEmpty.hidden = true;
+  elements.libraryGrid.hidden = false;
+
+  const sorted = sortCampaigns(campaigns);
+  elements.libraryGrid.replaceChildren(...sorted.map((c) => buildLibraryCard(c)));
+}
+
+function sortCampaigns(campaigns) {
+  return [...campaigns].sort((a, b) => {
+    const aDone = isComplete(a);
+    const bDone = isComplete(b);
+    if (aDone !== bDone) return aDone ? 1 : -1;
+    return new Date(b.lastOpenedAt).getTime() - new Date(a.lastOpenedAt).getTime();
+  });
+}
+
+function isComplete(campaign) {
+  return campaign.progress?.total > 0 && campaign.progress.done === campaign.progress.total;
+}
+
+function buildLibraryCard(campaign) {
+  const card = element('a', {
+    className: `library-card${isComplete(campaign) ? ' complete' : ''}${campaign.missing ? ' missing' : ''}`,
+    href: `?id=${encodeURIComponent(campaign.id)}`,
+  });
+
+  card.append(
+    element('span', { className: 'library-card-title', text: campaign.title || 'Untitled' }),
+    element('span', { className: 'library-card-path', text: relativeHomePath(campaign.filePath, state.homeDir) }),
+  );
+
+  if (campaign.progress?.total > 0) {
+    const progress = element('div', { className: 'library-card-progress' });
+    const track = element('div', { className: 'library-card-progress-track' });
+    const fill = element('div', { className: 'library-card-progress-fill' });
+    fill.style.width = `${Math.round((campaign.progress.done / campaign.progress.total) * 100)}%`;
+    track.append(fill);
+    progress.append(
+      track,
+      element('span', {
+        className: 'library-card-progress-label',
+        text: isComplete(campaign) ? 'All done' : `${campaign.progress.done} / ${campaign.progress.total}`,
+      }),
+    );
+    card.append(progress);
+  }
+
+  const time = campaign.missing
+    ? 'File missing'
+    : `Opened ${relativeTime(campaign.lastOpenedAt)}`;
+  card.append(element('span', { className: 'library-card-time', text: time }));
+
+  return card;
+}
+
+function relativeHomePath(filePath, homeDir) {
+  if (homeDir && filePath.startsWith(`${homeDir}/`)) {
+    return `~${filePath.slice(homeDir.length)}`;
+  }
+  return filePath;
+}
+
+function relativeTime(iso) {
+  if (!iso) return 'never';
+  const ms = Date.now() - new Date(iso).getTime();
+  if (Number.isNaN(ms)) return '';
+  if (ms < 60_000) return 'just now';
+  if (ms < 3_600_000) return `${Math.round(ms / 60_000)}m ago`;
+  if (ms < 86_400_000) return `${Math.round(ms / 3_600_000)}h ago`;
+  if (ms < 7 * 86_400_000) return `${Math.round(ms / 86_400_000)}d ago`;
+  return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' }).format(new Date(iso));
+}
+
+async function initSwitcher() {
+  if (!elements.switchButton || !elements.switchMenu) return;
+
+  let registry;
+  try {
+    const response = await fetch('/api/registry');
+    if (!response.ok) return;
+    registry = await response.json();
+  } catch {
+    return;
+  }
+
+  state.homeDir = typeof registry.homeDir === 'string' ? registry.homeDir : '';
+  const campaigns = Array.isArray(registry.campaigns) ? registry.campaigns : [];
+
+  // Always show the home + switcher on a campaign view.
+  if (elements.homeButton) elements.homeButton.hidden = false;
+  elements.switchButton.hidden = false;
+  buildSwitchMenu(campaigns);
+
+  elements.switchButton.addEventListener('click', toggleSwitchMenu);
+  document.addEventListener('click', (event) => {
+    if (
+      !elements.switchMenu.contains(event.target) &&
+      !elements.switchButton.contains(event.target)
+    ) {
+      closeSwitchMenu();
+    }
+  });
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') closeSwitchMenu();
+  });
+}
+
+function buildSwitchMenu(campaigns) {
+  const sorted = sortCampaigns(campaigns);
+  const children = [];
+
+  const allLink = element('a', {
+    className: 'switch-all',
+    href: '?library',
+    text: 'All campaigns',
+  });
+  children.push(allLink);
+  children.push(element('div', { className: 'switch-divider', ariaHidden: 'true' }));
+
+  for (const campaign of sorted) {
+    const isCurrent = campaign.id === state.id;
+    const item = isCurrent
+      ? element('div', {
+          className: `switch-current switch-item${isComplete(campaign) ? ' complete' : ''}`,
+        })
+      : element('a', {
+          className: `switch-item${isComplete(campaign) ? ' complete' : ''}${campaign.missing ? ' missing' : ''}`,
+          href: `?id=${encodeURIComponent(campaign.id)}`,
+        });
+
+    item.append(
+      element('span', { className: 'switch-title', text: campaign.title || 'Untitled' }),
+      element('span', {
+        className: 'switch-meta',
+        text: switchMetaLine(campaign),
+      }),
+    );
+    children.push(item);
+  }
+
+  elements.switchMenu.replaceChildren(...children);
+}
+
+function switchMetaLine(campaign) {
+  if (campaign.missing) return 'File missing';
+  if (campaign.progress?.total > 0) {
+    return isComplete(campaign)
+      ? 'All done'
+      : `${campaign.progress.done} / ${campaign.progress.total}`;
+  }
+  return relativeHomePath(campaign.filePath, state.homeDir);
+}
+
+function toggleSwitchMenu() {
+  if (!elements.switchMenu) return;
+  const opening = elements.switchMenu.hidden;
+  elements.switchMenu.hidden = !opening;
+  elements.switchButton.setAttribute('aria-expanded', String(opening));
+}
+
+function closeSwitchMenu() {
+  if (!elements.switchMenu || elements.switchMenu.hidden) return;
+  elements.switchMenu.hidden = true;
+  elements.switchButton.setAttribute('aria-expanded', 'false');
+}
+
+/* ------------------------------ Phase + step extraction ----------------------------- */
+
+function extractPhases(blocks) {
+  const phases = [];
+  let inChecklist = false;
+  let currentPhase = null;
+
+  for (const block of blocks) {
+    if (block.type === 'heading' && block.level === 2) {
+      inChecklist = block.text.toLowerCase().includes('progress checklist');
+      if (currentPhase) {
+        phases.push(currentPhase);
+        currentPhase = null;
+      }
+      continue;
+    }
+
+    if (!inChecklist) continue;
+
+    if (block.type === 'heading' && block.level === 3) {
+      if (currentPhase) phases.push(currentPhase);
+      currentPhase = {
+        anchorId: block.id,
+        children: [],
+        done: 0,
+        number: extractPhaseNumber(block.text),
+        title: stripPhaseTrailing(block.text),
+        total: 0,
+      };
+      continue;
+    }
+
+    if (currentPhase) {
+      currentPhase.children.push(block);
+      if (block.type === 'check') {
+        currentPhase.total += 1;
+        if (block.checked) currentPhase.done += 1;
+      }
+      if (block.type === 'table') {
+        for (const row of block.rows) {
+          for (const cell of row.cells) {
+            const value = cell.content.trim();
+            if (value === '☐' || value === '☑') {
+              currentPhase.total += 1;
+              if (value === '☑') currentPhase.done += 1;
+            }
+          }
+        }
+      }
+    }
+  }
+
+  if (currentPhase) phases.push(currentPhase);
+
+  return phases;
+}
+
+function classifyPhases(phases) {
+  let foundCurrent = false;
+  return phases.map((phase) => {
+    let phaseState = 'todo';
+    if (phase.total > 0) {
+      if (phase.done === phase.total) {
+        phaseState = 'done';
+      } else if (phase.done > 0) {
+        phaseState = 'flight';
+      } else if (!foundCurrent) {
+        foundCurrent = true;
+      }
+    }
+    return { ...phase, state: phaseState };
+  });
+}
+
+function extractStepSections(blocks, markdown) {
+  const sections = [];
+  const lines = markdown != null ? getLines(markdown) : null;
+
+  for (let index = 0; index < blocks.length; index += 1) {
+    const block = blocks[index];
+    if (block.type !== 'heading' || block.level !== 2) continue;
+    const stepMatch = block.text.match(/^step(?:s)?\s+([\d.x–-]+(?:\s*[–-]\s*[\d.x]+)?)/i);
+    if (!stepMatch) continue;
+
+    const skill = findSkillNearby(blocks, index);
+    const meta = lines ? parseStepMetadata(lines, block.lineStart + 1) : null;
+    sections.push({
+      anchorId: block.id,
+      number: stepMatch[1].replace(/\s+/g, ''),
+      skill,
+      title: block.text,
+      model: meta?.model || null,
+      parallel: meta?.parallel || null,
+      metaLineStart: meta?.metaLineStart ?? null,
+      metaLineEnd: meta?.metaLineEnd ?? null,
+    });
+  }
+  return sections;
+}
+
+/**
+ * Scan up to the first 5 non-empty lines after a step heading for `Model:`
+ * and `Parallel:` metadata lines. Stop as soon as a non-empty line matches
+ * neither pattern. Tolerates blank lines between the heading and the
+ * metadata, and tolerates the two lines being in reversed order.
+ *
+ * Returns `{ model, parallel, metaLineStart, metaLineEnd }` — line indices
+ * are the first/last line consumed (inclusive), so callers can strip those
+ * source lines from the rendered body. `model` / `parallel` are `null` when
+ * the corresponding line was absent.
+ */
+function parseStepMetadata(lines, fromLine) {
+  const matched = [];
+  let model = null;
+  let parallel = null;
+  let nonEmptySeen = 0;
+
+  for (let i = fromLine; i < lines.length && nonEmptySeen < 5; i += 1) {
+    const raw = lines[i];
+    if (!raw || raw.trim() === '') continue;
+    nonEmptySeen += 1;
+
+    const modelMatch = raw.match(/^\s*Model:\s*(.*)$/i);
+    if (modelMatch) {
+      // Strip the source line regardless — even a malformed `Model:` (empty
+      // value) shouldn't leak as plain text. Only capture chip data when the
+      // value actually parses; otherwise we'll just render no chip.
+      matched.push(i);
+      if (!model) {
+        const parsed = parseModelValue(modelMatch[1]);
+        if (parsed) model = parsed;
+      }
+      continue;
+    }
+
+    const parallelMatch = raw.match(/^\s*Parallel:\s*(.*)$/i);
+    if (parallelMatch) {
+      matched.push(i);
+      if (!parallel) {
+        const parsed = parseParallelValue(parallelMatch[1]);
+        if (parsed) parallel = parsed;
+      }
+      continue;
+    }
+
+    // First non-empty line that matches neither label — stop scanning so the
+    // step body never gets eaten.
+    break;
+  }
+
+  if (matched.length === 0) {
+    return { model: null, parallel: null, metaLineStart: null, metaLineEnd: null };
+  }
+
+  return {
+    model,
+    parallel,
+    metaLineStart: Math.min(...matched),
+    metaLineEnd: Math.max(...matched),
+  };
+}
+
+function parseModelValue(rawValue) {
+  const value = (rawValue || '').trim();
+  if (!value) return null;
+  const segments = value.split(/\s*\/\s*/).map((segment) => segment.trim()).filter(Boolean);
+  if (segments.length === 0) return null;
+  return {
+    claudeCode: segments[0] || '',
+    codex: segments[1] || '',
+  };
+}
+
+function parseParallelValue(rawValue) {
+  const value = (rawValue || '').trim();
+  if (!value) return null;
+  const isParallel = /^yes\b/i.test(value);
+  if (!isParallel) {
+    return { isParallel: false, siblingSteps: [] };
+  }
+  // Strip an optional "YES" / "YES —" / "YES - with" lead-in, then pick up
+  // any numeric step references like 2.3 / 2.10 / 12.4. Natural-language
+  // separators (`,`, ` and `, ` & `) fall out naturally — we just scan for
+  // step numbers and ignore everything else.
+  const siblingSteps = [];
+  const stepRegex = /(\d+(?:\.\d+)+)/g;
+  let match;
+  while ((match = stepRegex.exec(value)) !== null) {
+    if (!siblingSteps.includes(match[1])) siblingSteps.push(match[1]);
+  }
+  return { isParallel: true, siblingSteps };
+}
+
+function findSkillNearby(blocks, fromIndex) {
+  // Look for the first code block within a few siblings that starts with a /skill line.
+  for (let index = fromIndex + 1; index < Math.min(blocks.length, fromIndex + 10); index += 1) {
+    const block = blocks[index];
+    if (block.type === 'heading' && block.level <= 2) break;
+    if (block.type !== 'code') continue;
+    const firstLine = (block.content || '').split('\n')[0].trim();
+    if (firstLine.startsWith('/')) {
+      return firstLine.split(/\s+/)[0];
+    }
+  }
+  return '';
+}
+
+function findStepForCheck(checkText, stepSections) {
+  if (!stepSections || stepSections.length === 0) return null;
+  // Tolerate an optional "Step " prefix in the check text. Campaigns commonly
+  // write `- [ ] Step 1.1 — Foo` (matching the section heading shape) instead
+  // of `- [ ] 1.1 — Foo`, and previously that prefix made this matcher miss
+  // every linked step.
+  const match = checkText.match(/^(?:step\s+)?([\d.]+(?:\s*[–-]\s*[\d.]+)?)\b/i);
+  if (!match) return null;
+  const reference = match[1].split(/[–-]/)[0].trim();
+  return (
+    stepSections.find((section) => section.number === reference) ||
+    stepSections.find((section) => section.number.startsWith(reference)) ||
+    null
+  );
+}
+
+function linkChecksToSteps(blocks, stepSections) {
+  const map = new Map();
+  if (stepSections.length === 0) return map;
+  for (const block of blocks) {
+    if (block.type !== 'check') continue;
+    const linked = findStepForCheck(block.text, stepSections);
+    if (linked && !map.has(linked.anchorId)) {
+      map.set(linked.anchorId, block);
+    }
+  }
+  return map;
+}
+
+function findResumeTarget(blocks, stepSections) {
+  // First box that's unchecked.
+  let firstCheck = null;
+  for (const block of blocks) {
+    if (block.type === 'check' && !block.checked) {
+      firstCheck = block;
+      break;
+    }
+  }
+  if (!firstCheck) return null;
+
+  const linkedStep = findStepForCheck(firstCheck.text, stepSections);
+  return {
+    checkId: firstCheck.id,
+    checkText: firstCheck.text,
+    step: linkedStep,
+    targetId: linkedStep ? linkedStep.anchorId : firstCheck.id,
+  };
+}
+
+function extractPhaseNumber(text) {
+  const match = text.match(/phase\s+(\d+(?:\.\d+)?)/i);
+  return match ? match[1] : '';
+}
+
+function stripPhaseTrailing(text) {
+  return text.replace(/\s*✅\s*$/, '').trim();
+}
+
+/* ------------------------------ Phase grouping for render --------------------------- */
+
+function groupChecklistByPhase(blocks, phases) {
+  if (phases.length === 0) return blocks;
+
+  const phaseById = new Map(phases.map((phase) => [phase.anchorId, phase]));
+  const result = [];
+  let inChecklist = false;
+  let currentGroup = null;
+
+  for (const block of blocks) {
+    if (block.type === 'heading' && block.level === 2) {
+      if (currentGroup) {
+        result.push(currentGroup);
+        currentGroup = null;
+      }
+      inChecklist = block.text.toLowerCase().includes('progress checklist');
+      result.push(block);
+      if (inChecklist) {
+        result.push({ type: 'filter-chips' });
+      }
+      continue;
+    }
+
+    if (inChecklist && block.type === 'heading' && block.level === 3) {
+      if (currentGroup) result.push(currentGroup);
+      const phase = phaseById.get(block.id);
+      if (phase) {
+        currentGroup = { type: 'phase-group', phase, children: [] };
+        continue;
+      }
+    }
+
+    if (inChecklist && currentGroup) {
+      currentGroup.children.push(block);
+      continue;
+    }
+
+    result.push(block);
+  }
+
+  if (currentGroup) result.push(currentGroup);
+  return result;
+}
+
+function injectStepButtons(blocks, stepSections, stepCheckMap, phaseTitles) {
+  if (stepSections.length === 0) return blocks;
+  const stepIds = new Set(stepSections.map((section) => section.anchorId));
+  const stepById = new Map(stepSections.map((section) => [section.anchorId, section]));
+  const templates = state.reviewTemplates;
+  const result = [];
+  let openStepId = null;
+  let lastPhaseSeen = null;
+
+  const closeStep = () => {
+    if (!openStepId) return;
+    const section = stepById.get(openStepId);
+    if (templates.step.content && section && section.number) {
+      result.push({
+        type: 'step-review',
+        stepId: openStepId,
+        stepNumber: section.number,
+      });
+    }
+    const check = stepCheckMap.get(openStepId);
+    if (check && !check.checked) {
+      result.push({ type: 'step-complete', stepId: openStepId, line: check.lineStart });
+    }
+    openStepId = null;
+  };
+
+  const closePhase = () => {
+    if (lastPhaseSeen && templates.phase.content) {
+      result.push({ type: 'phase-review', phaseNumber: lastPhaseSeen });
+      const phaseCheck = state.phaseReviewCheckMap.get(`phase-review-${lastPhaseSeen}`);
+      if (phaseCheck && !phaseCheck.checked) {
+        result.push({
+          type: 'phase-complete',
+          phaseNumber: lastPhaseSeen,
+          line: phaseCheck.lineStart,
+        });
+      }
+    }
+    lastPhaseSeen = null;
+  };
+
+  let workDividerEmitted = false;
+  const openPhase = (newPhase) => {
+    if (!workDividerEmitted) {
+      result.push({ type: 'work-divider' });
+      workDividerEmitted = true;
+    }
+    result.push({
+      type: 'phase-header',
+      phaseNumber: newPhase,
+      phaseTitle: phaseTitles?.get(newPhase) || '',
+    });
+    lastPhaseSeen = newPhase;
+  };
+
+  for (const block of blocks) {
+    const isH2 = block.type === 'heading' && block.level === 2;
+    const isStepH2 = isH2 && stepIds.has(block.id);
+
+    if (isStepH2) {
+      const newPhase = phaseForStep(stepById.get(block.id).number);
+      if (lastPhaseSeen !== newPhase) {
+        if (lastPhaseSeen) {
+          closeStep();
+          closePhase();
+        } else {
+          closeStep();
+        }
+        openPhase(newPhase);
+      } else {
+        closeStep();
+      }
+    } else if (isH2) {
+      closeStep();
+      closePhase();
+    }
+
+    result.push(block);
+    if (isStepH2) openStepId = block.id;
+  }
+
+  closeStep();
+  closePhase();
+
+  return result;
+}
+
+function buildFinalReviewCardBlock() {
+  if (!state.isNewShape) return null;
+  const check = state.campaignFinalReviewCheck;
+  const codeBlock = state.finalReview?.code;
+  return {
+    type: 'final-review-card',
+    content: codeBlock?.content || '',
+    codeKey: codeBlock ? codeKey(codeBlock) : null,
+    line: check ? check.lineStart : null,
+    completed: !!(check && check.checked),
+  };
+}
+
+function stripFinalReviewBlocks(blocks, finalReview) {
+  if (!finalReview) return blocks;
+  const drop = new Set();
+  drop.add(finalReview.heading);
+  if (finalReview.code) drop.add(finalReview.code);
+  return blocks.filter((block) => !drop.has(block));
+}
+
+/**
+ * Remove paragraph blocks whose source lines were consumed as step metadata
+ * (`Model:` / `Parallel:`). The chips render the same info under the step
+ * heading — we don't want the raw lines duplicating it in the body DOM.
+ *
+ * Only drop a paragraph if its entire line range is covered by a step's
+ * metadata range; otherwise leave it alone (defensive — never eat real body
+ * content).
+ */
+function stripStepMetaBlocks(blocks, stepSections) {
+  const ranges = stepSections
+    .filter((section) => section.metaLineStart != null && section.metaLineEnd != null)
+    .map((section) => ({ start: section.metaLineStart, end: section.metaLineEnd }));
+  if (ranges.length === 0) return blocks;
+
+  return blocks.filter((block) => {
+    if (block.type !== 'paragraph') return true;
+    if (block.lineStart == null || block.lineEnd == null) return true;
+    return !ranges.some(
+      (range) => block.lineStart >= range.start && block.lineEnd <= range.end,
+    );
+  });
+}
+
+function injectDocumentPath(blocks) {
+  if (!state.filePath) return blocks;
+  const pathBlock = { type: 'document-path', filePath: state.filePath };
+
+  // Prefer the "Scope" doc-section; fall back to the first doc-section.
+  let scopeSection = null;
+  let firstDocSection = null;
+  for (const block of blocks) {
+    if (block.type !== 'doc-section') continue;
+    if (!firstDocSection) firstDocSection = block;
+    if (/scope/i.test(block.heading?.text || '')) {
+      scopeSection = block;
+      break;
+    }
+  }
+  const target = scopeSection || firstDocSection;
+  if (target) {
+    target.children = [pathBlock, ...target.children];
+    return blocks;
+  }
+
+  // No doc-sections exist — fall back to placing the path right after the H1
+  // so it remains visible regardless of campaign structure.
+  const result = [];
+  let injected = false;
+  for (const block of blocks) {
+    result.push(block);
+    if (!injected && block.type === 'heading' && block.level === 1) {
+      result.push(pathBlock);
+      injected = true;
+    }
+  }
+  return result;
+}
+
+function wrapDocSections(blocks) {
+  const result = [];
+  let group = null;
+
+  const closeGroup = () => {
+    if (group) result.push(group);
+    group = null;
+  };
+
+  for (const block of blocks) {
+    if (block.type === 'heading' && block.level === 2) {
+      closeGroup();
+      const text = block.text.toLowerCase();
+      if (text.includes('progress checklist')) {
+        result.push(block);
+        continue;
+      }
+      const isReviewProtocol = /review\s+protocol|codex\s+grades/i.test(block.text);
+      group = {
+        type: 'doc-section',
+        sectionId: block.id,
+        heading: block,
+        children: [],
+        defaultOpen: !isReviewProtocol,
+      };
+      continue;
+    }
+
+    if (
+      block.type === 'phase-group' ||
+      block.type === 'step-group' ||
+      block.type === 'phase-header' ||
+      block.type === 'phase-review' ||
+      block.type === 'phase-complete' ||
+      block.type === 'final-review-card' ||
+      block.type === 'work-divider' ||
+      block.type === 'filter-chips'
+    ) {
+      closeGroup();
+      result.push(block);
+      continue;
+    }
+
+    if (group) {
+      group.children.push(block);
+    } else {
+      result.push(block);
+    }
+  }
+
+  closeGroup();
+  return result;
+}
+
+function wrapSteps(blocks, stepIds, stepCheckMap) {
+  if (stepIds.size === 0) return blocks;
+  const result = [];
+  let group = null;
+
+  const closeGroup = () => {
+    if (group) result.push(group);
+    group = null;
+  };
+
+  for (const block of blocks) {
+    const isStepH2 = block.type === 'heading' && block.level === 2 && stepIds.has(block.id);
+
+    if (isStepH2) {
+      closeGroup();
+      const check = stepCheckMap.get(block.id);
+      group = {
+        type: 'step-group',
+        stepId: block.id,
+        completed: !!(check && check.checked),
+        children: [block],
+      };
+      continue;
+    }
+
+    if (
+      block.type === 'phase-header' ||
+      block.type === 'phase-review' ||
+      block.type === 'phase-complete' ||
+      block.type === 'final-review-card' ||
+      (block.type === 'heading' && block.level === 2)
+    ) {
+      closeGroup();
+      result.push(block);
+      continue;
+    }
+
+    if (group) {
+      group.children.push(block);
+    } else {
+      result.push(block);
+    }
+  }
+
+  closeGroup();
+  return result;
+}
+
+function phaseDescriptiveTitle(title) {
+  if (!title) return '';
+  return title.replace(/^Phase\s+[\d.]+\s*[—–-]\s*/i, '').trim();
+}
+
+function hasCampaignLevelFinalReview(markdown) {
+  // New-shape detection: either a `## Final review` H2, or a `- [ ] Final review`
+  // checklist line with no `— Phase N` suffix. Either marks the campaign as v2.
+  if (/^##\s+final\s+review\s*$/im.test(markdown)) return true;
+  if (/^\s*-\s+\[[\sxX]\]\s+final\s+review\s*$/im.test(markdown)) return true;
+  return false;
+}
+
+function isNewShapeCampaign(blocks) {
+  for (const block of blocks) {
+    if (
+      block.type === 'heading' &&
+      block.level === 2 &&
+      /^final\s+review\s*$/i.test(block.text)
+    ) {
+      return true;
+    }
+    if (block.type === 'check' && /^final\s+review\s*$/i.test(block.text)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function ensureFinalReviewLines(markdown) {
+  // New-shape campaigns own their Final review — don't auto-add per-phase lines.
+  if (hasCampaignLevelFinalReview(markdown)) return markdown;
+
+  const lines = markdown.split('\n');
+  const result = [];
+  let inChecklist = false;
+  let activePhase = null;
+  let activePhaseHasFinalReview = false;
+  let activePhaseLastBulletInResult = -1;
+
+  const closePhase = () => {
+    if (activePhase && !activePhaseHasFinalReview && activePhaseLastBulletInResult >= 0) {
+      result.splice(
+        activePhaseLastBulletInResult + 1,
+        0,
+        `- [ ] Final review — Phase ${activePhase}`,
+      );
+    }
+    activePhase = null;
+    activePhaseHasFinalReview = false;
+    activePhaseLastBulletInResult = -1;
+  };
+
+  for (const line of lines) {
+    if (/^##\s+/.test(line)) {
+      const wasInChecklist = inChecklist;
+      inChecklist = /^##\s+progress checklist/i.test(line);
+      if (wasInChecklist && !inChecklist) closePhase();
+      result.push(line);
+      continue;
+    }
+
+    if (inChecklist) {
+      const phaseMatch = line.match(/^###\s+Phase\s+(\d+(?:\.\d+)?)/i);
+      if (phaseMatch) {
+        closePhase();
+        activePhase = phaseMatch[1];
+        result.push(line);
+        continue;
+      }
+
+      const bulletMatch = line.match(/^\s*-\s+\[[\sxX]\]\s+(.+)$/);
+      if (bulletMatch) {
+        if (/^final review/i.test(bulletMatch[1])) {
+          activePhaseHasFinalReview = true;
+        }
+        result.push(line);
+        activePhaseLastBulletInResult = result.length - 1;
+        continue;
+      }
+    }
+
+    result.push(line);
+  }
+
+  closePhase();
+  return result.join('\n');
+}
+
+function linkChecksToPhaseReviews(blocks) {
+  const map = new Map();
+  for (const block of blocks) {
+    if (block.type !== 'check') continue;
+    const m = block.text.match(/^final\s+review.*?phase\s+(\d+(?:\.\d+)?)/i);
+    if (!m) continue;
+    const anchorId = `phase-review-${m[1]}`;
+    if (!map.has(anchorId)) map.set(anchorId, block);
+  }
+  return map;
+}
+
+function findCampaignFinalReviewCheck(blocks) {
+  for (const block of blocks) {
+    if (block.type === 'check' && /^final\s+review\s*$/i.test(block.text)) {
+      return block;
+    }
+  }
+  return null;
+}
+
+function extractFinalReview(blocks) {
+  // Locate `## Final review` (level 2, case-insensitive) and the first fenced
+  // code block that appears between it and the next H2 (or end of document).
+  for (let i = 0; i < blocks.length; i += 1) {
+    const block = blocks[i];
+    if (
+      block.type !== 'heading' ||
+      block.level !== 2 ||
+      !/^final\s+review\s*$/i.test(block.text)
+    ) {
+      continue;
+    }
+    for (let j = i + 1; j < blocks.length; j += 1) {
+      const next = blocks[j];
+      if (next.type === 'heading' && next.level === 2) break;
+      if (next.type === 'code') {
+        return { heading: block, code: next };
+      }
+    }
+    return { heading: block, code: null };
+  }
+  return null;
+}
+
+function findCheckLinkTarget(checkText, stepSections) {
+  if (/^final\s+review\s*$/i.test(checkText)) {
+    return { anchorId: 'campaign-review' };
+  }
+  if (/^final\s+review/i.test(checkText)) {
+    const m = checkText.match(/phase\s+(\d+(?:\.\d+)?)/i);
+    if (m) return { anchorId: `phase-review-${m[1]}` };
+    return null;
+  }
+  const step = findStepForCheck(checkText, stepSections);
+  return step ? { anchorId: step.anchorId } : null;
+}
+
+/* ------------------------------ Markdown parser ------------------------------------- */
+
+function parseMarkdown(markdown) {
+  const lines = getLines(markdown);
+  const blocks = [];
+  let index = 0;
+  let codeCount = 0;
+  let checkCount = 0;
+  let headingCount = 0;
+
+  while (index < lines.length) {
+    const line = lines[index];
+
+    if (line.trim() === '') {
+      index += 1;
+      continue;
+    }
+
+    const fenceMatch = line.match(/^\s*```(.*)$/);
+    if (fenceMatch) {
+      const start = index;
+      const content = [];
+      index += 1;
+
+      while (index < lines.length && !lines[index].match(/^\s*```\s*$/)) {
+        content.push(lines[index]);
+        index += 1;
+      }
+
+      const end = index < lines.length ? index : lines.length - 1;
+      blocks.push({
+        content: content.join('\n'),
+        id: `prompt-${codeCount}`,
+        lang: fenceMatch[1].trim(),
+        lineEnd: end,
+        lineStart: start,
+        type: 'code',
+      });
+      codeCount += 1;
+      index = end + 1;
+      continue;
+    }
+
+    const headingMatch = line.match(/^(#{1,6})\s+(.+)$/);
+    if (headingMatch) {
+      const text = stripTrailingHashes(headingMatch[2].trim());
+      const level = headingMatch[1].length;
+      blocks.push({
+        id: `${slugify(text)}-${headingCount}`,
+        level,
+        lineEnd: index,
+        lineStart: index,
+        text,
+        type: 'heading',
+      });
+      headingCount += 1;
+      index += 1;
+      continue;
+    }
+
+    if (/^\s*---+\s*$/.test(line)) {
+      blocks.push({ lineEnd: index, lineStart: index, type: 'hr' });
+      index += 1;
+      continue;
+    }
+
+    const checkMatch = line.match(CHECK_LINE_REGEX);
+    if (checkMatch) {
+      blocks.push({
+        checked: checkMatch[2].toLowerCase() === 'x',
+        id: `check-${checkCount}`,
+        lineEnd: index,
+        lineStart: index,
+        text: checkMatch[4],
+        type: 'check',
+      });
+      checkCount += 1;
+      index += 1;
+      continue;
+    }
+
+    if (isTableStart(lines, index)) {
+      const start = index;
+      const tableLines = [lines[index], lines[index + 1]];
+      index += 2;
+
+      while (index < lines.length && isTableRow(lines[index])) {
+        tableLines.push(lines[index]);
+        index += 1;
+      }
+
+      blocks.push(parseTable(tableLines, start));
+      continue;
+    }
+
+    if (/^\s*>/.test(line)) {
+      const start = index;
+      const quoteLines = [];
+
+      while (index < lines.length && /^\s*>/.test(lines[index])) {
+        quoteLines.push(lines[index].replace(/^\s*>\s?/, ''));
+        index += 1;
+      }
+
+      blocks.push({
+        lineEnd: index - 1,
+        lineStart: start,
+        text: quoteLines.join('\n'),
+        type: 'quote',
+      });
+      continue;
+    }
+
+    if (isListLine(line)) {
+      const start = index;
+      const ordered = /^\s*\d+\.\s+/.test(line);
+      const items = [];
+
+      while (index < lines.length && isListLine(lines[index]) && !isCheckLine(lines[index])) {
+        const itemText = lines[index].replace(/^\s*(?:[-*]|\d+\.)\s+/, '');
+        items.push({ text: itemText });
+        index += 1;
+      }
+
+      blocks.push({
+        items,
+        lineEnd: index - 1,
+        lineStart: start,
+        ordered,
+        type: 'list',
+      });
+      continue;
+    }
+
+    const start = index;
+    const paragraphLines = [];
+
+    while (index < lines.length && lines[index].trim() !== '' && !isSpecialLine(lines, index)) {
+      paragraphLines.push(lines[index].trim());
+      index += 1;
+    }
+
+    blocks.push({
+      lineEnd: index - 1,
+      lineStart: start,
+      text: paragraphLines.join(' '),
+      type: 'paragraph',
+    });
+  }
+
+  return blocks;
+}
+
+function isSpecialLine(lines, index) {
+  const line = lines[index];
+  return Boolean(
+    line.match(/^\s*```/) ||
+      line.match(/^(#{1,6})\s+(.+)$/) ||
+      line.match(/^\s*---+\s*$/) ||
+      isCheckLine(line) ||
+      isTableStart(lines, index) ||
+      /^\s*>/.test(line) ||
+      isListLine(line),
+  );
+}
+
+function isCheckLine(line) {
+  return CHECK_LINE_REGEX.test(line);
+}
+
+function isListLine(line) {
+  return /^\s*(?:[-*]|\d+\.)\s+/.test(line);
+}
+
+function isTableStart(lines, index) {
+  return (
+    isTableRow(lines[index]) &&
+    Boolean(lines[index + 1]?.match(/^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/))
+  );
+}
+
+function isTableRow(line) {
+  return /^\s*\|.+\|\s*$/.test(line);
+}
+
+function parseTable(tableLines, startLine) {
+  const headers = parseTableCells(tableLines[0]);
+  const rows = tableLines.slice(2).map((line, offset) => ({
+    cells: parseTableCells(line),
+    lineIndex: startLine + offset + 2,
+  }));
+
+  return {
+    headers,
+    lineEnd: startLine + tableLines.length - 1,
+    lineStart: startLine,
+    rows,
+    type: 'table',
+  };
+}
+
+function parseTableCells(line) {
+  const cells = [];
+  let start = line.startsWith('|') ? 1 : 0;
+
+  for (let index = start; index <= line.length; index += 1) {
+    if (line[index] === '|' || index === line.length) {
+      cells.push({
+        content: line.slice(start, index),
+        end: index,
+        start,
+      });
+      start = index + 1;
+    }
+  }
+
+  if (cells.at(-1)?.content === '') {
+    cells.pop();
+  }
+
+  return cells;
+}
+
+function getProgressStats(blocks) {
+  let total = 0;
+  let done = 0;
+
+  for (const block of blocks) {
+    if (block.type === 'check') {
+      total += 1;
+      done += block.checked ? 1 : 0;
+    }
+
+    if (block.type === 'table') {
+      for (const row of block.rows) {
+        for (const cell of row.cells) {
+          const value = cell.content.trim();
+
+          if (value === '☐' || value === '☑') {
+            total += 1;
+            done += value === '☑' ? 1 : 0;
+          }
+        }
+      }
+    }
+  }
+
+  return { done, total };
+}
+
+function inlineMarkdown(text) {
+  const codeSpans = [];
+  let html = escapeHtml(text).replace(/`([^`]+)`/g, (_, code) => {
+    const token = `@@CODE_${codeSpans.length}@@`;
+    codeSpans.push(`<code>${code}</code>`);
+    return token;
+  });
+
+  html = html
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*([^*]+)\*/g, '<em>$1</em>')
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>');
+
+  for (let index = 0; index < codeSpans.length; index += 1) {
+    html = html.replace(`@@CODE_${index}@@`, codeSpans[index]);
+  }
+
+  return html;
+}
+
+function element(tagName, options = {}) {
+  const node = document.createElement(tagName);
+
+  if (options.className) {
+    node.className = options.className;
+  }
+
+  if (options.id) {
+    node.id = options.id;
+  }
+
+  if (options.type) {
+    node.type = options.type;
+  }
+
+  if (options.text !== undefined) {
+    node.textContent = options.text;
+  }
+
+  if (options.html !== undefined) {
+    node.innerHTML = options.html;
+  }
+
+  if (options.href) {
+    node.href = options.href;
+  }
+
+  if (options.download) {
+    node.download = options.download;
+  }
+
+  if (options.title) {
+    node.title = options.title;
+  }
+
+  if (options.ariaLabel) {
+    node.setAttribute('aria-label', options.ariaLabel);
+  }
+
+  if (options.ariaPressed) {
+    node.setAttribute('aria-pressed', options.ariaPressed);
+  }
+
+  if (options.ariaHidden) {
+    node.setAttribute('aria-hidden', options.ariaHidden);
+  }
+
+  if (options.dataset) {
+    for (const [key, value] of Object.entries(options.dataset)) {
+      node.dataset[key] = String(value);
+    }
+  }
+
+  return node;
+}
+
+function splitParagraphs(text) {
+  return text
+    .split(/\n{2,}/)
+    .map((paragraph) => paragraph.replace(/\n/g, ' ').trim())
+    .filter(Boolean);
+}
+
+function getLines(markdown = state.markdown) {
+  return normalizeNewlines(markdown).split('\n');
+}
+
+function normalizeNewlines(value) {
+  return value.replace(/\r\n?/g, '\n');
+}
+
+function stripTrailingHashes(value) {
+  return value.replace(/\s+#+$/, '');
+}
+
+function slugify(value) {
+  return value
+    .toLowerCase()
+    .normalize('NFKD')
+    .replace(/[^\w\s-]/g, '')
+    .trim()
+    .replace(/\s+/g, '-')
+    .slice(0, 48);
+}
+
+function escapeHtml(value) {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function cssEscape(value) {
+  if (window.CSS?.escape) {
+    return window.CSS.escape(value);
+  }
+
+  return value.replace(/"/g, '\\"');
+}
+
+function fileNameFromPath(filePath) {
+  return filePath.split(/[\\/]/).pop();
+}
+
+function formatTime(isoString) {
+  const date = new Date(isoString);
+  const diffMs = Date.now() - date.getTime();
+  if (diffMs < 60_000) return 'just now';
+  if (diffMs < 3_600_000) return `${Math.round(diffMs / 60_000)}m ago`;
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+  }).format(date);
+}
+
+function showToast(message, duration = 2600) {
+  elements.toast.textContent = message;
+  elements.toast.classList.add('visible');
+  window.clearTimeout(showToast.timeout);
+  showToast.timeout = window.setTimeout(() => {
+    elements.toast.classList.remove('visible');
+  }, duration);
+}
+
+/* ------------------------------ Prefs ----------------------------------------------- */
+
+function defaultPrefs() {
+  return {
+    docSections: {},
+    filters: { todo: true, flight: true, done: true },
+    focusMode: false,
+    lastSession: { time: '', ticked: [] },
+    phaseInverted: [],
+    placeholders: {},
+    today: { date: '', startCount: 0, lastActivity: '' },
+    soundEffectsEnabled: false,
+    macNotificationsEnabled: false,
+    ntfyTopic: '',
+    webhookUrl: '',
+    theme: 'default'
+  };
+}
+
+function sanitizePrefs(parsed) {
+  const defaults = defaultPrefs();
+  const parsedSession = parsed.lastSession && typeof parsed.lastSession === 'object'
+    ? parsed.lastSession
+    : null;
+  return {
+    ...defaults,
+    ...parsed,
+    docSections: parsed.docSections && typeof parsed.docSections === 'object'
+      ? parsed.docSections
+      : {},
+    filters: { ...defaults.filters, ...(parsed.filters || {}) },
+    focusMode: typeof parsed.focusMode === 'boolean' ? parsed.focusMode : defaults.focusMode,
+    lastSession: parsedSession
+      ? {
+          time: typeof parsedSession.time === 'string' ? parsedSession.time : '',
+          ticked: Array.isArray(parsedSession.ticked) ? parsedSession.ticked : [],
+        }
+      : defaults.lastSession,
+    phaseInverted: Array.isArray(parsed.phaseInverted) ? parsed.phaseInverted : [],
+    placeholders: parsed.placeholders && typeof parsed.placeholders === 'object'
+      ? parsed.placeholders
+      : {},
+    today: { ...defaults.today, ...(parsed.today || {}) },
+    soundEffectsEnabled: typeof parsed.soundEffectsEnabled === 'boolean' ? parsed.soundEffectsEnabled : defaults.soundEffectsEnabled,
+    macNotificationsEnabled: typeof parsed.macNotificationsEnabled === 'boolean' ? parsed.macNotificationsEnabled : defaults.macNotificationsEnabled,
+    ntfyTopic: typeof parsed.ntfyTopic === 'string' ? parsed.ntfyTopic : defaults.ntfyTopic,
+    webhookUrl: typeof parsed.webhookUrl === 'string' ? parsed.webhookUrl : defaults.webhookUrl,
+    theme: typeof parsed.theme === 'string' ? parsed.theme : defaults.theme,
+  };
+}
+
+function loadPrefs(filePath) {
+  const defaults = defaultPrefs();
+  if (!filePath) return defaults;
+  try {
+    const raw = localStorage.getItem(PREFS_KEY);
+    let all;
+    try {
+      all = raw ? JSON.parse(raw) : {};
+    } catch {
+      all = {};
+    }
+    if (!all || typeof all !== 'object') all = {};
+
+    const parsed = all[filePath];
+    if (parsed && typeof parsed === 'object') {
+      return sanitizePrefs(parsed);
+    }
+
+    // First file-load on the new app: migrate legacy single-key prefs once.
+    if (localStorage.getItem(MIGRATION_FLAG_KEY) !== 'done') {
+      const legacyRaw = localStorage.getItem(LEGACY_PREFS_KEY);
+      if (legacyRaw) {
+        try {
+          const legacy = JSON.parse(legacyRaw);
+          if (legacy && typeof legacy === 'object') {
+            const migrated = sanitizePrefs(legacy);
+            all[filePath] = migrated;
+            localStorage.setItem(PREFS_KEY, JSON.stringify(all));
+            localStorage.setItem(MIGRATION_FLAG_KEY, 'done');
+            return migrated;
+          }
+        } catch {
+          /* ignore */
+        }
+      }
+      localStorage.setItem(MIGRATION_FLAG_KEY, 'done');
+    }
+
+    return defaults;
+  } catch {
+    return defaults;
+  }
+}
+
+function todayDateString() {
+  const date = new Date();
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+}
+
+function recordTodayActivity(currentDoneCount) {
+  const today = todayDateString();
+  const now = new Date().toISOString();
+  const last = state.prefs.today;
+  const lastTime = last.lastActivity ? new Date(last.lastActivity).getTime() : 0;
+  const stale = !lastTime || Date.now() - lastTime > TODAY_INACTIVITY_MS || last.date !== today;
+
+  if (stale) {
+    state.prefs.today = { date: today, startCount: currentDoneCount, lastActivity: now };
+  } else {
+    state.prefs.today = { ...last, lastActivity: now };
+  }
+  savePrefs();
+}
+
+function todayDelta(currentDoneCount) {
+  if (state.prefs.today.date !== todayDateString()) return 0;
+  return Math.max(0, currentDoneCount - state.prefs.today.startCount);
+}
+
+function extractCheckRef(line) {
+  const match = line.match(/^\s*[-*]\s+\[[\sxX]\]\s+([\d.]+(?:\s*[–-]\s*[\d.]+)?)/);
+  return match ? match[1].replace(/\s+/g, '') : '';
+}
+
+function recordSessionTick(checkRef) {
+  const last = state.prefs.lastSession;
+  const lastTime = last?.time ? new Date(last.time).getTime() : 0;
+  const stale = !lastTime || Date.now() - lastTime > TODAY_INACTIVITY_MS;
+  const previousTicked = last?.ticked && Array.isArray(last.ticked) ? last.ticked : [];
+  const baseTicked = stale ? [] : previousTicked;
+  state.prefs.lastSession = {
+    time: new Date().toISOString(),
+    ticked: checkRef ? [...baseTicked, checkRef] : baseTicked,
+  };
+  savePrefs();
+}
+
+function savePrefs() {
+  if (!state.filePath) return;
+  try {
+    const raw = localStorage.getItem(PREFS_KEY);
+    let all;
+    try {
+      all = raw ? JSON.parse(raw) : {};
+    } catch {
+      all = {};
+    }
+    if (!all || typeof all !== 'object') all = {};
+    all[state.filePath] = state.prefs;
+    localStorage.setItem(PREFS_KEY, JSON.stringify(all));
+  } catch {
+    /* ignore */
+  }
+}
+
+/* ---------- Custom Vibe Coder Extensions ---------- */
+
+function initSettings() {
+  const settingsBtn = document.querySelector('#settings-button');
+  const drawer = document.querySelector('#settings-drawer');
+  const themeSelect = document.querySelector('#theme-select');
+  const soundToggle = document.querySelector('#sound-toggle');
+  const macToggle = document.querySelector('#mac-notify-toggle');
+  const ntfyInput = document.querySelector('#ntfy-topic-input');
+  const testNtfyBtn = document.querySelector('#test-ntfy-button');
+  const webhookInput = document.querySelector('#webhook-url-input');
+  const testWebhookBtn = document.querySelector('#test-webhook-button');
+
+  if (!settingsBtn || !drawer) return;
+
+  settingsBtn.addEventListener('click', () => {
+    if (themeSelect) themeSelect.value = state.prefs.theme || 'default';
+    if (soundToggle) soundToggle.checked = !!state.prefs.soundEffectsEnabled;
+    if (macToggle) macToggle.checked = !!state.prefs.macNotificationsEnabled;
+    if (ntfyInput) ntfyInput.value = state.prefs.ntfyTopic || '';
+    if (webhookInput) webhookInput.value = state.prefs.webhookUrl || '';
+
+    drawer.removeAttribute('hidden');
+    settingsBtn.setAttribute('aria-expanded', 'true');
+  });
+
+  const closeDrawer = () => {
+    drawer.setAttribute('hidden', '');
+    settingsBtn.setAttribute('aria-expanded', 'false');
+  };
+
+  drawer.querySelectorAll('[data-action="close-settings"]').forEach(btn => {
+    btn.addEventListener('click', closeDrawer);
+  });
+
+  if (themeSelect) {
+    themeSelect.addEventListener('change', () => {
+      state.prefs.theme = themeSelect.value;
+      savePrefs();
+      applyTheme(state.prefs.theme);
+    });
+  }
+
+  if (soundToggle) {
+    soundToggle.addEventListener('change', () => {
+      state.prefs.soundEffectsEnabled = soundToggle.checked;
+      savePrefs();
+    });
+  }
+
+  if (macToggle) {
+    macToggle.addEventListener('change', () => {
+      state.prefs.macNotificationsEnabled = macToggle.checked;
+      savePrefs();
+    });
+  }
+
+  if (ntfyInput) {
+    ntfyInput.addEventListener('input', () => {
+      state.prefs.ntfyTopic = ntfyInput.value.trim();
+      savePrefs();
+    });
+  }
+
+  if (webhookInput) {
+    webhookInput.addEventListener('input', () => {
+      state.prefs.webhookUrl = webhookInput.value.trim();
+      savePrefs();
+    });
+  }
+
+  if (testNtfyBtn) {
+    testNtfyBtn.addEventListener('click', async () => {
+      const topic = ntfyInput.value.trim();
+      if (!topic) {
+        showToast('Please enter a topic name first.');
+        return;
+      }
+      testNtfyBtn.disabled = true;
+      try {
+        const res = await fetch(`https://ntfy.sh/${topic}`, {
+          method: 'POST',
+          body: 'Test notification from Campaigns! 🚀',
+          headers: { 'Title': 'Campaigns App' }
+        });
+        if (res.ok) {
+          showToast('Test push sent successfully!');
+        } else {
+          showToast('Failed to send test push.');
+        }
+      } catch (err) {
+        showToast(`Error: ${err.message}`);
+      } finally {
+        testNtfyBtn.disabled = false;
+      }
+    });
+  }
+
+  if (testWebhookBtn) {
+    testWebhookBtn.addEventListener('click', async () => {
+      const url = webhookInput.value.trim();
+      if (!url) {
+        showToast('Please enter a webhook URL first.');
+        return;
+      }
+      testWebhookBtn.disabled = true;
+      try {
+        const isDiscord = url.includes('discord.com');
+        const payload = isDiscord
+          ? { content: 'Test notification from Campaigns! 🚀' }
+          : { text: 'Test notification from Campaigns! 🚀' };
+
+        const res = await fetch(url, {
+          method: 'POST',
+          body: JSON.stringify(payload),
+          headers: { 'Content-Type': 'application/json' }
+        });
+        if (res.ok) {
+          showToast('Test webhook sent successfully!');
+        } else {
+          showToast('Failed to send test webhook.');
+        }
+      } catch (err) {
+        showToast(`Error: ${err.message}`);
+      } finally {
+        testWebhookBtn.disabled = false;
+      }
+    });
+  }
+}
+
+function applyTheme(theme) {
+  const themes = ['theme-obsidian', 'theme-sunset', 'theme-forest', 'theme-cyberpunk'];
+  themes.forEach(cls => document.body.classList.remove(cls));
+  if (theme && theme !== 'default') {
+    document.body.classList.add(`theme-${theme}`);
+  }
+}
+
+let audioCtx = null;
+
+function playAudioFeedback(type) {
+  if (!state.prefs.soundEffectsEnabled) return;
+
+  try {
+    if (!audioCtx) {
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    }
+    if (audioCtx.state === 'suspended') {
+      audioCtx.resume();
+    }
+
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.connect(gain);
+    gain.connect(audioCtx.destination);
+
+    if (type === 'tick') {
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(600, audioCtx.currentTime);
+      osc.frequency.exponentialRampToValueAtTime(150, audioCtx.currentTime + 0.05);
+
+      gain.gain.setValueAtTime(0.08, audioCtx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.05);
+
+      osc.start();
+      osc.stop(audioCtx.currentTime + 0.05);
+    } else if (type === 'success') {
+      const now = audioCtx.currentTime;
+      const notes = [261.63, 329.63, 392.00, 523.25];
+      
+      notes.forEach((freq, idx) => {
+        const oscNode = audioCtx.createOscillator();
+        const gainNode = audioCtx.createGain();
+        
+        oscNode.type = 'triangle';
+        oscNode.frequency.setValueAtTime(freq, now + idx * 0.08);
+        
+        gainNode.gain.setValueAtTime(0, now);
+        gainNode.gain.linearRampToValueAtTime(0.12, now + idx * 0.08 + 0.01);
+        gainNode.gain.exponentialRampToValueAtTime(0.001, now + idx * 0.08 + 0.4);
+        
+        oscNode.connect(gainNode);
+        gainNode.connect(audioCtx.destination);
+        
+        oscNode.start(now + idx * 0.08);
+        oscNode.stop(now + idx * 0.08 + 0.45);
+      });
+    }
+  } catch (error) {
+    console.warn('Web Audio playback failed:', error);
+  }
+}
+
+let confettiActive = false;
+let confettiParticles = [];
+const confettiColors = ['#ff007f', '#00f0ff', '#10b981', '#f97316', '#3b82f6', '#ffd700'];
+
+function triggerConfetti() {
+  const canvas = document.querySelector('#confetti-canvas');
+  if (!canvas) return;
+
+  const ctx = canvas.getContext('2d');
+  canvas.width = window.innerWidth;
+  canvas.height = window.innerHeight;
+
+  const handleResize = () => {
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+  };
+  window.addEventListener('resize', handleResize);
+
+  confettiParticles = [];
+  const particleCount = 120;
+  for (let i = 0; i < particleCount; i++) {
+    confettiParticles.push({
+      x: Math.random() * canvas.width,
+      y: Math.random() * canvas.height - canvas.height,
+      r: Math.random() * 6 + 4,
+      d: Math.random() * canvas.height,
+      color: confettiColors[Math.floor(Math.random() * confettiColors.length)],
+      tilt: Math.random() * 10 - 5,
+      tiltAngleIncremental: Math.random() * 0.07 + 0.02,
+      tiltAngle: 0
+    });
+  }
+
+  if (confettiActive) return;
+  confettiActive = true;
+
+  let frameCount = 0;
+  const maxFrames = 200;
+
+  function draw() {
+    if (!confettiActive) return;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    let living = false;
+    for (let i = 0; i < confettiParticles.length; i++) {
+      const p = confettiParticles[i];
+      p.tiltAngle += p.tiltAngleIncremental;
+      p.y += (Math.cos(p.d) + 3 + p.r / 2) * 0.7;
+      p.x += Math.sin(p.tiltAngle) * 0.5;
+      p.tilt = Math.sin(p.tiltAngle - (i / 3)) * 15;
+
+      if (p.y < canvas.height) {
+        living = true;
+      }
+
+      ctx.beginPath();
+      ctx.lineWidth = p.r;
+      ctx.strokeStyle = p.color;
+      ctx.moveTo(p.x + p.tilt + p.r / 2, p.y);
+      ctx.lineTo(p.x + p.tilt, p.y + p.tilt + p.r / 2);
+      ctx.stroke();
+    }
+
+    frameCount++;
+    if (living && frameCount < maxFrames) {
+      requestAnimationFrame(draw);
+    } else {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      confettiActive = false;
+      window.removeEventListener('resize', handleResize);
+    }
+  }
+
+  requestAnimationFrame(draw);
+}
+
+async function sendPushNotification(title, message) {
+  if (state.prefs.macNotificationsEnabled) {
+    try {
+      await fetch('/api/notify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title, message })
+      });
+    } catch (err) {
+      console.warn('Failed to send local system notification:', err);
+    }
+  }
+
+  if (state.prefs.ntfyTopic) {
+    try {
+      await fetch(`https://ntfy.sh/${state.prefs.ntfyTopic}`, {
+        method: 'POST',
+        body: message,
+        headers: { 'Title': title }
+      });
+    } catch (err) {
+      console.warn('Failed to send ntfy push notification:', err);
+    }
+  }
+
+  if (state.prefs.webhookUrl) {
+    try {
+      const isDiscord = state.prefs.webhookUrl.includes('discord.com');
+      const payload = isDiscord ? { content: `**${title}**: ${message}` } : { text: `${title}: ${message}` };
+      await fetch(state.prefs.webhookUrl, {
+        method: 'POST',
+        body: JSON.stringify(payload),
+        headers: { 'Content-Type': 'application/json' }
+      });
+    } catch (err) {
+      console.warn('Failed to send webhook notification:', err);
+    }
+  }
+}
+
+async function handleCompletionEffects(prevPhases, nextPhases, prevStats, nextStats) {
+  let completedPhase = null;
+  for (const nextP of nextPhases) {
+    const prevP = prevPhases.find(p => p.anchorId === nextP.anchorId);
+    if (nextP.total > 0 && nextP.done === nextP.total) {
+      if (!prevP || prevP.done < prevP.total) {
+        completedPhase = nextP;
+      }
+    }
+  }
+
+  const isCampaignCompleted = nextStats.total > 0 && nextStats.done === nextStats.total && (prevStats.done < prevStats.total);
+
+  if (isCampaignCompleted) {
+    playAudioFeedback('success');
+    triggerConfetti();
+    const message = `🎉 Campaign "${state.filePath || 'Campaign'}" is 100% complete!`;
+    sendPushNotification('Campaign Completed', message);
+  } else if (completedPhase) {
+    playAudioFeedback('success');
+    triggerConfetti();
+    const message = `Phase "${completedPhase.title}" is now complete (${completedPhase.done}/${completedPhase.total} tasks).`;
+    sendPushNotification('Phase Completed', message);
+  }
+}

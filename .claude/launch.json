@@ -1,0 +1,12 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "campaigns",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["server.mjs", "--file", "campaigns/v1-followup.md"],
+      "port": 4189,
+      "autoPort": true
+    }
+  ]
+}

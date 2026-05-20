@@ -1,0 +1,8 @@
+node_modules/
+desktop/
+assets/icons/build/
+assets/icons/campaigns/
+.DS_Store
+.claude/settings.local.json
+*.log
+*.pid
