@@ -5,13 +5,16 @@ import { createServer } from 'node:http';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { exec } from 'node:child_process';
+import { execFile } from 'node:child_process';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
 const registryDir = path.join(homedir(), 'Library', 'Application Support', 'Campaigns');
 const registryPath = path.join(registryDir, 'registry.json');
 const MISSING_PRUNE_AFTER_MS = 24 * 60 * 60 * 1000;
+const NOTIFICATION_TITLE_MAX = 80;
+const NOTIFICATION_MESSAGE_MAX = 500;
+const NTFY_TOPIC_REGEX = /^[A-Za-z0-9_-]{3,64}$/;
 
 const args = process.argv.slice(2);
 const options = parseArgs(args);
@@ -65,6 +68,11 @@ const server = createServer(async (request, response) => {
 
     if (url.pathname === '/api/notify' && request.method === 'POST') {
       await sendNotification(request, response);
+      return;
+    }
+
+    if (url.pathname === '/api/push' && request.method === 'POST') {
+      await sendRemoteNotification(request, response);
       return;
     }
 
@@ -325,26 +333,163 @@ async function saveDocument(url, request, response) {
 
 async function sendNotification(request, response) {
   const payload = await readJsonBody(request);
-  const title = typeof payload.title === 'string' ? payload.title : 'Campaigns';
-  const message = typeof payload.message === 'string' ? payload.message : '';
+  const title = notificationText(payload.title, 'Campaigns', NOTIFICATION_TITLE_MAX);
+  const message = notificationText(payload.message, '', NOTIFICATION_MESSAGE_MAX);
 
   if (!message) {
     sendJson(response, 400, { error: 'Message is required.' });
     return;
   }
 
-  const escapedTitle = title.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-  const escapedMessage = message.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-  const command = `osascript -e 'display notification "${escapedMessage}" with title "${escapedTitle}" sound name "Glass"'`;
+  if (process.platform !== 'darwin') {
+    sendJson(response, 501, { error: 'Native notifications are only available on macOS.' });
+    return;
+  }
 
-  exec(command, (error) => {
-    if (error) {
-      console.error('Failed to display native notification:', error);
-      sendJson(response, 500, { error: 'Failed to trigger notification.' });
+  execFile(
+    'osascript',
+    [
+      '-e',
+      'on run argv',
+      '-e',
+      'display notification (item 2 of argv) with title (item 1 of argv) sound name "Glass"',
+      '-e',
+      'end run',
+      title,
+      message,
+    ],
+    { timeout: 5000 },
+    (error) => {
+      if (error) {
+        console.error('Failed to display native notification:', error);
+        sendJson(response, 500, { error: 'Failed to trigger notification.' });
+        return;
+      }
+      sendJson(response, 200, { ok: true });
+    },
+  );
+}
+
+async function sendRemoteNotification(request, response) {
+  const payload = await readJsonBody(request);
+  const title = notificationText(payload.title, 'Campaigns', NOTIFICATION_TITLE_MAX);
+  const message = notificationText(payload.message, '', NOTIFICATION_MESSAGE_MAX);
+  const ntfyTopic = typeof payload.ntfyTopic === 'string' ? payload.ntfyTopic.trim() : '';
+  const webhookUrl = typeof payload.webhookUrl === 'string' ? payload.webhookUrl.trim() : '';
+
+  if (!message) {
+    sendJson(response, 400, { error: 'Message is required.' });
+    return;
+  }
+
+  const deliveries = [];
+
+  if (ntfyTopic) {
+    if (!NTFY_TOPIC_REGEX.test(ntfyTopic)) {
+      sendJson(response, 400, {
+        error: 'ntfy topic must be 3-64 letters, numbers, dashes, or underscores.',
+      });
       return;
     }
-    sendJson(response, 200, { ok: true });
+
+    deliveries.push({
+      channel: 'ntfy',
+      promise: fetchWithTimeout(`https://ntfy.sh/${encodeURIComponent(ntfyTopic)}`, {
+        method: 'POST',
+        body: message,
+        headers: { Title: title },
+      }),
+    });
+  }
+
+  if (webhookUrl) {
+    const webhook = parseWebhookUrl(webhookUrl);
+    if (!webhook) {
+      sendJson(response, 400, {
+        error: 'Webhook must be a Slack or Discord HTTPS webhook URL.',
+      });
+      return;
+    }
+
+    const body = webhook.kind === 'discord'
+      ? { content: `**${title}**: ${message}` }
+      : { text: `${title}: ${message}` };
+
+    deliveries.push({
+      channel: webhook.kind,
+      promise: fetchWithTimeout(webhook.url, {
+        method: 'POST',
+        body: JSON.stringify(body),
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    });
+  }
+
+  if (deliveries.length === 0) {
+    sendJson(response, 400, { error: 'No remote notification channel is configured.' });
+    return;
+  }
+
+  const settled = await Promise.allSettled(deliveries.map((delivery) => delivery.promise));
+  const failures = [];
+
+  settled.forEach((result, index) => {
+    const channel = deliveries[index].channel;
+    if (result.status === 'rejected') {
+      failures.push({ channel, error: result.reason?.message ?? 'Request failed.' });
+      return;
+    }
+    if (!result.value.ok) {
+      failures.push({ channel, error: `HTTP ${result.value.status}` });
+    }
   });
+
+  if (failures.length > 0) {
+    sendJson(response, 502, { ok: false, failures });
+    return;
+  }
+
+  sendJson(response, 200, { ok: true });
+}
+
+function notificationText(value, fallback, maxLength) {
+  const text = typeof value === 'string' ? value : fallback;
+  return text.replace(/\s+/g, ' ').trim().slice(0, maxLength);
+}
+
+function parseWebhookUrl(value) {
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    return null;
+  }
+
+  if (url.protocol !== 'https:') return null;
+  const host = url.hostname.toLowerCase();
+
+  if (host === 'hooks.slack.com' && url.pathname.startsWith('/services/')) {
+    return { kind: 'slack', url: url.toString() };
+  }
+
+  if (
+    (host === 'discord.com' || host === 'discordapp.com') &&
+    url.pathname.startsWith('/api/webhooks/')
+  ) {
+    return { kind: 'discord', url: url.toString() };
+  }
+
+  return null;
+}
+
+async function fetchWithTimeout(url, options, timeoutMs = 8000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /* ------------------------------ Markdown helpers ---------------------------- */

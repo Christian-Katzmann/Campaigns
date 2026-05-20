@@ -17,6 +17,8 @@ Most of these emerged from working with the trust-primitive-propagation campaign
 - **Collapsible top-level doc sections** — every H2 between the H1 and the progress checklist becomes a `<details>`. Default open for Scope/Context/How prompts; default closed for Review protocol (heuristic by heading text). State persists.
 - **Reserved-token logic for `<STEP>` and `<PHASE>`** — the app auto-substitutes; they don't appear in the placeholder bar.
 - **/campaign-planner skill updated** to produce all of the above by default.
+- **Quiet completion notifications** — optional Mac alerts, ntfy iPhone push, and Slack/Discord webhooks. Reserved for phase/campaign completion so the app does not become noisy.
+- **Preferences drawer** — theme, sound, completion burst, and notification settings live off the main work surface.
 
 ## Probably worth building next
 
@@ -47,7 +49,7 @@ Most of these emerged from working with the trust-primitive-propagation campaign
 These look productive but are wrong school for this work:
 
 - **Streaks / activity heatmaps / achievement badges.** Optimizes return-visits-to-app, not return-visits-to-work.
-- **Push notifications / daily reminders.** A 41-batch ministry-grade campaign is not a habit app.
+- **Daily reminders.** A 41-batch ministry-grade campaign is not a habit app. Completion notifications are different: they close a loop after work finishes.
 - **Detailed analytics dashboards** ("velocity," "burndown"). The progress bar already shows what matters.
 - **Pomodoro / session timer.** Paternalistic.
 - **Auto-grade Claude's work.** Outsources the discipline. The standing review-card pattern protects the discipline; replacing the user's grade does the opposite.

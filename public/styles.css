@@ -2212,12 +2212,17 @@ details.doc-section[open] .doc-section-chevron {
 
 /* ---------- Settings Button & Drawer Styles ---------- */
 
+.button-icon {
+  width: 38px;
+  padding: 0;
+}
+
 #settings-button svg {
-  transition: transform 0.4s ease;
+  transition: transform 180ms ease-out;
 }
 
 #settings-button:hover svg {
-  transform: rotate(45deg);
+  transform: rotate(18deg);
 }
 
 .settings-drawer {
@@ -2227,7 +2232,7 @@ details.doc-section[open] .doc-section-chevron {
   display: flex;
   justify-content: flex-end;
   visibility: hidden;
-  transition: visibility 0.3s;
+  transition: visibility 180ms ease-out;
 }
 
 .settings-drawer:not([hidden]) {
@@ -2237,10 +2242,10 @@ details.doc-section[open] .doc-section-chevron {
 .settings-drawer-backdrop {
   position: absolute;
   inset: 0;
-  background: rgba(0, 0, 0, 0.4);
-  backdrop-filter: blur(4px);
+  background: rgba(18, 18, 18, 0.36);
+  backdrop-filter: blur(3px);
   opacity: 0;
-  transition: opacity 0.3s ease;
+  transition: opacity 180ms ease-out;
 }
 
 .settings-drawer:not([hidden]) .settings-drawer-backdrop {
@@ -2249,75 +2254,67 @@ details.doc-section[open] .doc-section-chevron {
 
 .settings-drawer-content {
   position: relative;
-  width: min(440px, 100vw);
+  width: min(390px, 100vw);
   height: 100%;
-  background: rgba(255, 255, 255, 0.85);
-  backdrop-filter: blur(20px);
-  border-left: 1px solid rgba(0, 0, 0, 0.08);
-  box-shadow: -10px 0 30px rgba(0, 0, 0, 0.15);
+  background: color-mix(in srgb, var(--page) 88%, var(--paper));
+  backdrop-filter: blur(18px);
+  border-left: 1px solid var(--line);
+  box-shadow: -18px 0 44px rgba(18, 18, 18, 0.14);
   display: flex;
   flex-direction: column;
   transform: translateX(100%);
-  transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
-  color: #121212;
+  transition: transform 220ms cubic-bezier(0.16, 1, 0.3, 1);
+  color: var(--ink);
 }
 
 .settings-drawer:not([hidden]) .settings-drawer-content {
   transform: translateX(0);
 }
 
-/* Dark mode tweaks for drawer when body defaults to dark */
-@media (prefers-color-scheme: dark) {
-  .settings-drawer-content {
-    background: rgba(20, 24, 33, 0.85);
-    border-left: 1px solid rgba(255, 255, 255, 0.08);
-    color: #e2e8f0;
-  }
-}
-
 .settings-header {
-  padding: 24px 28px;
-  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+  padding: 22px 24px 18px;
+  border-bottom: 1px solid var(--line-soft);
   display: flex;
   justify-content: space-between;
   align-items: center;
 }
 
-@media (prefers-color-scheme: dark) {
-  .settings-header {
-    border-bottom-color: rgba(255, 255, 255, 0.06);
-  }
-}
-
 .settings-header h2 {
   margin: 0;
-  font-size: 22px;
+  font-size: 20px;
   font-weight: 720;
 }
 
 .settings-close-button {
-  border: none;
+  width: 34px;
+  height: 34px;
+  border: 1px solid transparent;
+  border-radius: 6px;
   background: transparent;
-  font-size: 28px;
+  font-size: 24px;
   line-height: 1;
   cursor: pointer;
   color: inherit;
-  opacity: 0.6;
-  transition: opacity 0.2s, transform 0.2s;
+  opacity: 0.72;
+  transition:
+    background 120ms ease-out,
+    border-color 120ms ease-out,
+    opacity 120ms ease-out;
 }
 
 .settings-close-button:hover {
+  border-color: var(--line);
+  background: var(--paper);
   opacity: 1;
-  transform: scale(1.1);
 }
 
 .settings-body {
   flex: 1;
   overflow-y: auto;
-  padding: 24px 28px;
+  padding: 22px 24px 28px;
   display: flex;
   flex-direction: column;
-  gap: 32px;
+  gap: 28px;
 }
 
 .settings-section {
@@ -2328,19 +2325,13 @@ details.doc-section[open] .doc-section-chevron {
 
 .settings-section h3 {
   margin: 0;
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 760;
-  letter-spacing: 0.12em;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--ink-faint);
-  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+  border-bottom: 1px solid var(--line-soft);
   padding-bottom: 8px;
-}
-
-@media (prefers-color-scheme: dark) {
-  .settings-section h3 {
-    border-bottom-color: rgba(255, 255, 255, 0.06);
-  }
 }
 
 .settings-group {
@@ -2356,9 +2347,9 @@ details.doc-section[open] .doc-section-chevron {
 
 .settings-select {
   width: 100%;
-  height: 40px;
+  height: 42px;
   padding: 0 12px;
-  border-radius: 8px;
+  border-radius: 6px;
   border: 1px solid var(--line);
   background: var(--paper);
   color: var(--ink);
@@ -2370,6 +2361,7 @@ details.doc-section[open] .doc-section-chevron {
 
 .settings-select:focus {
   border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
 .settings-row-toggle {
@@ -2377,6 +2369,7 @@ details.doc-section[open] .doc-section-chevron {
   justify-content: space-between;
   align-items: center;
   gap: 16px;
+  min-height: 44px;
 }
 
 .toggle-label-wrap {
@@ -2418,7 +2411,8 @@ details.doc-section[open] .doc-section-chevron {
   flex: 1;
   height: 38px;
   padding: 0 12px;
-  border-radius: 8px;
+  min-width: 0;
+  border-radius: 6px;
   border: 1px solid var(--line);
   background: var(--paper);
   color: var(--ink);
@@ -2427,11 +2421,16 @@ details.doc-section[open] .doc-section-chevron {
   transition: border-color 0.2s;
 }
 
-.input-with-button input:focus {
-  border-color: var(--accent);
+.input-with-button .button {
+  flex: 0 0 auto;
+  width: auto;
 }
 
-/* Switch styling */
+.input-with-button input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
 .switch {
   position: relative;
   display: inline-block;
@@ -2451,7 +2450,7 @@ details.doc-section[open] .doc-section-chevron {
   cursor: pointer;
   inset: 0;
   background-color: var(--line);
-  transition: .2s;
+  transition: background 140ms ease-out;
   border-radius: 24px;
 }
 
@@ -2463,7 +2462,7 @@ details.doc-section[open] .doc-section-chevron {
   left: 3px;
   bottom: 3px;
   background-color: white;
-  transition: .2s cubic-bezier(0.16, 1, 0.3, 1);
+  transition: transform 140ms cubic-bezier(0.16, 1, 0.3, 1);
   border-radius: 50%;
   box-shadow: 0 1px 3px rgba(0,0,0,0.15);
 }
@@ -2476,7 +2475,6 @@ input:checked + .slider:before {
   transform: translateX(20px);
 }
 
-/* Confetti canvas */
 .confetti-canvas {
   position: fixed;
   inset: 0;
@@ -2488,120 +2486,84 @@ input:checked + .slider:before {
 
 /* ---------- Theme Overrides ---------- */
 
-/* Obsidian Theme */
-body.theme-obsidian {
-  --page: #0b0f19;
-  --paper: #111827;
-  --paper-strong: #1f2937;
-  --ink: #e5e7eb;
-  --ink-soft: #9ca3af;
-  --ink-faint: #6b7280;
-  --line: #374151;
-  --line-soft: #1f2937;
-  --accent: #3b82f6;
-  --accent-soft: rgba(59, 130, 246, 0.15);
-  --done: #4b5563;
-  --shadow: 0 18px 44px rgba(0, 0, 0, 0.4);
+body.theme-graphite {
+  color-scheme: dark;
+  --page: #11100e;
+  --paper: #1a1815;
+  --paper-strong: #242018;
+  --ink: #f2eee4;
+  --ink-soft: #b9afa1;
+  --ink-faint: #82786b;
+  --line: #3b352c;
+  --line-soft: #2a261f;
+  --accent: #d4a243;
+  --accent-soft: rgba(212, 162, 67, 0.17);
+  --done: #746d61;
+  --shadow: 0 18px 44px rgba(0, 0, 0, 0.56);
 }
 
-body.theme-obsidian .settings-drawer-content {
-  background: rgba(17, 24, 39, 0.85);
-  border-left-color: rgba(255, 255, 255, 0.08);
-  color: #e5e7eb;
+body.theme-graphite .topbar {
+  background: rgba(17, 16, 14, 0.94);
 }
 
-body.theme-obsidian .topbar {
-  background: rgba(11, 15, 25, 0.94);
+body.theme-blueprint {
+  color-scheme: dark;
+  --page: #0d1414;
+  --paper: #131d1d;
+  --paper-strong: #1d2928;
+  --ink: #edf1e6;
+  --ink-soft: #a9bbb3;
+  --ink-faint: #71857c;
+  --line: #2c4240;
+  --line-soft: #1c2d2c;
+  --accent: #8bc9b5;
+  --accent-soft: rgba(139, 201, 181, 0.16);
+  --done: #697d75;
+  --shadow: 0 18px 44px rgba(0, 0, 0, 0.52);
 }
 
-/* Sunset Theme */
-body.theme-sunset {
-  --page: #1a1210;
-  --paper: #261b17;
-  --paper-strong: #33231e;
-  --ink: #f9ebdf;
-  --ink-soft: #b09c95;
-  --ink-faint: #806c66;
-  --line: #4d3329;
-  --line-soft: #38241d;
-  --accent: #f97316;
-  --accent-soft: rgba(249, 115, 22, 0.15);
-  --done: #5c433b;
-  --shadow: 0 18px 44px rgba(0, 0, 0, 0.5);
+body.theme-blueprint .topbar {
+  background: rgba(13, 20, 20, 0.94);
 }
 
-body.theme-sunset .settings-drawer-content {
-  background: rgba(38, 27, 23, 0.85);
-  border-left-color: rgba(255, 255, 255, 0.05);
-  color: #f9ebdf;
+body.theme-signal {
+  color-scheme: light;
+  --page: #f8f4ea;
+  --paper: #fffdf7;
+  --paper-strong: #eee7d8;
+  --ink: #171512;
+  --ink-soft: #5f574b;
+  --ink-faint: #8d8375;
+  --line: #d7ccbb;
+  --line-soft: #e8dfd1;
+  --accent: #b2462d;
+  --accent-soft: rgba(178, 70, 45, 0.12);
+  --done: #938a7b;
+  --shadow: 0 18px 44px rgba(69, 52, 35, 0.12);
 }
 
-body.theme-sunset .topbar {
-  background: rgba(26, 18, 16, 0.94);
+body.theme-signal .topbar {
+  background: rgba(248, 244, 234, 0.94);
 }
 
-/* Forest Theme */
-body.theme-forest {
-  --page: #0b120f;
-  --paper: #121e19;
-  --paper-strong: #1b2f27;
-  --ink: #ebf5f0;
-  --ink-soft: #9eb5a8;
-  --ink-faint: #6c8577;
-  --line: #223c30;
-  --line-soft: #172a21;
-  --accent: #10b981;
-  --accent-soft: rgba(16, 185, 129, 0.15);
-  --done: #405a4d;
-  --shadow: 0 18px 44px rgba(0, 0, 0, 0.4);
+body.theme-graphite .button:not(.button-primary),
+body.theme-blueprint .button:not(.button-primary) {
+  background: var(--paper-strong);
 }
 
-body.theme-forest .settings-drawer-content {
-  background: rgba(18, 30, 25, 0.85);
-  border-left-color: rgba(255, 255, 255, 0.05);
-  color: #ebf5f0;
+body.theme-graphite .button-quiet,
+body.theme-blueprint .button-quiet {
+  color: var(--ink-soft);
 }
 
-body.theme-forest .topbar {
-  background: rgba(11, 18, 15, 0.94);
+body.theme-graphite .button:not(.button-primary):hover,
+body.theme-blueprint .button:not(.button-primary):hover {
+  background: var(--paper);
+  border-color: var(--line);
+  color: var(--ink);
 }
 
-/* Cyberpunk Theme */
-body.theme-cyberpunk {
-  --page: #06050b;
-  --paper: #0c0a18;
-  --paper-strong: #191433;
-  --ink: #00f0ff;
-  --ink-soft: #d300c5;
-  --ink-faint: #791a88;
-  --line: #3b0066;
-  --line-soft: #1d0033;
-  --accent: #ff007f;
-  --accent-soft: rgba(255, 0, 127, 0.15);
-  --done: #4a286c;
-  --shadow: 0 18px 44px rgba(0, 0, 0, 0.6);
-}
-
-body.theme-cyberpunk .settings-drawer-content {
-  background: rgba(12, 10, 24, 0.85);
-  border-left-color: rgba(255, 0, 127, 0.2);
-  color: #00f0ff;
-}
-
-body.theme-cyberpunk .topbar {
-  background: rgba(6, 5, 11, 0.94);
-}
-
-body.theme-cyberpunk input,
-body.theme-cyberpunk select,
-body.theme-cyberpunk textarea {
-  border-color: #3b0066;
-  color: #00f0ff;
-}
-
-body.theme-cyberpunk input:focus,
-body.theme-cyberpunk select:focus,
-body.theme-cyberpunk textarea:focus {
-  border-color: #ff007f;
-  box-shadow: 0 0 10px rgba(255, 0, 127, 0.5);
+body.theme-graphite .button-primary,
+body.theme-blueprint .button-primary {
+  color: var(--page);
 }

@@ -80,5 +80,12 @@ conventions. See `~/.claude/skills/campaign-planner/`.
 ## State per file
 
 Each open file has its own filters, phase collapse, placeholder values,
-doc-section open/closed states, expanded code-block keys, and last-session
-memory, scoped by the file's absolute path in `localStorage`.
+doc-section open/closed states, expanded code-block keys, theme, feedback,
+notification settings, and last-session memory, scoped by the file's absolute
+path in `localStorage`.
+
+## Notifications
+
+Preferences can send quiet completion alerts when a phase or campaign closes.
+Mac alerts use the local `/api/notify` endpoint. iPhone push uses an ntfy.sh
+topic, and team pings use Slack or Discord webhooks through `/api/push`.

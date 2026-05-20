@@ -4,6 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Campaigns</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
@@ -23,7 +24,7 @@
           <button id="open-file-button" class="button button-quiet" type="button">Open .md</button>
           <button id="export-button" class="button button-quiet" type="button">Export</button>
           <button id="focus-button" class="button button-quiet" type="button" aria-pressed="false">Focus</button>
-          <button id="settings-button" class="button button-quiet button-icon" type="button" aria-label="Settings" aria-expanded="false">
+          <button id="settings-button" class="button button-quiet button-icon" type="button" aria-label="Preferences" aria-controls="settings-drawer" aria-expanded="false" title="Preferences">
             <svg class="icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:18px;height:18px;vertical-align:middle;display:inline-block;">
               <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.1a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"></path>
               <circle cx="12" cy="12" r="3"></circle>
@@ -82,54 +83,59 @@
       </svg>
     </template>
 
-    <!-- Settings Drawer -->
     <div id="settings-drawer" class="settings-drawer" hidden>
       <div class="settings-drawer-backdrop" data-action="close-settings"></div>
-      <div class="settings-drawer-content" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+      <div class="settings-drawer-content" role="dialog" aria-modal="true" aria-labelledby="settings-title" tabindex="-1">
         <header class="settings-header">
           <h2 id="settings-title">Preferences</h2>
           <button class="settings-close-button" type="button" data-action="close-settings" aria-label="Close settings">&times;</button>
         </header>
 
         <div class="settings-body">
-          <!-- Section: Theme -->
           <section class="settings-section">
             <h3>Appearance</h3>
             <div class="settings-group">
-              <label for="theme-select">Visual Theme</label>
+              <label for="theme-select">Theme</label>
               <select id="theme-select" class="settings-select">
-                <option value="default">Default Theme</option>
-                <option value="obsidian">Obsidian Dark</option>
-                <option value="sunset">Sunset Glow</option>
-                <option value="forest">Forest Mist</option>
-                <option value="cyberpunk">Neon Cyberpunk</option>
+                <option value="default">Desk</option>
+                <option value="graphite">Carbon Ledger</option>
+                <option value="blueprint">Blueprint Room</option>
+                <option value="signal">Signal Paper</option>
               </select>
             </div>
           </section>
 
-          <!-- Section: Audio -->
           <section class="settings-section">
-            <h3>Sound Effects</h3>
+            <h3>Feedback</h3>
             <div class="settings-row-toggle">
               <div class="toggle-label-wrap">
-                <strong>Audio Feedback</strong>
-                <span class="field-desc">Play haptic ticks & success chimes</span>
+                <strong>Sound</strong>
+                <span class="field-desc">Clicks and completion chord</span>
               </div>
               <label class="switch">
                 <input id="sound-toggle" type="checkbox" />
                 <span class="slider"></span>
               </label>
             </div>
-          </section>
-
-          <!-- Section: Notifications -->
-          <section class="settings-section">
-            <h3>Notifications</h3>
-            
             <div class="settings-row-toggle">
               <div class="toggle-label-wrap">
-                <strong>Mac Notifications</strong>
-                <span class="field-desc">Show native macOS alerts on task completion</span>
+                <strong>Completion burst</strong>
+                <span class="field-desc">Small visual mark when a phase closes</span>
+              </div>
+              <label class="switch">
+                <input id="celebration-toggle" type="checkbox" />
+                <span class="slider"></span>
+              </label>
+            </div>
+          </section>
+
+          <section class="settings-section">
+            <h3>Notifications</h3>
+
+            <div class="settings-row-toggle">
+              <div class="toggle-label-wrap">
+                <strong>Mac alerts</strong>
+                <span class="field-desc">Phase and campaign completion</span>
               </div>
               <label class="switch">
                 <input id="mac-notify-toggle" type="checkbox" />
@@ -139,19 +145,19 @@
 
             <div class="settings-field-group">
               <label for="ntfy-topic-input">
-                <strong>iPhone Push (via ntfy.sh)</strong>
-                <span class="field-desc">Enter a custom topic name. Subscribe in the free iOS app.</span>
+                <strong>iPhone topic</strong>
+                <span class="field-desc">ntfy.sh topic name</span>
               </label>
               <div class="input-with-button">
-                <input id="ntfy-topic-input" type="text" placeholder="e.g. my_campaigns_channel" />
+                <input id="ntfy-topic-input" type="text" inputmode="latin" autocomplete="off" spellcheck="false" placeholder="christian_campaigns_private" />
                 <button id="test-ntfy-button" class="button button-quiet" type="button">Test</button>
               </div>
             </div>
 
             <div class="settings-field-group">
               <label for="webhook-url-input">
-                <strong>Slack/Discord Webhook URL</strong>
-                <span class="field-desc">Ping a channel when phases or campaigns finish.</span>
+                <strong>Team webhook</strong>
+                <span class="field-desc">Slack or Discord</span>
               </label>
               <div class="input-with-button">
                 <input id="webhook-url-input" type="url" placeholder="https://hooks.slack.com/services/..." />
@@ -163,10 +169,8 @@
       </div>
     </div>
 
-    <!-- Confetti Overlay -->
     <canvas id="confetti-canvas" class="confetti-canvas"></canvas>
 
     <script type="module" src="/app.js"></script>
   </body>
 </html>
-

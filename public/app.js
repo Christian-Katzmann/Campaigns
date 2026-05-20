@@ -7,6 +7,14 @@ const TODAY_INACTIVITY_MS = 12 * 60 * 60 * 1000;
 const PLACEHOLDER_REGEX = /<([A-Z][A-Z0-9_]+)>/g;
 const CHECK_LINE_REGEX = /^(\s*[-*]\s+\[)( |x|X)(\]\s+)(.+)$/;
 const RESERVED_TOKENS = new Set(['STEP', 'PHASE']);
+const THEME_KEYS = new Set(['default', 'graphite', 'blueprint', 'signal']);
+const LEGACY_THEME_MAP = {
+  cyberpunk: 'blueprint',
+  forest: 'signal',
+  obsidian: 'graphite',
+  sunset: 'signal',
+};
+const NTFY_TOPIC_REGEX = /^[A-Za-z0-9_-]{3,64}$/;
 
 const state = {
   activeStepId: null,
@@ -3177,10 +3185,11 @@ function defaultPrefs() {
     placeholders: {},
     today: { date: '', startCount: 0, lastActivity: '' },
     soundEffectsEnabled: false,
+    celebrationsEnabled: true,
     macNotificationsEnabled: false,
     ntfyTopic: '',
     webhookUrl: '',
-    theme: 'default'
+    theme: 'default',
   };
 }
 
@@ -3209,11 +3218,18 @@ function sanitizePrefs(parsed) {
       : {},
     today: { ...defaults.today, ...(parsed.today || {}) },
     soundEffectsEnabled: typeof parsed.soundEffectsEnabled === 'boolean' ? parsed.soundEffectsEnabled : defaults.soundEffectsEnabled,
+    celebrationsEnabled: typeof parsed.celebrationsEnabled === 'boolean' ? parsed.celebrationsEnabled : defaults.celebrationsEnabled,
     macNotificationsEnabled: typeof parsed.macNotificationsEnabled === 'boolean' ? parsed.macNotificationsEnabled : defaults.macNotificationsEnabled,
     ntfyTopic: typeof parsed.ntfyTopic === 'string' ? parsed.ntfyTopic : defaults.ntfyTopic,
     webhookUrl: typeof parsed.webhookUrl === 'string' ? parsed.webhookUrl : defaults.webhookUrl,
-    theme: typeof parsed.theme === 'string' ? parsed.theme : defaults.theme,
+    theme: normalizeTheme(parsed.theme),
   };
+}
+
+function normalizeTheme(theme) {
+  if (typeof theme !== 'string') return 'default';
+  const normalized = LEGACY_THEME_MAP[theme] ?? theme;
+  return THEME_KEYS.has(normalized) ? normalized : 'default';
 }
 
 function loadPrefs(filePath) {
@@ -3326,8 +3342,10 @@ function savePrefs() {
 function initSettings() {
   const settingsBtn = document.querySelector('#settings-button');
   const drawer = document.querySelector('#settings-drawer');
+  const drawerContent = drawer?.querySelector('.settings-drawer-content');
   const themeSelect = document.querySelector('#theme-select');
   const soundToggle = document.querySelector('#sound-toggle');
+  const celebrationToggle = document.querySelector('#celebration-toggle');
   const macToggle = document.querySelector('#mac-notify-toggle');
   const ntfyInput = document.querySelector('#ntfy-topic-input');
   const testNtfyBtn = document.querySelector('#test-ntfy-button');
@@ -3336,29 +3354,63 @@ function initSettings() {
 
   if (!settingsBtn || !drawer) return;
 
-  settingsBtn.addEventListener('click', () => {
-    if (themeSelect) themeSelect.value = state.prefs.theme || 'default';
+  let previouslyFocused = null;
+
+  const syncSettingsControls = () => {
+    if (themeSelect) themeSelect.value = normalizeTheme(state.prefs.theme);
     if (soundToggle) soundToggle.checked = !!state.prefs.soundEffectsEnabled;
+    if (celebrationToggle) celebrationToggle.checked = !!state.prefs.celebrationsEnabled;
     if (macToggle) macToggle.checked = !!state.prefs.macNotificationsEnabled;
     if (ntfyInput) ntfyInput.value = state.prefs.ntfyTopic || '';
     if (webhookInput) webhookInput.value = state.prefs.webhookUrl || '';
+  };
 
+  const openDrawer = () => {
+    syncSettingsControls();
+    previouslyFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     drawer.removeAttribute('hidden');
     settingsBtn.setAttribute('aria-expanded', 'true');
-  });
+    window.requestAnimationFrame(() => {
+      drawerContent?.focus();
+    });
+  };
 
   const closeDrawer = () => {
     drawer.setAttribute('hidden', '');
     settingsBtn.setAttribute('aria-expanded', 'false');
+    if (previouslyFocused && document.contains(previouslyFocused)) {
+      previouslyFocused.focus();
+    } else {
+      settingsBtn.focus();
+    }
   };
+
+  settingsBtn.addEventListener('click', openDrawer);
 
   drawer.querySelectorAll('[data-action="close-settings"]').forEach(btn => {
     btn.addEventListener('click', closeDrawer);
   });
 
+  drawer.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      closeDrawer();
+      return;
+    }
+    if (event.key === 'Tab') {
+      trapDialogFocus(event, drawer);
+    }
+  });
+
+  document.addEventListener('keydown', (event) => {
+    if (drawer.hidden || event.key !== 'Escape') return;
+    event.preventDefault();
+    closeDrawer();
+  });
+
   if (themeSelect) {
     themeSelect.addEventListener('change', () => {
-      state.prefs.theme = themeSelect.value;
+      state.prefs.theme = normalizeTheme(themeSelect.value);
       savePrefs();
       applyTheme(state.prefs.theme);
     });
@@ -3367,6 +3419,13 @@ function initSettings() {
   if (soundToggle) {
     soundToggle.addEventListener('change', () => {
       state.prefs.soundEffectsEnabled = soundToggle.checked;
+      savePrefs();
+    });
+  }
+
+  if (celebrationToggle) {
+    celebrationToggle.addEventListener('change', () => {
+      state.prefs.celebrationsEnabled = celebrationToggle.checked;
       savePrefs();
     });
   }
@@ -3399,20 +3458,20 @@ function initSettings() {
         showToast('Please enter a topic name first.');
         return;
       }
+      if (!NTFY_TOPIC_REGEX.test(topic)) {
+        showToast('Use 3-64 letters, numbers, dashes, or underscores.');
+        return;
+      }
       testNtfyBtn.disabled = true;
       try {
-        const res = await fetch(`https://ntfy.sh/${topic}`, {
-          method: 'POST',
-          body: 'Test notification from Campaigns! 🚀',
-          headers: { 'Title': 'Campaigns App' }
+        await postRemoteNotification({
+          title: 'Campaigns',
+          message: 'iPhone push is connected.',
+          ntfyTopic: topic,
         });
-        if (res.ok) {
-          showToast('Test push sent successfully!');
-        } else {
-          showToast('Failed to send test push.');
-        }
+        showToast('Test push sent.');
       } catch (err) {
-        showToast(`Error: ${err.message}`);
+        showToast(err.message);
       } finally {
         testNtfyBtn.disabled = false;
       }
@@ -3428,23 +3487,14 @@ function initSettings() {
       }
       testWebhookBtn.disabled = true;
       try {
-        const isDiscord = url.includes('discord.com');
-        const payload = isDiscord
-          ? { content: 'Test notification from Campaigns! 🚀' }
-          : { text: 'Test notification from Campaigns! 🚀' };
-
-        const res = await fetch(url, {
-          method: 'POST',
-          body: JSON.stringify(payload),
-          headers: { 'Content-Type': 'application/json' }
+        await postRemoteNotification({
+          title: 'Campaigns',
+          message: 'Team webhook is connected.',
+          webhookUrl: url,
         });
-        if (res.ok) {
-          showToast('Test webhook sent successfully!');
-        } else {
-          showToast('Failed to send test webhook.');
-        }
+        showToast('Test webhook sent.');
       } catch (err) {
-        showToast(`Error: ${err.message}`);
+        showToast(err.message);
       } finally {
         testWebhookBtn.disabled = false;
       }
@@ -3452,11 +3502,43 @@ function initSettings() {
   }
 }
 
+function trapDialogFocus(event, container) {
+  const focusable = Array.from(
+    container.querySelectorAll(
+      'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    ),
+  ).filter((node) => node instanceof HTMLElement && node.offsetParent !== null);
+
+  if (focusable.length === 0) return;
+
+  const first = focusable[0];
+  const last = focusable.at(-1);
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+    return;
+  }
+
+  if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
+}
+
 function applyTheme(theme) {
-  const themes = ['theme-obsidian', 'theme-sunset', 'theme-forest', 'theme-cyberpunk'];
+  const themes = [
+    'theme-blueprint',
+    'theme-cyberpunk',
+    'theme-forest',
+    'theme-graphite',
+    'theme-obsidian',
+    'theme-signal',
+    'theme-sunset',
+  ];
   themes.forEach(cls => document.body.classList.remove(cls));
-  if (theme && theme !== 'default') {
-    document.body.classList.add(`theme-${theme}`);
+  const selectedTheme = normalizeTheme(theme);
+  if (selectedTheme !== 'default') {
+    document.body.classList.add(`theme-${selectedTheme}`);
   }
 }
 
@@ -3517,9 +3599,12 @@ function playAudioFeedback(type) {
 
 let confettiActive = false;
 let confettiParticles = [];
-const confettiColors = ['#ff007f', '#00f0ff', '#10b981', '#f97316', '#3b82f6', '#ffd700'];
 
-function triggerConfetti() {
+function triggerConfetti(intensity = 'phase') {
+  if (!state.prefs.celebrationsEnabled) return;
+  if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  if (confettiActive) return;
+
   const canvas = document.querySelector('#confetti-canvas');
   if (!canvas) return;
 
@@ -3534,25 +3619,27 @@ function triggerConfetti() {
   window.addEventListener('resize', handleResize);
 
   confettiParticles = [];
-  const particleCount = 120;
+  const particleCount = intensity === 'campaign' ? 110 : 44;
+  const colors = confettiPalette();
   for (let i = 0; i < particleCount; i++) {
     confettiParticles.push({
       x: Math.random() * canvas.width,
-      y: Math.random() * canvas.height - canvas.height,
-      r: Math.random() * 6 + 4,
+      y: intensity === 'campaign'
+        ? Math.random() * canvas.height - canvas.height
+        : Math.random() * -160,
+      r: Math.random() * 5 + 3,
       d: Math.random() * canvas.height,
-      color: confettiColors[Math.floor(Math.random() * confettiColors.length)],
+      color: colors[Math.floor(Math.random() * colors.length)],
       tilt: Math.random() * 10 - 5,
       tiltAngleIncremental: Math.random() * 0.07 + 0.02,
       tiltAngle: 0
     });
   }
 
-  if (confettiActive) return;
   confettiActive = true;
 
   let frameCount = 0;
-  const maxFrames = 200;
+  const maxFrames = intensity === 'campaign' ? 170 : 95;
 
   function draw() {
     if (!confettiActive) return;
@@ -3591,44 +3678,78 @@ function triggerConfetti() {
   requestAnimationFrame(draw);
 }
 
-async function sendPushNotification(title, message) {
+function confettiPalette() {
+  const styles = getComputedStyle(document.body);
+  const fromVar = (name, fallback) => styles.getPropertyValue(name).trim() || fallback;
+  return [
+    fromVar('--accent', '#0b66d8'),
+    fromVar('--ink', '#121212'),
+    fromVar('--done', '#a9a49c'),
+    '#f0c36a',
+    '#7fb7a6',
+  ];
+}
+
+async function sendConfiguredNotifications(title, message) {
+  const deliveries = [];
+  const ntfyTopic = NTFY_TOPIC_REGEX.test(state.prefs.ntfyTopic || '')
+    ? state.prefs.ntfyTopic
+    : '';
+
   if (state.prefs.macNotificationsEnabled) {
-    try {
-      await fetch('/api/notify', {
+    deliveries.push(
+      fetch('/api/notify', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title, message })
-      });
-    } catch (err) {
-      console.warn('Failed to send local system notification:', err);
-    }
+        body: JSON.stringify({ title, message }),
+      }).then((response) => {
+        if (!response.ok) throw new Error(`Mac notification failed (${response.status}).`);
+        return response;
+      }),
+    );
   }
 
-  if (state.prefs.ntfyTopic) {
-    try {
-      await fetch(`https://ntfy.sh/${state.prefs.ntfyTopic}`, {
-        method: 'POST',
-        body: message,
-        headers: { 'Title': title }
-      });
-    } catch (err) {
-      console.warn('Failed to send ntfy push notification:', err);
-    }
+  if (ntfyTopic || state.prefs.webhookUrl) {
+    deliveries.push(
+      postRemoteNotification({
+        title,
+        message,
+        ntfyTopic,
+        webhookUrl: state.prefs.webhookUrl,
+      }),
+    );
   }
 
-  if (state.prefs.webhookUrl) {
-    try {
-      const isDiscord = state.prefs.webhookUrl.includes('discord.com');
-      const payload = isDiscord ? { content: `**${title}**: ${message}` } : { text: `${title}: ${message}` };
-      await fetch(state.prefs.webhookUrl, {
-        method: 'POST',
-        body: JSON.stringify(payload),
-        headers: { 'Content-Type': 'application/json' }
-      });
-    } catch (err) {
-      console.warn('Failed to send webhook notification:', err);
+  const results = await Promise.allSettled(deliveries);
+  for (const result of results) {
+    if (result.status === 'rejected') {
+      console.warn('Notification delivery failed:', result.reason);
     }
   }
+}
+
+async function postRemoteNotification(payload) {
+  const response = await fetch('/api/push', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+
+  if (response.ok) return response.json().catch(() => ({ ok: true }));
+
+  let errorMessage = 'Notification failed.';
+  try {
+    const errorPayload = await response.json();
+    errorMessage = errorPayload.error || errorPayload.failures?.[0]?.error || errorMessage;
+  } catch {
+    /* keep generic message */
+  }
+  throw new Error(errorMessage);
+}
+
+function campaignDisplayTitle() {
+  const heading = elements.documentTitle?.textContent?.trim();
+  return heading || fileNameFromPath(state.filePath) || 'Campaign';
 }
 
 async function handleCompletionEffects(prevPhases, nextPhases, prevStats, nextStats) {
@@ -3646,13 +3767,13 @@ async function handleCompletionEffects(prevPhases, nextPhases, prevStats, nextSt
 
   if (isCampaignCompleted) {
     playAudioFeedback('success');
-    triggerConfetti();
-    const message = `🎉 Campaign "${state.filePath || 'Campaign'}" is 100% complete!`;
-    sendPushNotification('Campaign Completed', message);
+    triggerConfetti('campaign');
+    const message = `${campaignDisplayTitle()} is 100% complete.`;
+    sendConfiguredNotifications('Campaign complete', message);
   } else if (completedPhase) {
     playAudioFeedback('success');
-    triggerConfetti();
+    triggerConfetti('phase');
     const message = `Phase "${completedPhase.title}" is now complete (${completedPhase.done}/${completedPhase.total} tasks).`;
-    sendPushNotification('Phase Completed', message);
+    sendConfiguredNotifications('Phase complete', message);
   }
 }
