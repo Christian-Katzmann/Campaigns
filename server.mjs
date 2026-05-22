@@ -42,6 +42,16 @@ const mimeTypes = new Map([
   ['.svg', 'image/svg+xml'],
 ]);
 
+const LOGO_MIME = new Map([
+  ['.png', 'image/png'],
+  ['.jpg', 'image/jpeg'],
+  ['.jpeg', 'image/jpeg'],
+  ['.svg', 'image/svg+xml'],
+  ['.webp', 'image/webp'],
+  ['.gif', 'image/gif'],
+  ['.ico', 'image/x-icon'],
+]);
+
 const server = createServer(async (request, response) => {
   try {
     const url = new URL(request.url ?? '/', `http://${request.headers.host}`);
@@ -53,6 +63,16 @@ const server = createServer(async (request, response) => {
 
     if (url.pathname === '/api/registry' && request.method === 'POST') {
       await registerEndpoint(request, response);
+      return;
+    }
+
+    if (url.pathname === '/api/registry/park' && request.method === 'POST') {
+      await parkEndpoint(request, response);
+      return;
+    }
+
+    if (url.pathname === '/api/registry/icon' && request.method === 'GET') {
+      await sendCampaignIcon(url, response);
       return;
     }
 
@@ -157,6 +177,7 @@ async function ensureRegistered(absolutePath) {
     filePath: absolutePath,
     createdAt: now,
     lastOpenedAt: now,
+    lastActivityAt: now,
   };
   registry.campaigns.push(entry);
   await writeRegistry(registry);
@@ -169,6 +190,50 @@ async function touchCampaign(id) {
   if (!entry) return;
   entry.lastOpenedAt = new Date().toISOString();
   await writeRegistry(registry);
+}
+
+async function touchActivity(id) {
+  const registry = await readRegistry();
+  const entry = registry.campaigns.find((c) => c.id === id);
+  if (!entry) return;
+  entry.lastActivityAt = new Date().toISOString();
+  await writeRegistry(registry);
+}
+
+async function setCampaignParked(id, parked) {
+  const registry = await readRegistry();
+  const entry = registry.campaigns.find((c) => c.id === id);
+  if (!entry) return { found: false, parkedAt: null };
+  if (parked) {
+    entry.parkedAt = new Date().toISOString();
+  } else {
+    delete entry.parkedAt;
+  }
+  await writeRegistry(registry);
+  return { found: true, parkedAt: entry.parkedAt ?? null };
+}
+
+async function setCampaignLogo(id, logoPath) {
+  const registry = await readRegistry();
+  const entry = registry.campaigns.find((c) => c.id === id);
+  if (!entry) return;
+  if (logoPath) entry.logoPath = logoPath;
+  else delete entry.logoPath;
+  await writeRegistry(registry);
+}
+
+async function validateLogoPath(input) {
+  if (typeof input !== 'string' || !input) return null;
+  const absolute = path.resolve(input);
+  const ext = path.extname(absolute).toLowerCase();
+  if (!LOGO_MIME.has(ext)) return null;
+  try {
+    const details = await stat(absolute);
+    if (!details.isFile()) return null;
+  } catch {
+    return null;
+  }
+  return absolute;
 }
 
 async function resolveCampaign(url) {
@@ -209,6 +274,8 @@ async function sendRegistry(response) {
 
   const enriched = await Promise.all(
     registry.campaigns.map(async (entry) => {
+      const { logoPath, ...rest } = entry;
+      const hasLogo = Boolean(logoPath);
       try {
         const markdown = await readFile(entry.filePath, 'utf8');
         if (entry.missingSince) {
@@ -217,17 +284,28 @@ async function sendRegistry(response) {
         }
         const title = extractTitle(markdown) ?? path.basename(entry.filePath, path.extname(entry.filePath));
         const progress = countProgress(markdown);
-        return { ...entry, title, progress, missing: false };
+        return {
+          ...rest,
+          title,
+          progress,
+          missing: false,
+          hasLogo,
+          lastActivityAt: entry.lastActivityAt ?? entry.lastOpenedAt ?? entry.createdAt,
+          parkedAt: entry.parkedAt ?? null,
+        };
       } catch {
         if (!entry.missingSince) {
           entry.missingSince = new Date(now).toISOString();
           registryChanged = true;
         }
         return {
-          ...entry,
+          ...rest,
           title: path.basename(entry.filePath),
           progress: { done: 0, total: 0 },
           missing: true,
+          hasLogo,
+          lastActivityAt: entry.lastActivityAt ?? entry.lastOpenedAt ?? entry.createdAt,
+          parkedAt: entry.parkedAt ?? null,
         };
       }
     }),
@@ -267,7 +345,44 @@ async function registerEndpoint(request, response) {
     return;
   }
   const id = await ensureRegistered(absolute);
+
+  if (payload.logoPath !== undefined) {
+    const validated = await validateLogoPath(payload.logoPath);
+    await setCampaignLogo(id, validated);
+  }
+
   sendJson(response, 200, { id, filePath: absolute });
+}
+
+async function sendCampaignIcon(url, response) {
+  const id = url.searchParams.get('id');
+  if (!id) {
+    sendJson(response, 400, { error: 'id is required.' });
+    return;
+  }
+  const registry = await readRegistry();
+  const entry = registry.campaigns.find((c) => c.id === id);
+  if (!entry || !entry.logoPath) {
+    sendJson(response, 404, { error: 'No logo for this campaign.' });
+    return;
+  }
+  const ext = path.extname(entry.logoPath).toLowerCase();
+  const mime = LOGO_MIME.get(ext);
+  if (!mime) {
+    sendJson(response, 404, { error: 'Logo path has an unsupported extension.' });
+    return;
+  }
+  try {
+    const details = await stat(entry.logoPath);
+    response.writeHead(200, {
+      'content-type': mime,
+      'content-length': details.size,
+      'cache-control': 'private, max-age=300',
+    });
+    createReadStream(entry.logoPath).pipe(response);
+  } catch {
+    sendJson(response, 404, { error: 'Logo file is no longer present.' });
+  }
 }
 
 /* ------------------------------ API: document ------------------------------- */
@@ -288,6 +403,7 @@ async function sendDocument(url, response) {
       lastModified: details.mtime.toISOString(),
       hash: hashMarkdown(markdown),
       markdown,
+      hasLogo: Boolean(campaign.logoPath),
     });
   } catch {
     sendJson(response, 404, { error: 'File not found on disk.' });
@@ -323,12 +439,27 @@ async function saveDocument(url, request, response) {
 
   await writeFile(campaign.filePath, payload.markdown, 'utf8');
   const details = await stat(campaign.filePath);
+  await touchActivity(campaign.id);
 
   sendJson(response, 200, {
     ok: true,
     lastModified: details.mtime.toISOString(),
     hash: hashMarkdown(payload.markdown),
   });
+}
+
+async function parkEndpoint(request, response) {
+  const payload = await readJsonBody(request);
+  if (typeof payload.id !== 'string' || typeof payload.parked !== 'boolean') {
+    sendJson(response, 400, { error: 'Expected { id: string, parked: boolean }.' });
+    return;
+  }
+  const result = await setCampaignParked(payload.id, payload.parked);
+  if (!result.found) {
+    sendJson(response, 404, { error: 'Campaign not found.' });
+    return;
+  }
+  sendJson(response, 200, { ok: true, parkedAt: result.parkedAt });
 }
 
 async function sendNotification(request, response) {

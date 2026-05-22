@@ -1,6 +1,7 @@
 const PREFS_KEY = 'campaigns-prefs:v1';
 const LEGACY_PREFS_KEY = 'campaign-guide-prefs:v1';
 const MIGRATION_FLAG_KEY = 'campaigns-migrated:v1';
+const DOC_SECTIONS_RESET_FLAG_KEY = 'campaigns-doc-sections-reset:v1';
 const AUTOSAVE_DELAY_MS = 700;
 const TODAY_INACTIVITY_MS = 12 * 60 * 60 * 1000;
 
@@ -115,6 +116,7 @@ async function initialize() {
   state.saveStatus = 'idle';
   state.prefs = loadPrefs(state.filePath);
   if (state.prefs.focusMode) document.body.classList.add('focus-mode');
+  applyCampaignLogo(state.id, Boolean(payload.hasLogo));
 
   const migrated = ensureFinalReviewLines(state.markdown);
   if (migrated !== state.markdown) {
@@ -137,6 +139,35 @@ function showLoadError(message) {
   state.dirty = false;
   render();
   showToast(message);
+}
+
+function applyCampaignLogo(id, hasLogo) {
+  const logoEl = document.querySelector('#campaign-logo');
+  const favicon = document.querySelector('link[rel="icon"]');
+
+  if (hasLogo && id) {
+    const src = `/api/registry/icon?id=${encodeURIComponent(id)}`;
+    if (logoEl) {
+      logoEl.hidden = false;
+      logoEl.src = src;
+      logoEl.addEventListener(
+        'error',
+        () => {
+          logoEl.hidden = true;
+          logoEl.removeAttribute('src');
+        },
+        { once: true },
+      );
+    }
+    if (favicon) favicon.href = src;
+    return;
+  }
+
+  if (logoEl) {
+    logoEl.hidden = true;
+    logoEl.removeAttribute('src');
+  }
+  if (favicon) favicon.href = '/favicon.svg';
 }
 
 function documentUrl() {
@@ -1002,6 +1033,20 @@ function renderDocSection(block, stepSections) {
       html: inlineMarkdown(block.heading?.text || ''),
     }),
   );
+
+  const hostsDocumentPath = block.children?.some((child) => child.type === 'document-path');
+  if (hostsDocumentPath) {
+    const copyButton = element('button', {
+      ariaLabel: 'Copy campaign path',
+      className: 'icon-button doc-section-copy',
+      dataset: { action: 'copy-document-path' },
+      title: 'Copy campaign path',
+      type: 'button',
+    });
+    copyButton.append(copyIconTemplate.content.firstElementChild.cloneNode(true));
+    summary.append(copyButton);
+  }
+
   details.append(summary);
 
   const body = element('div', { className: 'doc-section-body' });
@@ -1223,6 +1268,12 @@ function handleDocumentClick(event) {
     copyCode(control.dataset.key);
   }
 
+  if (action === 'copy-document-path') {
+    event.preventDefault();
+    copyDocumentPath();
+    return;
+  }
+
   if (action === 'copy-review-card') {
     const card = control.closest('.prompt-review');
     if (!card) return;
@@ -1394,6 +1445,19 @@ async function copyCode(key) {
     showToast('Prompt copied.');
   } catch {
     showToast('Copy failed. Select the prompt text manually.');
+  }
+}
+
+async function copyDocumentPath() {
+  if (!state.filePath) {
+    showToast('No campaign path to copy yet.');
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(state.filePath);
+    showToast('Path copied.');
+  } catch {
+    showToast('Copy failed. Select the path manually.');
   }
 }
 
@@ -1862,6 +1926,7 @@ function hideResumeCard() {
 
 async function renderLibrary() {
   document.body.classList.add('view-library');
+  applyCampaignLogo(null, false);
   if (!elements.library) return;
   elements.library.hidden = false;
 
@@ -1895,11 +1960,23 @@ async function renderLibrary() {
 
 function sortCampaigns(campaigns) {
   return [...campaigns].sort((a, b) => {
-    const aDone = isComplete(a);
-    const bDone = isComplete(b);
-    if (aDone !== bDone) return aDone ? 1 : -1;
-    return new Date(b.lastOpenedAt).getTime() - new Date(a.lastOpenedAt).getTime();
+    const bucketDiff = campaignBucket(a) - campaignBucket(b);
+    if (bucketDiff !== 0) return bucketDiff;
+    return campaignActivityMs(b) - campaignActivityMs(a);
   });
+}
+
+function campaignBucket(campaign) {
+  if (isComplete(campaign)) return 2;
+  if (campaign.parkedAt) return 1;
+  return 0;
+}
+
+function campaignActivityMs(campaign) {
+  const iso = campaign.lastActivityAt || campaign.lastOpenedAt || campaign.createdAt;
+  if (!iso) return 0;
+  const ms = new Date(iso).getTime();
+  return Number.isFinite(ms) ? ms : 0;
 }
 
 function isComplete(campaign) {
@@ -1907,12 +1984,26 @@ function isComplete(campaign) {
 }
 
 function buildLibraryCard(campaign) {
-  const card = element('a', {
-    className: `library-card${isComplete(campaign) ? ' complete' : ''}${campaign.missing ? ' missing' : ''}`,
+  const complete = isComplete(campaign);
+  const parked = Boolean(campaign.parkedAt) && !complete;
+  const modifiers = [
+    complete ? 'complete' : '',
+    parked ? 'parked' : '',
+    campaign.missing ? 'missing' : '',
+  ]
+    .filter(Boolean)
+    .join(' ');
+
+  const card = element('article', {
+    className: `library-card${modifiers ? ` ${modifiers}` : ''}${campaign.hasLogo ? ' has-logo' : ''}`,
+  });
+
+  const link = element('a', {
+    className: 'library-card-link',
     href: `?id=${encodeURIComponent(campaign.id)}`,
   });
 
-  card.append(
+  link.append(
     element('span', { className: 'library-card-title', text: campaign.title || 'Untitled' }),
     element('span', { className: 'library-card-path', text: relativeHomePath(campaign.filePath, state.homeDir) }),
   );
@@ -1927,18 +2018,73 @@ function buildLibraryCard(campaign) {
       track,
       element('span', {
         className: 'library-card-progress-label',
-        text: isComplete(campaign) ? 'All done' : `${campaign.progress.done} / ${campaign.progress.total}`,
+        text: complete ? 'All done' : `${campaign.progress.done} / ${campaign.progress.total}`,
       }),
     );
-    card.append(progress);
+    link.append(progress);
   }
 
   const time = campaign.missing
     ? 'File missing'
-    : `Opened ${relativeTime(campaign.lastOpenedAt)}`;
-  card.append(element('span', { className: 'library-card-time', text: time }));
+    : `Active ${relativeTime(campaign.lastActivityAt || campaign.lastOpenedAt)}`;
+  link.append(element('span', { className: 'library-card-time', text: time }));
+
+  card.append(link);
+
+  if (campaign.hasLogo) {
+    const logo = element('img', { className: 'library-card-logo', alt: '' });
+    logo.src = `/api/registry/icon?id=${encodeURIComponent(campaign.id)}`;
+    logo.loading = 'lazy';
+    logo.decoding = 'async';
+    logo.addEventListener('error', () => {
+      logo.remove();
+      card.classList.remove('has-logo');
+    }, { once: true });
+    card.append(logo);
+  }
+
+  if (!complete && !campaign.missing) {
+    card.append(buildParkButton(campaign, parked));
+  }
 
   return card;
+}
+
+function buildParkButton(campaign, parked) {
+  const button = element('button', {
+    className: 'library-card-park-button',
+    type: 'button',
+    title: parked ? 'Reactivate campaign' : 'Park campaign',
+    ariaLabel: parked ? 'Reactivate campaign' : 'Park campaign',
+    ariaPressed: parked ? 'true' : 'false',
+  });
+  button.innerHTML =
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>';
+  button.addEventListener('click', async (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    button.disabled = true;
+    try {
+      await togglePark(campaign.id, !parked);
+      await renderLibrary();
+    } catch (error) {
+      button.disabled = false;
+      showToast(error.message || 'Could not update park state.');
+    }
+  });
+  return button;
+}
+
+async function togglePark(id, parked) {
+  const response = await fetch('/api/registry/park', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ id, parked }),
+  });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(payload.error || 'Could not update park state.');
+  }
 }
 
 function relativeHomePath(filePath, homeDir) {
@@ -2016,13 +2162,30 @@ function buildSwitchMenu(campaigns) {
           href: `?id=${encodeURIComponent(campaign.id)}`,
         });
 
-    item.append(
+    const text = element('span', { className: 'switch-item-text' });
+    text.append(
       element('span', { className: 'switch-title', text: campaign.title || 'Untitled' }),
       element('span', {
         className: 'switch-meta',
         text: switchMetaLine(campaign),
       }),
     );
+
+    if (campaign.hasLogo) {
+      item.classList.add('switch-item-with-logo');
+      const logo = element('img', { className: 'switch-item-logo', alt: '' });
+      logo.src = `/api/registry/icon?id=${encodeURIComponent(campaign.id)}`;
+      logo.loading = 'lazy';
+      logo.decoding = 'async';
+      logo.addEventListener('error', () => {
+        logo.remove();
+        item.classList.remove('switch-item-with-logo');
+      }, { once: true });
+      item.append(logo, text);
+    } else {
+      item.append(text);
+    }
+
     children.push(item);
   }
 
@@ -2532,6 +2695,7 @@ function injectDocumentPath(blocks) {
 function wrapDocSections(blocks) {
   const result = [];
   let group = null;
+  let pastChecklist = false;
 
   const closeGroup = () => {
     if (group) result.push(group);
@@ -2544,6 +2708,7 @@ function wrapDocSections(blocks) {
       const text = block.text.toLowerCase();
       if (text.includes('progress checklist')) {
         result.push(block);
+        pastChecklist = true;
         continue;
       }
       const isReviewProtocol = /review\s+protocol|codex\s+grades/i.test(block.text);
@@ -2552,7 +2717,7 @@ function wrapDocSections(blocks) {
         sectionId: block.id,
         heading: block,
         children: [],
-        defaultOpen: !isReviewProtocol,
+        defaultOpen: pastChecklist && !isReviewProtocol,
       };
       continue;
     }
@@ -3244,6 +3409,24 @@ function loadPrefs(filePath) {
       all = {};
     }
     if (!all || typeof all !== 'object') all = {};
+
+    // Orientation sections (Scope, Context, How prompts work) now default to
+    // closed. Clear stored open-state once so the new default is visible on
+    // files the user already touched; subsequent toggles re-populate normally.
+    if (localStorage.getItem(DOC_SECTIONS_RESET_FLAG_KEY) !== 'done') {
+      let mutated = false;
+      for (const key of Object.keys(all)) {
+        const entry = all[key];
+        if (entry && typeof entry === 'object' && entry.docSections) {
+          entry.docSections = {};
+          mutated = true;
+        }
+      }
+      if (mutated) {
+        try { localStorage.setItem(PREFS_KEY, JSON.stringify(all)); } catch { /* ignore */ }
+      }
+      localStorage.setItem(DOC_SECTIONS_RESET_FLAG_KEY, 'done');
+    }
 
     const parsed = all[filePath];
     if (parsed && typeof parsed === 'object') {

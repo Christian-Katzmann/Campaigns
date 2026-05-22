@@ -148,6 +148,21 @@ button {
   background: var(--paper);
 }
 
+.campaign-logo {
+  display: block;
+  width: 60px;
+  height: 60px;
+  margin: -2px 0 14px;
+  border-radius: 13px;
+  background: var(--paper-strong);
+  border: 1px solid var(--line-soft);
+  object-fit: cover;
+}
+
+.campaign-logo[hidden] {
+  display: none;
+}
+
 .overview-kicker {
   margin: 0 0 4px;
   color: var(--ink-faint);
@@ -1341,6 +1356,27 @@ tr:last-child td:last-child {
   text-overflow: ellipsis;
 }
 
+.switch-menu .switch-item-with-logo {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.switch-menu .switch-item-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.switch-menu .switch-item-logo {
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  border-radius: 5px;
+  background: var(--paper-strong);
+  border: 1px solid var(--line-soft);
+  object-fit: cover;
+}
+
 .switch-menu .switch-meta {
   display: block;
   margin-top: 2px;
@@ -1421,6 +1457,7 @@ body.view-library #conflict-modal {
 .library-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  align-items: start;
   gap: 16px;
 }
 
@@ -1429,16 +1466,16 @@ body.view-library #conflict-modal {
 }
 
 .library-card {
+  position: relative;
   display: flex;
   flex-direction: column;
-  gap: 6px;
   padding: 22px 22px 18px;
   border: 1px solid var(--line);
   border-radius: 10px;
   background: var(--control-bg);
   color: inherit;
-  text-decoration: none;
-  transition: border-color 120ms ease-out, transform 120ms ease-out, box-shadow 120ms ease-out;
+  transition: border-color 120ms ease-out, transform 120ms ease-out, box-shadow 120ms ease-out,
+    background-color 160ms ease-out, padding 160ms ease-out;
 }
 
 .library-card:hover {
@@ -1447,10 +1484,40 @@ body.view-library #conflict-modal {
   box-shadow: 0 4px 14px rgba(18, 18, 18, 0.06);
 }
 
+.library-card-link {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: inherit;
+  text-decoration: none;
+}
+
+.library-card-logo {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  width: 33px;
+  height: 33px;
+  border-radius: 7px;
+  background: var(--paper-strong);
+  object-fit: cover;
+  border: 1px solid var(--line-soft);
+  pointer-events: none;
+}
+
+.library-card.has-logo .library-card-park-button {
+  right: 53px;
+}
+
+.library-card.has-logo:not(.complete):not(.missing) .library-card-title {
+  padding-right: 66px;
+}
+
 .library-card-title {
   font-size: 17px;
   font-weight: 720;
   line-height: 1.3;
+  padding-right: 32px;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
@@ -1519,6 +1586,91 @@ body.view-library #conflict-modal {
 
 .library-card.missing {
   opacity: 0.55;
+}
+
+.library-card-park-button {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ink-faint);
+  cursor: pointer;
+  opacity: 0.45;
+  transition: opacity 120ms ease-out, color 120ms ease-out, background-color 120ms ease-out,
+    border-color 120ms ease-out;
+}
+
+.library-card-park-button svg {
+  width: 14px;
+  height: 14px;
+}
+
+.library-card:hover .library-card-park-button,
+.library-card-park-button:focus-visible {
+  opacity: 1;
+}
+
+.library-card-park-button:hover {
+  color: var(--ink);
+  background: var(--paper-strong);
+  border-color: var(--line);
+}
+
+.library-card.parked {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.library-card.parked:hover {
+  border-color: var(--accent);
+  box-shadow: 0 4px 14px rgba(11, 102, 216, 0.12);
+}
+
+.library-card.parked .library-card-title {
+  color: var(--accent);
+}
+
+.library-card.parked .library-card-park-button {
+  opacity: 1;
+  color: var(--accent);
+  border-color: rgba(11, 102, 216, 0.22);
+}
+
+.library-card.parked .library-card-park-button:hover {
+  background: rgba(11, 102, 216, 0.12);
+  color: var(--accent);
+}
+
+/* Narrow viewport: collapse parked card to title only. The library grid is
+   single-column below ~640px viewport — collapsing there saves real vertical
+   scroll without creating awkward row gaps next to full-size active cards. */
+@media (max-width: 639px) {
+  .library-card.parked {
+    padding-top: 14px;
+    padding-bottom: 14px;
+  }
+
+  .library-card.parked .library-card-link {
+    gap: 0;
+  }
+
+  .library-card.parked .library-card-title {
+    -webkit-line-clamp: 1;
+  }
+
+  .library-card.parked .library-card-path,
+  .library-card.parked .library-card-progress,
+  .library-card.parked .library-card-time {
+    display: none;
+  }
 }
 
 .library-empty {
@@ -1714,6 +1866,30 @@ body.view-library #conflict-modal {
   .switch-menu .switch-item.complete .switch-title,
   .switch-menu .switch-item.complete .switch-meta {
     color: var(--complete-step-check);
+  }
+
+  /* Library "parked" state — blue tuned for dark surfaces */
+  .library-card.parked {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+  }
+
+  .library-card.parked .library-card-title,
+  .library-card.parked .library-card-park-button {
+    color: var(--accent);
+  }
+
+  .library-card.parked:hover {
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
+  }
+
+  .library-card.parked .library-card-park-button:hover {
+    background: rgba(130, 169, 230, 0.16);
+  }
+
+  .library-card-park-button:hover {
+    background: var(--control-hover-bg);
+    border-color: var(--control-hover-border);
   }
 
   /* Save error text */
@@ -2090,6 +2266,10 @@ details.doc-section[open] .doc-section-chevron {
   font-size: 22px;
   font-weight: 800;
   letter-spacing: -0.005em;
+}
+
+.doc-section-copy {
+  margin-left: auto;
 }
 
 .doc-section-body {
