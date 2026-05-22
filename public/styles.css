@@ -1348,6 +1348,16 @@ tr:last-child td:last-child {
   background: var(--paper);
 }
 
+.switch-menu a:focus {
+  outline: none;
+}
+
+.switch-menu a:focus-visible {
+  background: var(--paper);
+  outline: 2px solid var(--accent, currentColor);
+  outline-offset: -2px;
+}
+
 .switch-menu .switch-title {
   display: block;
   font-weight: 700;
