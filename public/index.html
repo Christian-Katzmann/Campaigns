@@ -64,9 +64,15 @@
         <h1 class="library-title">Campaigns</h1>
       </header>
       <div id="library-grid" class="library-grid"></div>
-      <p id="library-empty" class="library-empty" hidden>
-        No campaigns yet. Start the server with <code>--file &lt;path&gt;</code> to register one.
-      </p>
+      <div id="library-empty" class="library-empty" hidden>
+        <p class="library-empty-title">No campaigns yet.</p>
+        <p class="library-empty-body">
+          Campaigns reads a markdown plan as an interactive board — phases, steps, prompts, progress. The simplest way to get one here is to run <code>/campaign-planner</code> in a Claude Code session; it scaffolds the plan and registers it automatically.
+        </p>
+        <p class="library-empty-aside">
+          Already have a plan file? Start the server with <code>--file &lt;path&gt;</code>.
+        </p>
+      </div>
     </div>
 
     <div id="phase-banner" class="phase-banner" role="status" aria-live="polite"></div>

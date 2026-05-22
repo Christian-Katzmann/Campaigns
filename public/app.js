@@ -1937,7 +1937,10 @@ async function renderLibrary() {
     registry = await response.json();
   } catch (error) {
     if (elements.libraryEmpty) {
-      elements.libraryEmpty.textContent = error.message;
+      const errorPara = document.createElement('p');
+      errorPara.className = 'library-empty-body';
+      errorPara.textContent = error.message;
+      elements.libraryEmpty.replaceChildren(errorPara);
       elements.libraryEmpty.hidden = false;
     }
     return;
