@@ -3653,3 +3653,150 @@ body.theme-graphite .drawer-phase-pill.active,
 body.theme-blueprint .drawer-phase-pill.active { background: rgba(59, 130, 246, 0.15); }
 body.theme-graphite .drawer-phase-pill.done,
 body.theme-blueprint .drawer-phase-pill.done { color: #6dd58c; border-color: rgba(109, 213, 140, 0.3); }
+
+/* ---------- Drawer nudge section ---------- */
+
+.drawer-nudge {
+  margin-bottom: 16px;
+  padding: 14px 16px;
+  background: rgba(251, 188, 4, 0.08);
+  border: 1px solid rgba(251, 188, 4, 0.25);
+  border-radius: 10px;
+}
+
+.drawer-nudge-header {
+  margin: 0 0 12px;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--ink);
+}
+
+.drawer-nudge-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.drawer-nudge-btn {
+  font-size: 13px;
+  min-height: 34px;
+  padding: 0 14px;
+}
+
+.drawer-nudge-btn--secondary {
+  border-color: var(--line);
+  background: var(--control-bg);
+  color: var(--ink-soft);
+}
+
+.drawer-nudge-btn--secondary:hover {
+  border-color: var(--control-hover-border);
+  background: var(--control-hover-bg);
+  color: var(--ink);
+}
+
+.drawer-nudge-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ---------- Nudge confirm modal ---------- */
+
+.nudge-confirm-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 950;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(18, 18, 18, 0.45);
+  backdrop-filter: blur(3px);
+}
+
+.nudge-confirm-card {
+  width: min(420px, 100%);
+  padding: 22px 24px;
+  border-radius: 12px;
+  background: var(--control-bg);
+  box-shadow: var(--shadow);
+}
+
+.nudge-confirm-title {
+  margin: 0 0 10px;
+  font-size: 18px;
+  font-weight: 720;
+}
+
+.nudge-confirm-desc {
+  margin: 0 0 16px;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--ink-soft);
+}
+
+.nudge-confirm-check-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-bottom: 16px;
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.nudge-confirm-checkbox {
+  margin-top: 2px;
+  flex-shrink: 0;
+}
+
+.nudge-confirm-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.nudge-confirm-footer .button {
+  font-size: 13px;
+}
+
+/* Timeline chip pulse after nudge */
+.drawer-timeline-chip.drawer-timeline-chip--pulse {
+  animation: nudge-chip-pulse 600ms ease-out;
+}
+
+@keyframes nudge-chip-pulse {
+  0% { background: rgba(251, 188, 4, 0.2); }
+  100% { background: transparent; }
+}
+
+/* Dark mode nudge adjustments */
+@media (prefers-color-scheme: dark) {
+  .drawer-nudge {
+    background: rgba(251, 188, 4, 0.06);
+    border-color: rgba(251, 188, 4, 0.18);
+  }
+
+  .drawer-nudge-btn--secondary {
+    background: var(--paper-strong);
+  }
+
+  .nudge-confirm-modal {
+    background: rgba(0, 0, 0, 0.6);
+  }
+
+  .nudge-confirm-card {
+    background: var(--paper-strong);
+  }
+}
+
+body.theme-graphite .drawer-nudge,
+body.theme-blueprint .drawer-nudge {
+  background: rgba(251, 188, 4, 0.06);
+  border-color: rgba(251, 188, 4, 0.18);
+}
+
+body.theme-graphite .nudge-confirm-card,
+body.theme-blueprint .nudge-confirm-card {
+  background: var(--paper-strong);
+}

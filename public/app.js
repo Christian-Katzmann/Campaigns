@@ -4574,6 +4574,7 @@ function formatAutomateElapsed(startedAt) {
 
 let drawerLogScrolledByUser = false;
 let drawerLastLogLength = 0;
+let nudgePendingPulse = false;
 
 function renderDrawerBody(data) {
   const body = document.getElementById('automate-drawer-body');
@@ -4590,6 +4591,10 @@ function renderDrawerBody(data) {
   const children = [];
 
   children.push(renderDrawerStatusPill(data));
+
+  const nudge = renderDrawerNudge(data);
+  if (nudge) children.push(nudge);
+
   children.push(renderDrawerVitals(data));
 
   const phaseRibbon = renderDrawerPhaseRibbon(data);
@@ -4623,6 +4628,162 @@ function renderDrawerStatusPill(data) {
     element('span', { className: 'drawer-status-label', text: data.status }),
   );
   return pill;
+}
+
+function renderDrawerNudge(data) {
+  if (!data.nudge_modes) return null;
+  const modes = data.nudge_modes;
+  const hasAny = Object.values(modes).some((m) => m.available);
+  if (!hasAny) return null;
+
+  const section = element('div', { className: 'drawer-nudge' });
+
+  const stepId = data.current_step?.id || '?';
+  const stepElapsedMs = data.current_step?.started_at
+    ? Date.now() - Date.parse(data.current_step.started_at)
+    : 0;
+  const elapsedMin = Math.floor(stepElapsedMs / 60_000);
+  const cap = data.max_step_minutes || 60;
+  const statusLabel = data.status === 'failed'
+    ? `Step ${stepId} failed.`
+    : `Step ${stepId} has been running for ${elapsedMin} minutes (cap: ${cap}).`;
+
+  section.append(element('p', { className: 'drawer-nudge-header', text: `${statusLabel} What would you like to do?` }));
+
+  const actions = element('div', { className: 'drawer-nudge-actions' });
+
+  const confirmDescriptions = {
+    continue: `This re-launches step ${stepId} with a prompt telling the agent to check git state and finish what's left. Safe default — work that already landed won't be redone.`,
+    restart: `This wipes step ${stepId}'s progress entirely and runs it again from scratch. Any work the previous attempt landed stays in git, but the agent starts fresh.`,
+    skip: `This marks step ${stepId} as done without verifying and advances to the next step. If the work isn't actually there, the chain will have a silent gap.`,
+    restart_failed: `This re-runs the failed step ${stepId} from scratch. The previous failure's log and state will be replaced.`,
+  };
+
+  if (modes.continue.available) {
+    const btn = element('button', {
+      className: 'button button-primary drawer-nudge-btn',
+      text: modes.continue.label,
+      type: 'button',
+    });
+    btn.addEventListener('click', () => showNudgeConfirmModal(data, 'continue', modes.continue.label, confirmDescriptions.continue));
+    actions.append(btn);
+  }
+
+  if (modes.restart_failed.available) {
+    const btn = element('button', {
+      className: 'button button-primary drawer-nudge-btn',
+      text: modes.restart_failed.label,
+      type: 'button',
+    });
+    btn.addEventListener('click', () => showNudgeConfirmModal(data, 'restart_failed', modes.restart_failed.label, confirmDescriptions.restart_failed));
+    actions.append(btn);
+  }
+
+  if (modes.restart.available) {
+    const btn = element('button', {
+      className: 'button drawer-nudge-btn drawer-nudge-btn--secondary',
+      text: modes.restart.label,
+      type: 'button',
+    });
+    btn.addEventListener('click', () => showNudgeConfirmModal(data, 'restart', modes.restart.label, confirmDescriptions.restart));
+    actions.append(btn);
+  }
+
+  if (modes.skip.available) {
+    const btn = element('button', {
+      className: 'button drawer-nudge-btn drawer-nudge-btn--secondary',
+      text: modes.skip.label,
+      type: 'button',
+    });
+    btn.addEventListener('click', () => showNudgeConfirmModal(data, 'skip', modes.skip.label, confirmDescriptions.skip, true));
+    actions.append(btn);
+  }
+
+  section.append(actions);
+  return section;
+}
+
+function showNudgeConfirmModal(data, mode, label, description, requireCheckbox) {
+  let existing = document.getElementById('nudge-confirm-modal');
+  if (existing) existing.remove();
+
+  const stepId = data.current_step?.id || '?';
+  const overlay = element('div', { className: 'nudge-confirm-modal', id: 'nudge-confirm-modal' });
+
+  const card = element('div', { className: 'nudge-confirm-card' });
+  card.append(element('h3', { className: 'nudge-confirm-title', text: label }));
+  card.append(element('p', { className: 'nudge-confirm-desc', text: description }));
+
+  let checkbox = null;
+  if (requireCheckbox) {
+    const checkRow = element('label', { className: 'nudge-confirm-check-row' });
+    checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.className = 'nudge-confirm-checkbox';
+    checkRow.append(checkbox, element('span', { text: "I've checked git status and the work is there." }));
+    card.append(checkRow);
+  }
+
+  const footer = element('div', { className: 'nudge-confirm-footer' });
+  const cancelBtn = element('button', { className: 'button', text: 'Cancel', type: 'button' });
+  const confirmBtn = element('button', {
+    className: 'button button-primary',
+    text: label,
+    type: 'button',
+  });
+
+  if (requireCheckbox) confirmBtn.disabled = true;
+
+  cancelBtn.addEventListener('click', () => overlay.remove());
+
+  if (checkbox) {
+    checkbox.addEventListener('change', () => {
+      confirmBtn.disabled = !checkbox.checked;
+    });
+  }
+
+  confirmBtn.addEventListener('click', async () => {
+    confirmBtn.disabled = true;
+    cancelBtn.disabled = true;
+    confirmBtn.textContent = 'Sending…';
+    const result = await executeNudge(state.id, mode);
+    overlay.remove();
+    if (result.ok) {
+      showToast(`Step ${stepId} nudged — ${mode === 'continue' ? 'continuing' : mode === 'skip' ? 'skipping' : 'restarting'}.`);
+      playAudioFeedback('tick');
+      nudgePendingPulse = true;
+      fetchCampaignAutomateState();
+    } else {
+      showToast(result.message || 'Nudge failed.');
+    }
+  });
+
+  footer.append(cancelBtn, confirmBtn);
+  card.append(footer);
+
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay) overlay.remove();
+  });
+  overlay.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') overlay.remove();
+  });
+
+  overlay.append(card);
+  document.body.append(overlay);
+  (requireCheckbox ? checkbox : confirmBtn).focus();
+}
+
+async function executeNudge(id, mode) {
+  try {
+    const response = await fetch('/api/automate-nudge', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id, mode }),
+    });
+    return await response.json();
+  } catch (error) {
+    return { ok: false, message: error.message };
+  }
 }
 
 function renderDrawerVitals(data) {
@@ -4785,9 +4946,14 @@ function renderDrawerTimeline(data) {
   const visible = events.slice(-limit).reverse();
   const hidden = events.length > limit ? events.slice(0, events.length - limit).reverse() : [];
 
+  const shouldPulse = nudgePendingPulse;
+  nudgePendingPulse = false;
+
   const list = element('div', { className: 'drawer-timeline-list' });
-  for (const ev of visible) {
-    list.append(renderTimelineChip(ev));
+  for (let i = 0; i < visible.length; i++) {
+    const chip = renderTimelineChip(visible[i]);
+    if (shouldPulse && i === 0) chip.classList.add('drawer-timeline-chip--pulse');
+    list.append(chip);
   }
   wrapper.append(list);
 
