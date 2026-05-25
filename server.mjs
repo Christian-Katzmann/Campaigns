@@ -6,6 +6,7 @@ import { homedir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFile } from 'node:child_process';
+import { getAutomateState, nudgeAutomateState } from './lib/automate-providers.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
@@ -101,6 +102,16 @@ const server = createServer(async (request, response) => {
 
     if (url.pathname === '/api/push' && request.method === 'POST') {
       await sendRemoteNotification(request, response);
+      return;
+    }
+
+    if (url.pathname === '/api/automate-state' && request.method === 'GET') {
+      await sendAutomateState(url, response);
+      return;
+    }
+
+    if (url.pathname === '/api/automate-nudge' && request.method === 'POST') {
+      await handleAutomateNudge(request, response);
       return;
     }
 
@@ -737,6 +748,60 @@ function countProgress(markdown) {
     }
   }
   return { done, total };
+}
+
+/* ------------------------------ API: automate state ------------------------- */
+
+async function sendAutomateState(url, response) {
+  const id = url.searchParams.get('id');
+
+  if (id) {
+    const registry = await readRegistry();
+    const entry = registry.campaigns.find((c) => c.id === id);
+    if (!entry) {
+      sendJson(response, 404, { error: 'Campaign not found.' });
+      return;
+    }
+    const state = await getAutomateState(entry.filePath);
+    sendJson(response, 200, state);
+    return;
+  }
+
+  const registry = await readRegistry();
+  const states = {};
+  await Promise.all(
+    registry.campaigns.map(async (entry) => {
+      states[entry.id] = await getAutomateState(entry.filePath, { summary: true });
+    }),
+  );
+  sendJson(response, 200, states);
+}
+
+async function handleAutomateNudge(request, response) {
+  const payload = await readJsonBody(request);
+
+  if (typeof payload.id !== 'string' || typeof payload.mode !== 'string') {
+    sendJson(response, 400, { error: 'Expected { id: string, mode: string }.' });
+    return;
+  }
+
+  const validModes = ['continue', 'restart', 'skip', 'restart_failed'];
+  if (!validModes.includes(payload.mode)) {
+    sendJson(response, 400, {
+      error: `Invalid mode. Expected one of: ${validModes.join(', ')}`,
+    });
+    return;
+  }
+
+  const registry = await readRegistry();
+  const entry = registry.campaigns.find((c) => c.id === payload.id);
+  if (!entry) {
+    sendJson(response, 404, { error: 'Campaign not found.' });
+    return;
+  }
+
+  const result = await nudgeAutomateState(entry.filePath, payload.mode);
+  sendJson(response, result.ok ? 200 : 502, result);
 }
 
 /* ------------------------------ Plumbing ------------------------------------ */
