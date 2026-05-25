@@ -2831,6 +2831,75 @@ input:checked + .slider:before {
   height: 100vh;
 }
 
+/* ---------- Automation status dot (library cards + campaign view) ---------- */
+
+.automate-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: automate-pulse 2s ease-in-out infinite;
+}
+
+.automate-dot--warn {
+  background: #b3261e;
+}
+
+@keyframes automate-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.5; transform: scale(0.85); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .automate-dot {
+    animation: none;
+  }
+}
+
+.library-card-automate-dot {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  z-index: 2;
+}
+
+.automate-status-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 2px 0 0;
+  color: var(--ink-soft);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  cursor: pointer;
+}
+
+.automate-status-line[hidden] {
+  display: none;
+}
+
+.automate-status-line .automate-dot {
+  width: 7px;
+  height: 7px;
+}
+
+.automate-status-text {
+  white-space: nowrap;
+}
+
+@media (prefers-color-scheme: dark) {
+  .automate-dot--warn {
+    background: #ff7370;
+  }
+}
+
+body.theme-graphite .automate-dot--warn,
+body.theme-blueprint .automate-dot--warn {
+  background: #ff7370;
+}
+
 /* ---------- Theme Overrides ---------- */
 
 body.theme-graphite {

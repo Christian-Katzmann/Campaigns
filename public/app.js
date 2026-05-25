@@ -90,6 +90,7 @@ async function initialize() {
   const params = new URLSearchParams(window.location.search);
   if (params.has('library')) {
     await renderLibrary();
+    startAutomatePolling();
     return;
   }
 
@@ -106,6 +107,7 @@ async function initialize() {
 
   if (!id && response.status === 404) {
     await renderLibrary();
+    startAutomatePolling();
     return;
   }
 
@@ -139,6 +141,7 @@ async function initialize() {
   showResumeCardIfNeeded();
   initSwitcher();
   initSettings();
+  startAutomatePolling();
 }
 
 function showLoadError(message) {
@@ -4204,4 +4207,161 @@ async function handleCompletionEffects(prevPhases, nextPhases, prevStats, nextSt
     const message = `Phase "${completedPhase.title}" is now complete (${completedPhase.done}/${completedPhase.total} tasks).`;
     sendConfiguredNotifications('Phase complete', message);
   }
+}
+
+/* ------------------------------ Automate state polling ---------------------- */
+
+const automateState = {
+  bulk: {},
+  current: null,
+  libraryTimer: null,
+  campaignTimer: null,
+  elapsedTimer: null,
+};
+
+let automateVisibilityBound = false;
+
+function startAutomatePolling() {
+  clearInterval(automateState.libraryTimer);
+  clearInterval(automateState.campaignTimer);
+  automateState.libraryTimer = null;
+  automateState.campaignTimer = null;
+
+  const isLibrary = document.body.classList.contains('view-library');
+
+  if (isLibrary) {
+    fetchBulkAutomateState();
+    automateState.libraryTimer = setInterval(fetchBulkAutomateState, 15_000);
+  } else if (state.id) {
+    fetchCampaignAutomateState();
+    automateState.campaignTimer = setInterval(fetchCampaignAutomateState, 15_000);
+  }
+
+  if (!automateVisibilityBound) {
+    automateVisibilityBound = true;
+    document.addEventListener('visibilitychange', handleAutomateVisibility);
+  }
+}
+
+function handleAutomateVisibility() {
+  if (document.hidden) {
+    clearInterval(automateState.libraryTimer);
+    clearInterval(automateState.campaignTimer);
+    clearInterval(automateState.elapsedTimer);
+    automateState.libraryTimer = null;
+    automateState.campaignTimer = null;
+    automateState.elapsedTimer = null;
+  } else {
+    startAutomatePolling();
+  }
+}
+
+async function fetchBulkAutomateState() {
+  try {
+    const response = await fetch('/api/automate-state');
+    if (!response.ok) return;
+    automateState.bulk = await response.json();
+    updateLibraryDots();
+  } catch {
+    /* silent — non-critical UI enhancement */
+  }
+}
+
+async function fetchCampaignAutomateState() {
+  if (!state.id) return;
+  try {
+    const response = await fetch(`/api/automate-state?id=${encodeURIComponent(state.id)}`);
+    if (!response.ok) return;
+    automateState.current = await response.json();
+    updateAutomateStatusLine();
+  } catch {
+    /* silent */
+  }
+}
+
+function updateLibraryDots() {
+  const cards = document.querySelectorAll('.library-card');
+  for (const card of cards) {
+    const link = card.querySelector('.library-card-link');
+    if (!link) continue;
+    const href = link.getAttribute('href') || '';
+    const match = href.match(/[?&]id=([^&]+)/);
+    if (!match) continue;
+    const id = decodeURIComponent(match[1]);
+    const entry = automateState.bulk[id];
+
+    const existing = card.querySelector('.library-card-automate-dot');
+    if (existing) existing.remove();
+
+    if (!entry || !entry.status) continue;
+    const isActive = entry.status === 'active' || entry.status === 'stalled';
+    const isWarn = entry.status === 'halted' || entry.status === 'failed';
+    if (!isActive && !isWarn) continue;
+
+    const dot = element('span', {
+      className: `automate-dot library-card-automate-dot${isWarn ? ' automate-dot--warn' : ''}`,
+    });
+    dot.title = entry.current_step_name || entry.status;
+    card.append(dot);
+  }
+}
+
+function updateAutomateStatusLine() {
+  const statusEl = document.getElementById('automate-status');
+  if (!statusEl) return;
+
+  const data = automateState.current;
+  if (!data || !data.status) {
+    statusEl.hidden = true;
+    clearInterval(automateState.elapsedTimer);
+    automateState.elapsedTimer = null;
+    return;
+  }
+
+  const isActive = data.status === 'active' || data.status === 'stalled';
+  const isWarn = data.status === 'halted' || data.status === 'failed';
+  if (!isActive && !isWarn) {
+    statusEl.hidden = true;
+    clearInterval(automateState.elapsedTimer);
+    automateState.elapsedTimer = null;
+    return;
+  }
+
+  statusEl.hidden = false;
+  renderAutomateStatusContent(statusEl, data, isWarn);
+
+  clearInterval(automateState.elapsedTimer);
+  if (isActive && data.current_step?.started_at) {
+    automateState.elapsedTimer = setInterval(() => {
+      renderAutomateStatusContent(statusEl, data, isWarn);
+    }, 60_000);
+  }
+
+  // Wire click to open drawer (placeholder for Step 3.1)
+  statusEl.onclick = () => { /* <OPEN_DRAWER_ACTION> */ };
+}
+
+function renderAutomateStatusContent(el, data, isWarn) {
+  const stepId = data.current_step?.id || data.current_step_id || '';
+  const elapsed = formatAutomateElapsed(data.current_step?.started_at);
+
+  const dotClass = `automate-dot${isWarn ? ' automate-dot--warn' : ''}`;
+  const text = elapsed ? `Step ${stepId} · ${elapsed}` : `Step ${stepId}`;
+
+  el.replaceChildren(
+    element('span', { className: dotClass }),
+    element('span', { className: 'automate-status-text', text }),
+  );
+  el.title = data.current_step?.name || data.current_step_name || '';
+}
+
+function formatAutomateElapsed(startedAt) {
+  if (!startedAt) return '';
+  const ms = Date.now() - Date.parse(startedAt);
+  if (!Number.isFinite(ms) || ms < 0) return '';
+  const minutes = Math.floor(ms / 60_000);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const remainMinutes = minutes % 60;
+  return `${hours}h ${remainMinutes}m`;
 }

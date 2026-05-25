@@ -135,7 +135,7 @@ fi
 mkdir -p "$ROOT_DIR/design/screenshots" "$ROOT_DIR/design/social" "$ROOT_DIR/design/trailer"
 
 cd "$ROOT_DIR"
-PORT="$PORT" node server.mjs --file "$DEMO_FILE" > "$TMP_DIR/server.log" 2>&1 &
+CAMPAIGNS_PORT_FILE="$TMP_DIR/server.port" PORT="$PORT" node server.mjs --file "$DEMO_FILE" > "$TMP_DIR/server.log" 2>&1 &
 SERVER_PID="$!"
 wait_for_server
 
