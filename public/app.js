@@ -4288,6 +4288,20 @@ function openAutomateDrawer() {
   drawer.removeAttribute('hidden');
   toggleBtn?.setAttribute('aria-expanded', 'true');
   localStorage.setItem(DRAWER_OPEN_KEY, 'true');
+
+  if (automateState.current) {
+    renderDrawerBody(automateState.current);
+    clearInterval(automateState.elapsedTimer);
+    automateState.elapsedTimer = setInterval(() => {
+      tickDrawerElapsed();
+      const statusEl = document.getElementById('automate-status');
+      const data = automateState.current;
+      if (statusEl && data && (data.status === 'active' || data.status === 'stalled')) {
+        renderAutomateStatusContent(statusEl, data, data.status === 'halted' || data.status === 'failed');
+      }
+    }, 60_000);
+  }
+  drawerLogScrolledByUser = false;
 }
 
 function closeAutomateDrawer() {
@@ -4299,6 +4313,9 @@ function closeAutomateDrawer() {
   drawer.setAttribute('hidden', '');
   toggleBtn?.setAttribute('aria-expanded', 'false');
   localStorage.setItem(DRAWER_OPEN_KEY, 'false');
+
+  clearInterval(automateState.elapsedTimer);
+  automateState.elapsedTimer = null;
 }
 
 function autoOpenDrawerOnce() {
@@ -4427,8 +4444,26 @@ async function fetchCampaignAutomateState() {
   try {
     const response = await fetch(`/api/automate-state?id=${encodeURIComponent(state.id)}`);
     if (!response.ok) return;
-    automateState.current = await response.json();
-    updateAutomateStatusLine();
+    const prev = automateState.current;
+    const next = await response.json();
+    automateState.current = next;
+
+    const prevStatus = prev?.status || null;
+    const nextStatus = next?.status || null;
+    const statusChanged = prevStatus !== nextStatus;
+    const stepChanged = (prev?.current_step?.id || null) !== (next?.current_step?.id || null);
+    const timelineChanged = (prev?.timeline_events?.length || 0) !== (next?.timeline_events?.length || 0);
+    const logChanged = (prev?.current_step_log?.length || 0) !== (next?.current_step_log?.length || 0);
+
+    if (!prev && next && nextStatus) {
+      autoOpenDrawerOnce();
+    }
+
+    if (statusChanged || stepChanged || timelineChanged || !prev) {
+      updateAutomateStatusLine();
+    } else if (logChanged && drawerState.open) {
+      updateDrawerLog(next);
+    }
   } catch {
     /* silent */
   }
@@ -4471,33 +4506,43 @@ function updateAutomateStatusLine() {
     clearInterval(automateState.elapsedTimer);
     automateState.elapsedTimer = null;
     syncDrawerToggleVisibility(false);
+    renderDrawerBody(null);
     return;
   }
 
+  const isCompleted = data.status === 'completed';
   const isActive = data.status === 'active' || data.status === 'stalled';
   const isWarn = data.status === 'halted' || data.status === 'failed';
-  if (!isActive && !isWarn) {
+
+  if (!isActive && !isWarn && !isCompleted) {
     statusEl.hidden = true;
     clearInterval(automateState.elapsedTimer);
     automateState.elapsedTimer = null;
     syncDrawerToggleVisibility(false);
+    renderDrawerBody(null);
     return;
   }
 
-  statusEl.hidden = false;
-  renderAutomateStatusContent(statusEl, data, isWarn);
+  if (isActive || isWarn) {
+    statusEl.hidden = false;
+    renderAutomateStatusContent(statusEl, data, isWarn);
+  } else {
+    statusEl.hidden = true;
+  }
 
   clearInterval(automateState.elapsedTimer);
-  if (isActive && data.current_step?.started_at) {
+  if ((isActive || isCompleted) && drawerState.open) {
     automateState.elapsedTimer = setInterval(() => {
-      renderAutomateStatusContent(statusEl, data, isWarn);
+      if (isActive) renderAutomateStatusContent(statusEl, data, isWarn);
+      tickDrawerElapsed();
     }, 60_000);
   }
 
-  syncDrawerToggleVisibility(true);
+  syncDrawerToggleVisibility(isActive || isWarn || isCompleted);
   syncDrawerToggleDotWarn(isWarn);
   statusEl.onclick = () => openAutomateDrawer();
   if (isActive) autoOpenDrawerOnce();
+  renderDrawerBody(data);
 }
 
 function renderAutomateStatusContent(el, data, isWarn) {
@@ -4523,4 +4568,372 @@ function formatAutomateElapsed(startedAt) {
   const hours = Math.floor(minutes / 60);
   const remainMinutes = minutes % 60;
   return `${hours}h ${remainMinutes}m`;
+}
+
+/* ------------------------------ Drawer content rendering ------------------- */
+
+let drawerLogScrolledByUser = false;
+let drawerLastLogLength = 0;
+
+function renderDrawerBody(data) {
+  const body = document.getElementById('automate-drawer-body');
+  if (!body) return;
+
+  if (!data || !data.status) {
+    body.replaceChildren(element('p', { className: 'automate-drawer-empty', text: 'No active automation.' }));
+    return;
+  }
+
+  const isCompleted = data.status === 'completed';
+  const isActive = data.status === 'active' || data.status === 'stalled';
+
+  const children = [];
+
+  children.push(renderDrawerStatusPill(data));
+  children.push(renderDrawerVitals(data));
+
+  const phaseRibbon = renderDrawerPhaseRibbon(data);
+  if (phaseRibbon) children.push(phaseRibbon);
+
+  if (!isCompleted && data.current_step) {
+    children.push(renderDrawerCurrentStep(data));
+  }
+
+  children.push(renderDrawerTimeline(data));
+  children.push(renderDrawerReceipts(data, isCompleted));
+
+  if (!isCompleted && isActive && data.current_step_log != null) {
+    children.push(renderDrawerLogTail(data));
+  }
+
+  body.replaceChildren(...children);
+}
+
+function renderDrawerStatusPill(data) {
+  const pill = element('div', { className: `drawer-status-pill drawer-status-pill--${data.status}` });
+  const dotMap = {
+    active: '●',
+    stalled: '●',
+    halted: '●',
+    completed: '✓',
+    failed: '●',
+  };
+  pill.append(
+    element('span', { className: 'drawer-status-dot', text: dotMap[data.status] || '●' }),
+    element('span', { className: 'drawer-status-label', text: data.status }),
+  );
+  return pill;
+}
+
+function renderDrawerVitals(data) {
+  const row = element('div', { className: 'drawer-vitals' });
+
+  const campaignElapsed = formatAutomateElapsed(data.started_at);
+  const phaseElapsed = computePhaseElapsed(data);
+  const stepElapsed = data.current_step ? formatAutomateElapsed(data.current_step.started_at) : '';
+
+  row.append(
+    buildVitalItem('Campaign', campaignElapsed || '–', 'drawer-vital-campaign'),
+    buildVitalItem('Phase', phaseElapsed || '–', 'drawer-vital-phase'),
+    buildVitalItem('Step', stepElapsed || '–', 'drawer-vital-step'),
+  );
+  return row;
+}
+
+function buildVitalItem(label, value, className) {
+  const item = element('div', { className: `drawer-vital ${className || ''}` });
+  item.append(
+    element('span', { className: 'drawer-vital-value', text: value }),
+    element('span', { className: 'drawer-vital-label', text: label }),
+  );
+  return item;
+}
+
+function computePhaseElapsed(data) {
+  if (!data.steps) return '';
+  let targetPhase = data.current_step?.phase;
+  if (targetPhase == null) {
+    const phases = data.steps.map((s) => s.phase).filter((p) => p != null);
+    targetPhase = phases.length > 0 ? Math.max(...phases) : null;
+  }
+  if (targetPhase == null) return '';
+  const phaseSteps = data.steps.filter((s) => s.phase === targetPhase);
+  const firstStarted = phaseSteps
+    .map((s) => s.started_at)
+    .filter(Boolean)
+    .sort()[0];
+  if (!firstStarted) return '';
+  if (data.status === 'completed') {
+    const lastCompleted = phaseSteps
+      .map((s) => s.completed_at)
+      .filter(Boolean)
+      .sort()
+      .pop();
+    if (lastCompleted) {
+      const ms = Date.parse(lastCompleted) - Date.parse(firstStarted);
+      if (Number.isFinite(ms) && ms >= 0) {
+        const minutes = Math.floor(ms / 60_000);
+        if (minutes < 60) return `${minutes}m`;
+        return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+      }
+    }
+  }
+  return formatAutomateElapsed(firstStarted);
+}
+
+function tickDrawerElapsed() {
+  const data = automateState.current;
+  if (!data) return;
+
+  const campaignEl = document.querySelector('.drawer-vital-campaign .drawer-vital-value');
+  const phaseEl = document.querySelector('.drawer-vital-phase .drawer-vital-value');
+  const stepEl = document.querySelector('.drawer-vital-step .drawer-vital-value');
+
+  if (campaignEl) campaignEl.textContent = formatAutomateElapsed(data.started_at) || '–';
+  if (phaseEl) phaseEl.textContent = computePhaseElapsed(data) || '–';
+  if (stepEl && data.current_step) {
+    stepEl.textContent = formatAutomateElapsed(data.current_step.started_at) || '–';
+  }
+}
+
+function renderDrawerPhaseRibbon(data) {
+  if (!data.steps || data.steps.length === 0) return null;
+
+  const phases = [];
+  const seen = new Set();
+  for (const step of data.steps) {
+    if (!seen.has(step.phase)) {
+      seen.add(step.phase);
+      phases.push({ number: step.phase, name: step.phase_name || `Phase ${step.phase}` });
+    }
+  }
+
+  if (phases.length <= 1) return null;
+
+  const currentPhase = data.current_step?.phase ?? null;
+  const ribbon = element('div', { className: 'drawer-phase-ribbon' });
+
+  for (const phase of phases) {
+    const phaseSteps = data.steps.filter((s) => s.phase === phase.number);
+    const doneCount = phaseSteps.filter((s) => s.status === 'done').length;
+    const total = phaseSteps.length;
+    const isActive = phase.number === currentPhase;
+    const isDone = doneCount === total;
+
+    const label = total <= 4
+      ? `${phase.name} ${doneCount}/${total}`
+      : phase.name;
+
+    const pill = element('button', {
+      className: `drawer-phase-pill${isActive ? ' active' : ''}${isDone ? ' done' : ''}`,
+      text: label,
+      type: 'button',
+      title: `${phase.name}: ${doneCount}/${total} done`,
+    });
+    pill.addEventListener('click', () => {
+      const anchor = document.querySelector(`.phase-header[data-phase-number="${phase.number}"]`);
+      if (anchor) anchor.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+    ribbon.append(pill);
+  }
+
+  return ribbon;
+}
+
+function renderDrawerCurrentStep(data) {
+  const step = data.current_step;
+  const block = element('div', { className: 'drawer-current-step' });
+
+  const header = element('div', { className: 'drawer-current-step-header' });
+  header.append(
+    element('span', { className: 'drawer-current-step-id', text: `Step ${step.id}` }),
+    element('span', { className: 'drawer-current-step-name', text: step.name || '' }),
+  );
+
+  const elapsed = element('div', {
+    className: 'drawer-current-step-elapsed',
+    text: formatAutomateElapsed(step.started_at) || '0m',
+  });
+
+  block.append(header, elapsed);
+
+  const stepData = data.steps?.find((s) => s.id === step.id);
+  if (stepData?.prompt) {
+    const details = element('details', { className: 'drawer-step-prompt-toggle' });
+    details.append(
+      element('summary', { text: 'Show step prompt' }),
+    );
+    const pre = element('pre', { className: 'drawer-step-prompt-code' });
+    pre.textContent = stepData.prompt.length > 2000 ? stepData.prompt.slice(0, 2000) + '…' : stepData.prompt;
+    details.append(pre);
+    block.append(details);
+  }
+
+  return block;
+}
+
+function renderDrawerTimeline(data) {
+  const events = data.timeline_events || [];
+  if (events.length === 0) {
+    return element('div', { className: 'drawer-timeline drawer-timeline-empty', text: 'No timeline events yet.' });
+  }
+
+  const wrapper = element('div', { className: 'drawer-timeline' });
+  wrapper.append(element('h3', { className: 'drawer-section-title', text: 'Timeline' }));
+
+  const limit = 20;
+  const visible = events.slice(-limit).reverse();
+  const hidden = events.length > limit ? events.slice(0, events.length - limit).reverse() : [];
+
+  const list = element('div', { className: 'drawer-timeline-list' });
+  for (const ev of visible) {
+    list.append(renderTimelineChip(ev));
+  }
+  wrapper.append(list);
+
+  if (hidden.length > 0) {
+    const showAll = element('button', {
+      className: 'drawer-show-all-btn',
+      text: `Show all ${events.length} events`,
+      type: 'button',
+    });
+    showAll.addEventListener('click', () => {
+      for (const ev of hidden) {
+        list.append(renderTimelineChip(ev));
+      }
+      showAll.remove();
+    });
+    wrapper.append(showAll);
+  }
+
+  return wrapper;
+}
+
+function renderTimelineChip(ev) {
+  const chip = element('div', { className: 'drawer-timeline-chip' });
+  const ts = ev.ts ? relativeTime(ev.ts) : '';
+  const eventText = ev.event || '';
+  const detail = ev.step_id ? ` ${ev.step_id}` : '';
+  const reason = ev.reason ? ` — ${ev.reason}` : '';
+
+  chip.append(
+    element('span', { className: 'drawer-timeline-time', text: ts }),
+    element('span', { className: 'drawer-timeline-event', text: `${eventText}${detail}${reason}` }),
+  );
+  return chip;
+}
+
+function renderDrawerReceipts(data, isCompleted) {
+  const steps = (data.steps || []).filter((s) => s.status === 'done');
+  if (steps.length === 0) {
+    return element('div', { className: 'drawer-receipts drawer-receipts-empty' });
+  }
+
+  const wrapper = element('div', { className: 'drawer-receipts' });
+  wrapper.append(element('h3', { className: 'drawer-section-title', text: 'Completed steps' }));
+
+  for (const step of steps) {
+    const details = document.createElement('details');
+    details.className = 'drawer-receipt-item';
+    if (isCompleted) details.open = true;
+
+    const summary = element('summary', { className: 'drawer-receipt-summary' });
+    summary.append(
+      element('span', { className: 'drawer-receipt-id', text: step.id }),
+      element('span', { className: 'drawer-receipt-name', text: step.name || '' }),
+    );
+    details.append(summary);
+
+    if (step.receipt) {
+      const content = element('div', { className: 'drawer-receipt-content' });
+      content.innerHTML = renderSimpleMarkdown(step.receipt);
+      details.append(content);
+    } else {
+      details.append(element('p', { className: 'drawer-receipt-empty', text: 'No receipt available.' }));
+    }
+
+    wrapper.append(details);
+  }
+
+  return wrapper;
+}
+
+function renderDrawerLogTail(data) {
+  const wrapper = element('details', { className: 'drawer-log-tail', open: true });
+  wrapper.append(element('summary', { className: 'drawer-section-title', text: 'Step log' }));
+
+  const logContainer = element('div', { className: 'drawer-log-container' });
+  const pre = element('pre', { className: 'drawer-log-pre' });
+
+  const logText = data.current_step_log || '';
+  const lines = logText.split('\n');
+  const capped = lines.length > 500 ? lines.slice(-500).join('\n') : logText;
+  pre.textContent = capped;
+
+  logContainer.append(pre);
+
+  const rejoinChip = element('button', {
+    className: 'drawer-log-rejoin',
+    text: '↓ new',
+    type: 'button',
+    hidden: true,
+  });
+  rejoinChip.addEventListener('click', () => {
+    logContainer.scrollTop = logContainer.scrollHeight;
+    rejoinChip.hidden = true;
+    drawerLogScrolledByUser = false;
+  });
+  logContainer.append(rejoinChip);
+
+  logContainer.addEventListener('scroll', () => {
+    const atBottom = logContainer.scrollHeight - logContainer.scrollTop - logContainer.clientHeight < 30;
+    drawerLogScrolledByUser = !atBottom;
+    if (atBottom) rejoinChip.hidden = true;
+  });
+
+  wrapper.append(logContainer);
+
+  drawerLastLogLength = logText.length;
+  requestAnimationFrame(() => {
+    logContainer.scrollTop = logContainer.scrollHeight;
+  });
+
+  return wrapper;
+}
+
+function updateDrawerLog(data) {
+  const pre = document.querySelector('.drawer-log-pre');
+  const container = document.querySelector('.drawer-log-container');
+  const rejoin = document.querySelector('.drawer-log-rejoin');
+  if (!pre || !container || !data.current_step_log) return;
+
+  const logText = data.current_step_log;
+  if (logText.length === drawerLastLogLength) return;
+
+  const lines = logText.split('\n');
+  const capped = lines.length > 500 ? lines.slice(-500).join('\n') : logText;
+  pre.textContent = capped;
+  drawerLastLogLength = logText.length;
+
+  if (!drawerLogScrolledByUser) {
+    container.scrollTop = container.scrollHeight;
+  } else if (rejoin) {
+    rejoin.hidden = false;
+  }
+}
+
+function renderSimpleMarkdown(text) {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/^### (.+)$/gm, '<h4>$1</h4>')
+    .replace(/^## (.+)$/gm, '<h3>$1</h3>')
+    .replace(/^# (.+)$/gm, '<h3>$1</h3>')
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/`(.+?)`/g, '<code>$1</code>')
+    .replace(/^- (.+)$/gm, '<li>$1</li>')
+    .replace(/(<li>.*<\/li>\n?)+/g, '<ul>$&</ul>')
+    .replace(/\n\n/g, '<br><br>')
+    .replace(/\n/g, '<br>');
 }
