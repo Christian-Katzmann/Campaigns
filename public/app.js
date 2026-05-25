@@ -141,6 +141,7 @@ async function initialize() {
   showResumeCardIfNeeded();
   initSwitcher();
   initSettings();
+  initAutomateDrawer();
   startAutomatePolling();
 }
 
@@ -203,6 +204,21 @@ function handleGlobalKeydown(event) {
   if ((event.metaKey || event.ctrlKey) && event.key === 's') {
     event.preventDefault();
     saveToServer({ manual: true });
+    return;
+  }
+
+  if ((event.metaKey || event.ctrlKey) && (event.key === '\\' || event.key === '/')) {
+    const target = event.target;
+    const isTyping =
+      target instanceof HTMLInputElement ||
+      target instanceof HTMLTextAreaElement ||
+      (target instanceof HTMLElement && target.isContentEditable);
+    if (isTyping) return;
+    const isLibrary = document.body.classList.contains('view-library');
+    if (isLibrary) return;
+    event.preventDefault();
+    if (drawerState.open) closeAutomateDrawer();
+    else openAutomateDrawer();
     return;
   }
 
@@ -4209,6 +4225,145 @@ async function handleCompletionEffects(prevPhases, nextPhases, prevStats, nextSt
   }
 }
 
+/* ------------------------------ Automate drawer ----------------------------- */
+
+const DRAWER_WIDTH_KEY = 'campaigns-drawer-width:v1';
+const DRAWER_OPEN_KEY = 'campaigns-drawer-open:v1';
+const DRAWER_AUTO_OPENED_PREFIX = 'campaigns-drawer-auto-opened:';
+
+const drawerState = {
+  open: false,
+  width: 420,
+  autoOpenedThisSession: false,
+};
+
+function initAutomateDrawer() {
+  const drawer = document.querySelector('#automate-drawer');
+  const panel = drawer?.querySelector('.automate-drawer-panel');
+  const toggleBtn = document.querySelector('#automate-drawer-toggle');
+  const resizeHandle = drawer?.querySelector('.automate-drawer-resize');
+  if (!drawer || !panel || !toggleBtn) return;
+
+  const savedWidth = localStorage.getItem(DRAWER_WIDTH_KEY);
+  if (savedWidth) {
+    const w = Number(savedWidth);
+    if (w >= 320 && w <= 720) drawerState.width = w;
+  }
+  panel.style.setProperty('--drawer-width', `${drawerState.width}px`);
+
+  const savedOpen = localStorage.getItem(DRAWER_OPEN_KEY);
+  if (savedOpen === 'true') openAutomateDrawer();
+
+  if (state.id) {
+    drawerState.autoOpenedThisSession = !!sessionStorage.getItem(
+      DRAWER_AUTO_OPENED_PREFIX + state.id,
+    );
+  }
+
+  toggleBtn.addEventListener('click', () => {
+    if (drawerState.open) closeAutomateDrawer();
+    else openAutomateDrawer();
+  });
+
+  drawer.querySelectorAll('[data-action="close-automate-drawer"]').forEach((btn) => {
+    btn.addEventListener('click', closeAutomateDrawer);
+  });
+
+  drawer.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      closeAutomateDrawer();
+    }
+  });
+
+  if (resizeHandle) initDrawerResize(resizeHandle, panel);
+}
+
+function openAutomateDrawer() {
+  const drawer = document.querySelector('#automate-drawer');
+  const toggleBtn = document.querySelector('#automate-drawer-toggle');
+  if (!drawer) return;
+
+  drawerState.open = true;
+  drawer.removeAttribute('hidden');
+  toggleBtn?.setAttribute('aria-expanded', 'true');
+  localStorage.setItem(DRAWER_OPEN_KEY, 'true');
+}
+
+function closeAutomateDrawer() {
+  const drawer = document.querySelector('#automate-drawer');
+  const toggleBtn = document.querySelector('#automate-drawer-toggle');
+  if (!drawer) return;
+
+  drawerState.open = false;
+  drawer.setAttribute('hidden', '');
+  toggleBtn?.setAttribute('aria-expanded', 'false');
+  localStorage.setItem(DRAWER_OPEN_KEY, 'false');
+}
+
+function autoOpenDrawerOnce() {
+  if (drawerState.autoOpenedThisSession || drawerState.open) return;
+  if (!state.id) return;
+
+  drawerState.autoOpenedThisSession = true;
+  sessionStorage.setItem(DRAWER_AUTO_OPENED_PREFIX + state.id, '1');
+  openAutomateDrawer();
+}
+
+function syncDrawerToggleVisibility(hasActiveState) {
+  const toggleBtn = document.querySelector('#automate-drawer-toggle');
+  if (!toggleBtn) return;
+
+  toggleBtn.hidden = false;
+
+  const existingDot = toggleBtn.querySelector('.drawer-indicator');
+  if (hasActiveState && !existingDot) {
+    const dot = document.createElement('span');
+    dot.className = 'drawer-indicator';
+    toggleBtn.append(dot);
+  } else if (!hasActiveState && existingDot) {
+    existingDot.remove();
+  }
+}
+
+function syncDrawerToggleDotWarn(isWarn) {
+  const dot = document.querySelector('#automate-drawer-toggle .drawer-indicator');
+  if (!dot) return;
+  dot.classList.toggle('drawer-indicator--warn', isWarn);
+}
+
+function initDrawerResize(handle, panel) {
+  let startX = 0;
+  let startWidth = 0;
+
+  const onPointerMove = (event) => {
+    const delta = startX - event.clientX;
+    const next = Math.max(320, Math.min(720, startWidth + delta));
+    drawerState.width = next;
+    panel.style.setProperty('--drawer-width', `${next}px`);
+  };
+
+  const onPointerUp = () => {
+    handle.classList.remove('is-dragging');
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+    localStorage.setItem(DRAWER_WIDTH_KEY, String(drawerState.width));
+    window.removeEventListener('pointermove', onPointerMove);
+    window.removeEventListener('pointerup', onPointerUp);
+  };
+
+  handle.addEventListener('pointerdown', (event) => {
+    event.preventDefault();
+    startX = event.clientX;
+    startWidth = drawerState.width;
+    handle.classList.add('is-dragging');
+    document.body.style.cursor = 'ew-resize';
+    document.body.style.userSelect = 'none';
+    window.addEventListener('pointermove', onPointerMove);
+    window.addEventListener('pointerup', onPointerUp);
+  });
+}
+
 /* ------------------------------ Automate state polling ---------------------- */
 
 const automateState = {
@@ -4315,6 +4470,7 @@ function updateAutomateStatusLine() {
     statusEl.hidden = true;
     clearInterval(automateState.elapsedTimer);
     automateState.elapsedTimer = null;
+    syncDrawerToggleVisibility(false);
     return;
   }
 
@@ -4324,6 +4480,7 @@ function updateAutomateStatusLine() {
     statusEl.hidden = true;
     clearInterval(automateState.elapsedTimer);
     automateState.elapsedTimer = null;
+    syncDrawerToggleVisibility(false);
     return;
   }
 
@@ -4337,8 +4494,10 @@ function updateAutomateStatusLine() {
     }, 60_000);
   }
 
-  // Wire click to open drawer (placeholder for Step 3.1)
-  statusEl.onclick = () => { /* <OPEN_DRAWER_ACTION> */ };
+  syncDrawerToggleVisibility(true);
+  syncDrawerToggleDotWarn(isWarn);
+  statusEl.onclick = () => openAutomateDrawer();
+  if (isActive) autoOpenDrawerOnce();
 }
 
 function renderAutomateStatusContent(el, data, isWarn) {

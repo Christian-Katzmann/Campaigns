@@ -3040,3 +3040,199 @@ body.theme-graphite .button-primary,
 body.theme-blueprint .button-primary {
   color: var(--page);
 }
+
+/* ---------- Automate drawer (right-side activity panel) ---------- */
+
+.automate-drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 900;
+  display: flex;
+  justify-content: flex-end;
+  pointer-events: none;
+}
+
+.automate-drawer[hidden] {
+  display: none;
+}
+
+.automate-drawer-scrim {
+  position: fixed;
+  inset: 0;
+  background: rgba(18, 18, 18, 0.36);
+  backdrop-filter: blur(3px);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 180ms ease-out;
+}
+
+@media (max-width: 899px) {
+  .automate-drawer:not([hidden]) .automate-drawer-scrim {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+
+.automate-drawer-resize {
+  flex: 0 0 6px;
+  cursor: ew-resize;
+  user-select: none;
+  pointer-events: auto;
+  position: relative;
+}
+
+.automate-drawer-resize::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 3px;
+  height: 32px;
+  border-radius: 2px;
+  background: var(--line);
+  opacity: 0;
+  transform: translate(-50%, -50%);
+  transition: opacity 180ms ease-out, background 180ms ease-out;
+}
+
+.automate-drawer-resize:hover::before,
+.automate-drawer-resize.is-dragging::before {
+  opacity: 1;
+  background: var(--ink-faint);
+}
+
+.automate-drawer-panel {
+  display: flex;
+  flex-direction: column;
+  width: var(--drawer-width, 420px);
+  min-width: 320px;
+  max-width: 720px;
+  height: 100%;
+  background: color-mix(in srgb, var(--page) 88%, var(--paper));
+  backdrop-filter: blur(18px);
+  border-left: 1px solid var(--line);
+  box-shadow: -12px 0 36px rgba(18, 18, 18, 0.12);
+  pointer-events: auto;
+  transform: translateX(100%);
+  transition: transform 220ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.automate-drawer:not([hidden]) .automate-drawer-panel {
+  transform: translateX(0);
+}
+
+.automate-drawer-header {
+  padding: 18px 20px 14px;
+  border-bottom: 1px solid var(--line-soft);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.automate-drawer-title {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 720;
+}
+
+.automate-drawer-close {
+  width: 34px;
+  height: 34px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  font-size: 24px;
+  line-height: 1;
+  cursor: pointer;
+  color: inherit;
+  opacity: 0.72;
+  transition:
+    background 120ms ease-out,
+    border-color 120ms ease-out,
+    opacity 120ms ease-out;
+}
+
+.automate-drawer-close:hover {
+  border-color: var(--line);
+  background: var(--paper);
+  opacity: 1;
+}
+
+.automate-drawer-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px;
+}
+
+.automate-drawer-empty {
+  margin: 0;
+  padding: 48px 0;
+  text-align: center;
+  color: var(--ink-faint);
+  font-size: 14px;
+}
+
+/* Dot indicator on the drawer toggle button */
+#automate-drawer-toggle {
+  position: relative;
+}
+
+#automate-drawer-toggle .drawer-indicator {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: automate-pulse 2s ease-in-out infinite;
+}
+
+#automate-drawer-toggle .drawer-indicator--warn {
+  background: #b3261e;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #automate-drawer-toggle .drawer-indicator {
+    animation: none;
+  }
+}
+
+/* Very narrow: drawer takes full width */
+@media (max-width: 559px) {
+  .automate-drawer-panel {
+    width: 100vw;
+    max-width: none;
+  }
+
+  .automate-drawer-resize {
+    display: none;
+  }
+}
+
+/* Dark mode tweaks for drawer */
+@media (prefers-color-scheme: dark) {
+  .automate-drawer-panel {
+    box-shadow: -12px 0 36px rgba(0, 0, 0, 0.5);
+  }
+
+  .automate-drawer-scrim {
+    background: rgba(0, 0, 0, 0.5);
+  }
+
+  #automate-drawer-toggle .drawer-indicator--warn {
+    background: #ff7370;
+  }
+}
+
+body.theme-graphite .automate-drawer-panel,
+body.theme-blueprint .automate-drawer-panel {
+  box-shadow: -12px 0 36px rgba(0, 0, 0, 0.5);
+}
+
+body.theme-graphite #automate-drawer-toggle .drawer-indicator--warn,
+body.theme-blueprint #automate-drawer-toggle .drawer-indicator--warn {
+  background: #ff7370;
+}

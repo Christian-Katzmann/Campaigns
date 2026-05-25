@@ -25,6 +25,11 @@
           <button id="open-file-button" class="button button-quiet" type="button">Open .md</button>
           <button id="export-button" class="button button-quiet" type="button">Export</button>
           <button id="focus-button" class="button button-quiet" type="button" aria-pressed="false">Focus</button>
+          <button id="automate-drawer-toggle" class="button button-quiet button-icon" type="button" aria-label="Automation activity" aria-controls="automate-drawer" aria-expanded="false" title="Automation activity" hidden>
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:18px;height:18px;vertical-align:middle;display:inline-block;">
+              <polyline points="2 12 6 12 8 5 12 19 14 12 22 12"/>
+            </svg>
+          </button>
           <button id="settings-button" class="button button-quiet button-icon" type="button" aria-label="Preferences" aria-controls="settings-drawer" aria-expanded="false" title="Preferences">
             <svg class="icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:18px;height:18px;vertical-align:middle;display:inline-block;">
               <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.1a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"></path>
@@ -176,6 +181,20 @@
         </div>
       </div>
     </div>
+
+    <aside id="automate-drawer" class="automate-drawer" hidden>
+      <div class="automate-drawer-scrim" data-action="close-automate-drawer"></div>
+      <div class="automate-drawer-resize" role="separator" aria-orientation="horizontal" aria-label="Resize automation drawer" title="Drag to resize"></div>
+      <div class="automate-drawer-panel">
+        <header class="automate-drawer-header">
+          <h2 class="automate-drawer-title">Automation</h2>
+          <button class="automate-drawer-close" type="button" data-action="close-automate-drawer" aria-label="Close automation drawer">&times;</button>
+        </header>
+        <div class="automate-drawer-body" id="automate-drawer-body">
+          <p class="automate-drawer-empty">No active automation.</p>
+        </div>
+      </div>
+    </aside>
 
     <canvas id="confetti-canvas" class="confetti-canvas"></canvas>
 
