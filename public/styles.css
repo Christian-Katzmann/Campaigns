@@ -778,6 +778,7 @@ body.focus-mode .document > [data-step-id]:not(.step-active) {
   margin: 1.75em 0 0.55em;
   line-height: 1.12;
   letter-spacing: 0;
+  overflow-wrap: anywhere;
 }
 
 .document h1 {
@@ -830,6 +831,7 @@ body.focus-mode .document > [data-step-id]:not(.step-active) {
   border-left: 3px solid var(--line);
   color: var(--ink-soft);
   font-size: 21px;
+  overflow-wrap: anywhere;
 }
 
 .quote p:last-child {
@@ -1289,11 +1291,16 @@ tr:last-child td:last-child {
   }
 
   .document h1 {
-    font-size: 36px;
+    font-size: 32px;
   }
 
   .document h2 {
     font-size: 30px;
+  }
+
+  .quote {
+    padding-left: 14px;
+    font-size: 19px;
   }
 
   .check-row {
@@ -1475,6 +1482,72 @@ body.view-library #conflict-modal {
   display: none;
 }
 
+.library-parked-divider {
+  grid-column: 1 / -1;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 32px;
+  margin: 2px 0;
+}
+
+.library-parked-divider::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 1px;
+  background: var(--line-soft);
+}
+
+.library-parked-toggle {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--page);
+  color: var(--ink-faint);
+  cursor: pointer;
+  font-size: 17px;
+  font-weight: 500;
+  line-height: 1;
+  transition: border-color 120ms ease-out, color 120ms ease-out, background-color 120ms ease-out,
+    transform 120ms ease-out;
+}
+
+.library-parked-toggle:hover,
+.library-parked-toggle:focus-visible {
+  border-color: var(--accent);
+  background: var(--control-bg);
+  color: var(--accent);
+}
+
+.library-parked-toggle:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 34%, transparent);
+  outline-offset: 2px;
+}
+
+.library-parked-toggle:active {
+  transform: scale(0.96);
+}
+
+.library-parked-symbol {
+  display: block;
+  transform: translateY(-1px);
+}
+
+.library-parked-divider[data-expanded="true"] .library-parked-toggle {
+  color: var(--accent);
+}
+
 .library-card {
   position: relative;
   display: flex;
@@ -1515,11 +1588,12 @@ body.view-library #conflict-modal {
   pointer-events: none;
 }
 
-.library-card.has-logo .library-card-park-button {
+.library-card.has-logo .library-card-park-button,
+.library-card.has-logo .library-card-delete-button {
   right: 53px;
 }
 
-.library-card.has-logo:not(.complete):not(.missing) .library-card-title {
+.library-card.has-logo:not(.complete) .library-card-title {
   padding-right: 66px;
 }
 
@@ -1598,7 +1672,8 @@ body.view-library #conflict-modal {
   opacity: 0.55;
 }
 
-.library-card-park-button {
+.library-card-park-button,
+.library-card-delete-button {
   position: absolute;
   top: 12px;
   right: 12px;
@@ -1618,20 +1693,32 @@ body.view-library #conflict-modal {
     border-color 120ms ease-out;
 }
 
-.library-card-park-button svg {
+.library-card-park-button svg,
+.library-card-delete-button svg {
   width: 14px;
   height: 14px;
 }
 
 .library-card:hover .library-card-park-button,
-.library-card-park-button:focus-visible {
+.library-card:hover .library-card-delete-button,
+.library-card-park-button:focus-visible,
+.library-card-delete-button:focus-visible {
   opacity: 1;
 }
 
-.library-card-park-button:hover {
+.library-card-park-button:hover,
+.library-card-delete-button:hover {
   color: var(--ink);
   background: var(--paper-strong);
   border-color: var(--line);
+}
+
+.library-card-delete-button {
+  color: #9f3535;
+}
+
+.library-card-delete-button:hover {
+  color: #7d1f1f;
 }
 
 .library-card.parked {
@@ -1921,9 +2008,14 @@ body.view-library #conflict-modal {
     background: rgba(130, 169, 230, 0.16);
   }
 
-  .library-card-park-button:hover {
+  .library-card-park-button:hover,
+  .library-card-delete-button:hover {
     background: var(--control-hover-bg);
     border-color: var(--control-hover-border);
+  }
+
+  .library-card-delete-button {
+    color: #ff7370;
   }
 
   /* Save error text */

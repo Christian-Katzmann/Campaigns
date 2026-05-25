@@ -22,7 +22,7 @@ Most of these emerged from working with the trust-primitive-propagation campaign
 
 ## Probably worth building next
 
-- **NEEDS WORK loop button** — when Codex returns NEEDS WORK, generate the follow-up Claude prompt that points at the review file and asks Claude to close the gaps. Set the step's state visibly to needs-work (different colour from in-flight). The protocol is described in prose at the top of the campaign — it isn't enacted. *Held for a later version per Christian.*
+- **NEEDS WORK loop button** — when Codex returns NEEDS WORK, generate the follow-up Claude prompt that points at the review file and asks Claude to close the gaps. Set the step's state visibly to needs-work (different colour from in-flight). The protocol is described in prose at the top of the campaign — it isn't enacted. *Held for a later version.*
 
 ## Tier 2 — build if you find yourself wanting them
 

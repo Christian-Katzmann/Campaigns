@@ -2,7 +2,13 @@ node_modules/
 desktop/
 assets/icons/build/
 assets/icons/campaigns/
+.env*
+!.env.example
 .DS_Store
 .claude/settings.local.json
 *.log
 *.pid
+
+# Local dogfood campaigns and implementation plans belong to each user's workspace.
+campaigns/
+plans/

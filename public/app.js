@@ -2,6 +2,7 @@ const PREFS_KEY = 'campaigns-prefs:v1';
 const LEGACY_PREFS_KEY = 'campaign-guide-prefs:v1';
 const MIGRATION_FLAG_KEY = 'campaigns-migrated:v1';
 const DOC_SECTIONS_RESET_FLAG_KEY = 'campaigns-doc-sections-reset:v1';
+const STANDARD_SETTINGS_MIGRATION_FLAG_KEY = 'campaigns-standard-settings-2026-05-24:v1';
 const AUTOSAVE_DELAY_MS = 700;
 const TODAY_INACTIVITY_MS = 12 * 60 * 60 * 1000;
 
@@ -16,6 +17,13 @@ const LEGACY_THEME_MAP = {
   sunset: 'signal',
 };
 const NTFY_TOPIC_REGEX = /^[A-Za-z0-9_-]{3,64}$/;
+const STANDARD_CAMPAIGN_SETTINGS = Object.freeze({
+  theme: 'default',
+  soundEffectsEnabled: true,
+  celebrationsEnabled: true,
+  macNotificationsEnabled: false,
+  ntfyTopic: '',
+});
 
 const state = {
   activeStepId: null,
@@ -37,6 +45,7 @@ const state = {
   serverBacked: true,
   stepCheckMap: new Map(),
   stepSections: [],
+  libraryParkedExpanded: false,
   id: '',
   homeDir: '',
 };
@@ -1958,7 +1967,7 @@ async function renderLibrary() {
   elements.libraryGrid.hidden = false;
 
   const sorted = sortCampaigns(campaigns);
-  elements.libraryGrid.replaceChildren(...sorted.map((c) => buildLibraryCard(c)));
+  elements.libraryGrid.replaceChildren(...buildLibraryItems(sorted));
 }
 
 function sortCampaigns(campaigns) {
@@ -1984,6 +1993,64 @@ function campaignActivityMs(campaign) {
 
 function isComplete(campaign) {
   return campaign.progress?.total > 0 && campaign.progress.done === campaign.progress.total;
+}
+
+function buildLibraryItems(campaigns) {
+  const active = [];
+  const parked = [];
+  const complete = [];
+
+  for (const campaign of campaigns) {
+    if (isComplete(campaign)) {
+      complete.push(campaign);
+    } else if (campaign.parkedAt) {
+      parked.push(campaign);
+    } else {
+      active.push(campaign);
+    }
+  }
+
+  const children = active.map((campaign) => buildLibraryCard(campaign));
+
+  if (parked.length > 0) {
+    children.push(buildParkedCampaignDivider(parked.length));
+    if (state.libraryParkedExpanded) {
+      children.push(...parked.map((campaign) => buildLibraryCard(campaign)));
+    }
+  }
+
+  children.push(...complete.map((campaign) => buildLibraryCard(campaign)));
+  return children;
+}
+
+function buildParkedCampaignDivider(count) {
+  const expanded = state.libraryParkedExpanded;
+  const divider = element('div', {
+    className: 'library-parked-divider',
+    dataset: { expanded: String(expanded) },
+  });
+
+  const button = element('button', {
+    className: 'library-parked-toggle',
+    type: 'button',
+    title: expanded ? 'Hide sleeping campaigns' : `Show ${count} sleeping campaign${count === 1 ? '' : 's'}`,
+    ariaLabel: expanded ? 'Hide sleeping campaigns' : `Show ${count} sleeping campaign${count === 1 ? '' : 's'}`,
+  });
+  button.setAttribute('aria-expanded', String(expanded));
+  button.append(
+    element('span', { className: 'library-parked-symbol', text: expanded ? '-' : '+', ariaHidden: 'true' }),
+    element('span', {
+      className: 'visually-hidden',
+      text: expanded ? 'Hide sleeping campaigns' : `Show ${count} sleeping campaign${count === 1 ? '' : 's'}`,
+    }),
+  );
+  button.addEventListener('click', () => {
+    state.libraryParkedExpanded = !state.libraryParkedExpanded;
+    renderLibrary();
+  });
+
+  divider.append(button);
+  return divider;
 }
 
 function buildLibraryCard(campaign) {
@@ -2048,6 +2115,8 @@ function buildLibraryCard(campaign) {
 
   if (!complete && !campaign.missing) {
     card.append(buildParkButton(campaign, parked));
+  } else if (campaign.missing) {
+    card.append(buildDeleteMissingButton(campaign));
   }
 
   return card;
@@ -2078,6 +2147,31 @@ function buildParkButton(campaign, parked) {
   return button;
 }
 
+function buildDeleteMissingButton(campaign) {
+  const button = element('button', {
+    className: 'library-card-delete-button',
+    type: 'button',
+    title: 'Remove missing campaign',
+    ariaLabel: 'Remove missing campaign from library',
+  });
+  button.innerHTML =
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v5"/><path d="M14 11v5"/></svg>';
+  button.addEventListener('click', async (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    button.disabled = true;
+    try {
+      await deleteMissingCampaign(campaign.id);
+      await renderLibrary();
+      showToast('Missing campaign removed.');
+    } catch (error) {
+      button.disabled = false;
+      showToast(error.message || 'Could not remove missing campaign.');
+    }
+  });
+  return button;
+}
+
 async function togglePark(id, parked) {
   const response = await fetch('/api/registry/park', {
     method: 'POST',
@@ -2087,6 +2181,18 @@ async function togglePark(id, parked) {
   if (!response.ok) {
     const payload = await response.json().catch(() => ({}));
     throw new Error(payload.error || 'Could not update park state.');
+  }
+}
+
+async function deleteMissingCampaign(id) {
+  const response = await fetch('/api/registry', {
+    method: 'DELETE',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ id }),
+  });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(payload.error || 'Could not remove missing campaign.');
   }
 }
 
@@ -3445,12 +3551,12 @@ function defaultPrefs() {
     phaseInverted: [],
     placeholders: {},
     today: { date: '', startCount: 0, lastActivity: '' },
-    soundEffectsEnabled: false,
-    celebrationsEnabled: true,
-    macNotificationsEnabled: false,
-    ntfyTopic: '',
+    soundEffectsEnabled: STANDARD_CAMPAIGN_SETTINGS.soundEffectsEnabled,
+    celebrationsEnabled: STANDARD_CAMPAIGN_SETTINGS.celebrationsEnabled,
+    macNotificationsEnabled: STANDARD_CAMPAIGN_SETTINGS.macNotificationsEnabled,
+    ntfyTopic: STANDARD_CAMPAIGN_SETTINGS.ntfyTopic,
     webhookUrl: '',
-    theme: 'default',
+    theme: STANDARD_CAMPAIGN_SETTINGS.theme,
   };
 }
 
@@ -3493,6 +3599,46 @@ function normalizeTheme(theme) {
   return THEME_KEYS.has(normalized) ? normalized : 'default';
 }
 
+function applyStandardCampaignSettings(prefs) {
+  if (!prefs || typeof prefs !== 'object') return false;
+  let changed = false;
+
+  for (const [key, value] of Object.entries(STANDARD_CAMPAIGN_SETTINGS)) {
+    if (prefs[key] !== value) {
+      prefs[key] = value;
+      changed = true;
+    }
+  }
+
+  // Keep any existing team webhook intact; the standard only defines no
+  // default webhook for campaigns that do not already have one.
+  if (typeof prefs.webhookUrl !== 'string') {
+    prefs.webhookUrl = '';
+    changed = true;
+  }
+
+  return changed;
+}
+
+function migrateStandardCampaignSettings(allPrefs) {
+  if (localStorage.getItem(STANDARD_SETTINGS_MIGRATION_FLAG_KEY) === 'done') {
+    return false;
+  }
+
+  let mutated = false;
+  for (const key of Object.keys(allPrefs)) {
+    if (applyStandardCampaignSettings(allPrefs[key])) {
+      mutated = true;
+    }
+  }
+
+  if (mutated) {
+    localStorage.setItem(PREFS_KEY, JSON.stringify(allPrefs));
+  }
+  localStorage.setItem(STANDARD_SETTINGS_MIGRATION_FLAG_KEY, 'done');
+  return mutated;
+}
+
 function loadPrefs(filePath) {
   const defaults = defaultPrefs();
   if (!filePath) return defaults;
@@ -3524,6 +3670,8 @@ function loadPrefs(filePath) {
       localStorage.setItem(DOC_SECTIONS_RESET_FLAG_KEY, 'done');
     }
 
+    migrateStandardCampaignSettings(all);
+
     const parsed = all[filePath];
     if (parsed && typeof parsed === 'object') {
       return sanitizePrefs(parsed);
@@ -3537,6 +3685,7 @@ function loadPrefs(filePath) {
           const legacy = JSON.parse(legacyRaw);
           if (legacy && typeof legacy === 'object') {
             const migrated = sanitizePrefs(legacy);
+            applyStandardCampaignSettings(migrated);
             all[filePath] = migrated;
             localStorage.setItem(PREFS_KEY, JSON.stringify(all));
             localStorage.setItem(MIGRATION_FLAG_KEY, 'done');

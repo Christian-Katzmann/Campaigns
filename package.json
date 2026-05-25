@@ -1,11 +1,33 @@
 {
-  "name": "campaigns",
+  "name": "campaigns-app",
   "version": "0.1.0",
-  "private": true,
   "type": "module",
-  "description": "Local reader/editor for markdown campaign plans.",
+  "description": "Local markdown campaign planner and execution board.",
+  "license": "MIT",
+  "author": "Christian Katzmann",
+  "homepage": "https://github.com/Christian-Katzmann/Campaigns#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Christian-Katzmann/Campaigns.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Christian-Katzmann/Campaigns/issues"
+  },
+  "keywords": [
+    "campaigns",
+    "markdown",
+    "planning",
+    "ai-coding",
+    "local-first"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "start": "node server.mjs",
+    "start:sample": "node server.mjs --file examples/sample-campaign.md",
+    "assets:render": "./scripts/render-public-assets.sh",
+    "check": "node --check server.mjs && node --check public/app.js",
     "desktop:icons": "APP_NAME='Campaigns' APP_SLUG='campaigns' ./scripts/desktop-icons.sh",
     "desktop:build": "./scripts/desktop-build.sh",
     "desktop:install": "./scripts/desktop-install.sh",

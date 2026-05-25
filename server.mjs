@@ -9,8 +9,11 @@ import { execFile } from 'node:child_process';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
-const registryDir = path.join(homedir(), 'Library', 'Application Support', 'Campaigns');
+const APP_NAME = 'Campaigns';
+const APP_SLUG = 'campaigns';
+const registryDir = process.env.CAMPAIGNS_REGISTRY_DIR || defaultRegistryDir();
 const registryPath = path.join(registryDir, 'registry.json');
+const portFilePath = process.env.CAMPAIGNS_PORT_FILE || defaultPortFilePath();
 const MISSING_PRUNE_AFTER_MS = 24 * 60 * 60 * 1000;
 const NOTIFICATION_TITLE_MAX = 80;
 const NOTIFICATION_MESSAGE_MAX = 500;
@@ -66,6 +69,11 @@ const server = createServer(async (request, response) => {
       return;
     }
 
+    if (url.pathname === '/api/registry' && request.method === 'DELETE') {
+      await deleteMissingRegistryEndpoint(request, response);
+      return;
+    }
+
     if (url.pathname === '/api/registry/park' && request.method === 'POST') {
       await parkEndpoint(request, response);
       return;
@@ -109,9 +117,15 @@ const server = createServer(async (request, response) => {
 });
 
 server.listen(port, () => {
-  console.log(`Campaigns: http://localhost:${port}`);
+  const address = server.address();
+  const actualPort = typeof address === 'object' && address ? address.port : port;
+  console.log(`Campaigns: http://localhost:${actualPort}`);
   console.log(`Registry: ${registryPath}`);
+  console.log(`Port file: ${portFilePath}`);
   if (fileArg) console.log(`Default file: ${path.resolve(fileArg)}`);
+  writeRuntimePort(actualPort).catch((error) => {
+    console.error(`Could not write port file: ${error.message}`);
+  });
 });
 
 function parseArgs(rawArgs) {
@@ -138,6 +152,39 @@ function parseArgs(rawArgs) {
   }
 
   return parsed;
+}
+
+function defaultRegistryDir() {
+  const home = homedir();
+
+  if (process.platform === 'darwin') {
+    return path.join(home, 'Library', 'Application Support', APP_NAME);
+  }
+
+  if (process.platform === 'win32') {
+    return path.join(process.env.APPDATA || path.join(home, 'AppData', 'Roaming'), APP_NAME);
+  }
+
+  return path.join(process.env.XDG_DATA_HOME || path.join(home, '.local', 'share'), APP_SLUG);
+}
+
+function defaultPortFilePath() {
+  const home = homedir();
+
+  if (process.platform === 'darwin') {
+    return path.join(home, 'Library', 'Logs', APP_NAME, 'server.port');
+  }
+
+  if (process.platform === 'win32') {
+    return path.join(process.env.LOCALAPPDATA || path.join(home, 'AppData', 'Local'), APP_NAME, 'server.port');
+  }
+
+  return path.join(process.env.XDG_STATE_HOME || path.join(home, '.local', 'state'), APP_SLUG, 'server.port');
+}
+
+async function writeRuntimePort(actualPort) {
+  await mkdir(path.dirname(portFilePath), { recursive: true });
+  await writeFile(portFilePath, `${actualPort}\n`, 'utf8');
 }
 
 /* ------------------------------ Registry ------------------------------------ */
@@ -211,6 +258,23 @@ async function setCampaignParked(id, parked) {
   }
   await writeRegistry(registry);
   return { found: true, parkedAt: entry.parkedAt ?? null };
+}
+
+async function deleteMissingCampaign(id) {
+  const registry = await readRegistry();
+  const index = registry.campaigns.findIndex((c) => c.id === id);
+  if (index === -1) return { found: false, removed: false };
+
+  const entry = registry.campaigns[index];
+  try {
+    await stat(entry.filePath);
+    return { found: true, removed: false };
+  } catch {
+    registry.campaigns.splice(index, 1);
+    if (defaultCampaignId === id) defaultCampaignId = null;
+    await writeRegistry(registry);
+    return { found: true, removed: true };
+  }
 }
 
 async function setCampaignLogo(id, logoPath) {
@@ -460,6 +524,28 @@ async function parkEndpoint(request, response) {
     return;
   }
   sendJson(response, 200, { ok: true, parkedAt: result.parkedAt });
+}
+
+async function deleteMissingRegistryEndpoint(request, response) {
+  const payload = await readJsonBody(request);
+  if (typeof payload.id !== 'string') {
+    sendJson(response, 400, { error: 'Expected { id: string }.' });
+    return;
+  }
+
+  const result = await deleteMissingCampaign(payload.id);
+  if (!result.found) {
+    sendJson(response, 404, { error: 'Campaign not found.' });
+    return;
+  }
+  if (!result.removed) {
+    sendJson(response, 409, {
+      error: 'Campaign file still exists. Only missing campaigns can be removed from the library.',
+    });
+    return;
+  }
+
+  sendJson(response, 200, { ok: true });
 }
 
 async function sendNotification(request, response) {

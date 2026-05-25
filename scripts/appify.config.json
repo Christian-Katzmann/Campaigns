@@ -5,7 +5,7 @@
       "slug": "campaigns",
       "port": 4178,
       "start_command": "node server.mjs",
-      "bundle_id": "com.user.campaigns",
+      "bundle_id": "app.campaigns.desktop",
       "version": "0.1.0",
       "polyfill_path": "",
       "backend_port": null,

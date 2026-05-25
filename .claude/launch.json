@@ -4,7 +4,7 @@
     {
       "name": "campaigns",
       "runtimeExecutable": "node",
-      "runtimeArgs": ["server.mjs", "--file", "campaigns/v1-followup.md"],
+      "runtimeArgs": ["server.mjs", "--file", "examples/sample-campaign.md"],
       "port": 4189,
       "autoPort": true
     }
