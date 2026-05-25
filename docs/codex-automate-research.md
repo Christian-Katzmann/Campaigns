@@ -6,7 +6,7 @@ Findings from a Codex investigation of how its own automation system stores stat
 
 Codex inspected live automation state, not just skill docs. Codex automations live in `~/.codex/automations/<id>/automation.toml`, but scheduler truth lives in `~/.codex/sqlite/codex-dev.db`. That DB has real `automations` and `automation_runs` tables. There is no `codex automation list/create` CLI in `codex --help`.
 
-Two active Campaigns runs were observed at investigation time, including `publish-apps` at `/Users/christiankatzmann/Dev/Projects/katzmann-kit/reports/campaign-automation/publish-apps/state.json`. Its live run had a lock at `.../publish-apps/lock`, timeline at `.../timeline.md`, receipts in the repo, and a live Codex session JSONL at `~/.codex/sessions/2026/05/25/rollout-2026-05-25T18-26-06-019e5ff5-3825-7792-b38a-94439557885b.jsonl`.
+Two active Campaigns runs were observed at investigation time, including `publish-apps` at `<repo>/reports/campaign-automation/publish-apps/state.json`. Its live run had a lock at `.../publish-apps/lock`, timeline at `.../timeline.md`, receipts in the repo, and a live Codex session JSONL at `~/.codex/sessions/2026/05/25/rollout-2026-05-25T18-26-06-019e5ff5-3825-7792-b38a-94439557885b.jsonl`.
 
 ## 1. Detection
 
@@ -89,7 +89,7 @@ There is no single canonical Codex receipt registry today.
 Observed receipts live in the repo, often under the campaign run dir:
 
 ```text
-/Users/christiankatzmann/Dev/Projects/katzmann-kit/reports/campaign-automation/publish-apps/step-1.2-receipt.md
+<repo>/reports/campaign-automation/publish-apps/step-1.2-receipt.md
 ```
 
 Campaign markdown may declare receipt paths, for example `campaigns/devsec-rotation-completeness/receipts/01-end-to-end.md`, but the generic Codex runner does not currently write `receipt_path` into `state.json`. **Provider should infer from `run_dir` plus markdown-declared paths until the skill records receipts explicitly** (see Gaps section).
