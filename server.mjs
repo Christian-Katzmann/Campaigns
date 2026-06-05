@@ -12,6 +12,16 @@ import {
   nudgeAutomateState,
   rerunAutomateFinalize,
 } from './lib/automate-providers.mjs';
+import {
+  PET_SPRITE,
+  PET_SPRITE_MIME,
+  isValidPetId,
+  listPetIds,
+  readPetManifest,
+  resolvePetsDir,
+  selectPet,
+  statSpritesheet,
+} from './lib/companion-pets.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
@@ -21,6 +31,9 @@ const registryDir = process.env.CAMPAIGNS_REGISTRY_DIR || defaultRegistryDir();
 const registryPath = path.join(registryDir, 'registry.json');
 const portFilePath = process.env.CAMPAIGNS_PORT_FILE || defaultPortFilePath();
 const lessonsHelperPath = process.env.CAMPAIGNS_LESSONS_HELPER || defaultLessonsHelperPath();
+// Codex custom pet packages for the Campaign Companion. Resolves to
+// ${CODEX_HOME:-$HOME/.codex}/pets (override with CAMPAIGNS_PETS_DIR). Read-only.
+const petsDir = resolvePetsDir();
 const MISSING_PRUNE_AFTER_MS = 24 * 60 * 60 * 1000;
 // How long a registered campaign can sit with no active automation before the
 // companion calls it "stale". Conservative first pass — long enough that a
@@ -178,6 +191,16 @@ const server = createServer(async (request, response) => {
 
     if (url.pathname === '/api/companion-state' && request.method === 'GET') {
       await sendCompanionState(response);
+      return;
+    }
+
+    if (url.pathname === '/api/companion-pet' && request.method === 'GET') {
+      await sendCompanionPet(response);
+      return;
+    }
+
+    if (url.pathname === '/api/companion-pet/spritesheet' && request.method === 'GET') {
+      await sendCompanionPetSpritesheet(url, response);
       return;
     }
 
@@ -1324,6 +1347,74 @@ function tallyCompanionCounts(campaigns) {
     counts[campaign.status] = (counts[campaign.status] ?? 0) + 1;
   }
   return counts;
+}
+
+/* ------------------------------ API: companion pet -------------------------- */
+
+// Read-only discovery + serving for the Campaign Companion's visual pet. Pets
+// are Codex custom-pet packages under ${CODEX_HOME:-$HOME/.codex}/pets; nothing
+// is copied into the repo. Returns the selected pet's metadata with a served
+// spritesheet URL plus the fixed sprite-atlas grid, or { pet: null } when no
+// usable package exists so the UI can render empty. `available` lists every
+// usable package id (handy for a future picker).
+async function sendCompanionPet(response) {
+  const [pet, available] = await Promise.all([selectPet(petsDir), listPetIds(petsDir)]);
+
+  if (!pet) {
+    sendJson(response, 200, { pet: null, available });
+    return;
+  }
+
+  sendJson(response, 200, {
+    pet: {
+      id: pet.id,
+      displayName: pet.displayName,
+      description: pet.description,
+      spritesheetPath: pet.spritesheetPath,
+      spritesheetUrl: `/api/companion-pet/spritesheet?id=${encodeURIComponent(pet.id)}`,
+      sprite: PET_SPRITE,
+    },
+    available,
+  });
+}
+
+// Serve a pet spritesheet. Guards at every step: the id must be a simple slug,
+// the manifest must resolve a spritesheet inside the package directory, and the
+// extension must be a contract-allowed image type. Path traversal cannot escape
+// the pets directory — the id is slug-validated and the manifest's spritesheet
+// path is re-confined to the package dir inside readPetManifest.
+async function sendCompanionPetSpritesheet(url, response) {
+  const id = url.searchParams.get('id');
+  if (!isValidPetId(id)) {
+    sendJson(response, 400, { error: 'Invalid pet id.' });
+    return;
+  }
+
+  const pet = await readPetManifest(petsDir, id);
+  if (!pet) {
+    sendJson(response, 404, { error: 'Pet package not found.' });
+    return;
+  }
+
+  const ext = path.extname(pet.spritesheetFile).toLowerCase();
+  const mime = PET_SPRITE_MIME.get(ext);
+  if (!mime) {
+    sendJson(response, 404, { error: 'Unsupported spritesheet type.' });
+    return;
+  }
+
+  const details = await statSpritesheet(pet.spritesheetFile);
+  if (!details) {
+    sendJson(response, 404, { error: 'Spritesheet file is no longer present.' });
+    return;
+  }
+
+  response.writeHead(200, {
+    'content-type': mime,
+    'content-length': details.size,
+    'cache-control': 'private, max-age=300',
+  });
+  createReadStream(pet.spritesheetFile).pipe(response);
 }
 
 async function handleAutomateNudge(request, response) {

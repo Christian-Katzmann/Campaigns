@@ -28,9 +28,12 @@
     "start:sample": "node server.mjs --file examples/sample-campaign.md",
     "assets:render": "./scripts/render-public-assets.sh",
     "check": "node --check server.mjs && node --check public/app.js",
+    "test": "node --test 'test/**/*.test.mjs'",
     "desktop:icons": "APP_NAME='Campaigns' APP_SLUG='campaigns' ./scripts/desktop-icons.sh",
     "desktop:build": "./scripts/desktop-build.sh",
     "desktop:install": "./scripts/desktop-install.sh",
-    "desktop:quit": "./scripts/desktop-quit.sh"
+    "desktop:quit": "./scripts/desktop-quit.sh",
+    "desktop:icons:preview": "APP_NAME='Campaigns' APP_SLUG='campaigns' ./scripts/desktop-icons-preview.sh",
+    "desktop:doctor": "./scripts/desktop-doctor.sh"
   }
 }
