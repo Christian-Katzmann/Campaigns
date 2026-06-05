@@ -58,6 +58,7 @@ const elements = {
   document: document.querySelector('#document'),
   documentPath: document.querySelector('#document-path'),
   documentTitle: document.querySelector('#document-title'),
+  companionButton: document.querySelector('#companion-button'),
   exportButton: document.querySelector('#export-button'),
   fileInput: document.querySelector('#file-input'),
   focusButton: document.querySelector('#focus-button'),
@@ -195,6 +196,7 @@ function documentUrl() {
 function bindGlobalActions() {
   elements.saveButton.addEventListener('click', () => saveToServer({ manual: true }));
   elements.exportButton.addEventListener('click', exportMarkdown);
+  if (elements.companionButton) elements.companionButton.addEventListener('click', launchCompanion);
   elements.openFileButton.addEventListener('click', () => elements.fileInput.click());
   elements.fileInput.addEventListener('change', openLocalFile);
   elements.focusButton.addEventListener('click', toggleFocusMode);
@@ -1221,6 +1223,23 @@ function toggleFocusMode() {
       behavior: 'smooth',
       block: 'start',
     });
+  }
+}
+
+function launchCompanion() {
+  // Step 3.1 native bridge hook: if a native wrapper exposes campaignCompanion.open(),
+  // delegate to it so it can present a sticky NSPanel instead of a browser popup.
+  if (typeof window.campaignCompanion?.open === 'function') {
+    window.campaignCompanion.open();
+    return;
+  }
+  const popup = window.open(
+    '/companion',
+    'campaign-companion',
+    'width=360,height=520,menubar=no,toolbar=no,location=no,status=no,resizable=yes',
+  );
+  if (!popup) {
+    showToast('Popup blocked — allow popups for this site or open /companion in a new tab.');
   }
 }
 
