@@ -92,6 +92,12 @@ const args = process.argv.slice(2);
 const options = parseArgs(args);
 const fileArg = options.file ?? process.env.CAMPAIGN_FILE;
 const port = Number(options.port ?? process.env.PORT ?? 4178);
+// Bind loopback by default: Campaigns is a local-first single-user app, so the
+// dev server has no business accepting LAN connections. A non-loopback listener
+// also trips the macOS firewall "accept incoming connections?" dialog, which
+// would stall an unattended launch. CAMPAIGNS_HOST/HOST override it only for the
+// rare setup that genuinely needs a different interface.
+const host = process.env.CAMPAIGNS_HOST || process.env.HOST || '127.0.0.1';
 
 let defaultCampaignId = null;
 
@@ -239,7 +245,7 @@ const server = createServer(async (request, response) => {
   }
 });
 
-server.listen(port, () => {
+server.listen(port, host, () => {
   const address = server.address();
   const actualPort = typeof address === 'object' && address ? address.port : port;
   console.log(`Campaigns: http://localhost:${actualPort}`);
