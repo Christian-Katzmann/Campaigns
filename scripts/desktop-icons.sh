@@ -10,14 +10,14 @@
 #      When the source is newer, also clear the resize-tree at $OUT_DIR
 #      because `desktop-icons.sh` short-circuits the iconset regen when
 #      resized PNGs already exist there.
-#   3. Honors APPIFY_PROJECT_ROOT (worktree workflow); helper script lives
-#      next to desktop-build.sh, project artifacts go to APPIFY_PROJECT_ROOT.
+#   3. Honors APP_IT_PROJECT_ROOT (worktree workflow); helper script lives
+#      next to desktop-build.sh, project artifacts go to APP_IT_PROJECT_ROOT.
 #
 # Required env: APP_NAME, APP_SLUG. APP_NAME may include non-ASCII.
 
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-ROOT="${APPIFY_PROJECT_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
+ROOT="${APP_IT_PROJECT_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 
 APP_NAME="${APP_NAME:?must set APP_NAME (e.g. 'Momó Studio')}"
 APP_SLUG="${APP_SLUG:?must set APP_SLUG (e.g. 'momo-studio')}"

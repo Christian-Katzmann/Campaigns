@@ -1,5 +1,5 @@
 #!/bin/bash
-# appify launcher (Swift WebKit shell variant) — ensures the dev server is up,
+# app-it launcher (Swift WebKit shell variant) — ensures the dev server is up,
 # then hands the window over to the native Swift WebKit wrapper that lives next
 # to this script. The wrapper takes over as the .app's foreground process, so
 # the .app's own Dock icon stays visible and macOS handles single-instance
@@ -20,10 +20,10 @@
 #                      command hardcodes a port literal in `package.json`
 #                      scripts (`"dev": "next dev -p 3002"`), the launcher's
 #                      chosen port will be ignored — bypass via direct binary
-#                      (`pnpm exec next dev`) or add a `dev:appify` script.
+#                      (`pnpm exec next dev`) or add a `dev:app-it` script.
 #   __POLYFILL_PATH__  optional absolute path to a JS polyfill file (empty if none)
 #
-# PROJECT_ROOT is baked at build time. Honors APPIFY_PROJECT_ROOT env override
+# PROJECT_ROOT is baked at build time. Honors APP_IT_PROJECT_ROOT env override
 # at build time (for worktree workflows). Re-run desktop:build if the repo moves.
 
 set -e
@@ -32,14 +32,22 @@ APP_NAME="__APP_NAME__"
 APP_SLUG="__APP_SLUG__"
 PROJECT_ROOT="__PROJECT_ROOT__"
 PREFERRED_PORT=__PORT__
-START_COMMAND="__START_COMMAND__"
 POLYFILL_PATH="__POLYFILL_PATH__"
 
-LOG_DIR="$HOME/Library/Logs/$APP_NAME"
-mkdir -p "$LOG_DIR"
+# Keep `$PORT` and other shell syntax literal until the daemon spawns below.
+# A plain double-quoted assignment here would expand `$PORT` before the
+# launcher has selected its runtime port, breaking Vite/SvelteKit recipes.
+START_COMMAND="$(cat <<'APP_IT_START_COMMAND'
+__START_COMMAND__
+APP_IT_START_COMMAND
+)"
+
+STATE_DIR="$HOME/Library/Application Support/app-it/$APP_SLUG"
+LOG_DIR="$HOME/Library/Logs/app-it/$APP_SLUG"
+mkdir -p "$STATE_DIR" "$LOG_DIR"
 SERVER_LOG="$LOG_DIR/server.log"
-PID_FILE="$LOG_DIR/server.pid"
-PORT_FILE="$LOG_DIR/server.port"
+PID_FILE="$STATE_DIR/server.pid"
+PORT_FILE="$STATE_DIR/server.port"
 INSTALL_LOG="$LOG_DIR/install.log"
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -64,8 +72,24 @@ fi
 # --- Pre-flight: required binary present? ------------------------------
 # Catch missing-binary failures (bun not on PATH, pnpm not installed,
 # python missing) in <1s instead of waiting 60s for the readiness probe
-# to time out into a misleading "port literal hardcoded?" alert.
-FIRST_BIN="$(echo "$START_COMMAND" | awk '{print $1}')"
+# to time out into a misleading "port literal hardcoded?" alert. If the
+# command starts with a directory hop (`cd web && npm run dev`), validate
+# the actual runner instead of the shell builtin.
+COMMAND_ROOT="$PROJECT_ROOT"
+COMMAND_TO_RUN="$START_COMMAND"
+case "$COMMAND_TO_RUN" in
+    cd\ *\ \&\&\ *)
+        COMMAND_SUBDIR="${COMMAND_TO_RUN#cd }"
+        COMMAND_SUBDIR="${COMMAND_SUBDIR%% &&*}"
+        COMMAND_SUBDIR="${COMMAND_SUBDIR%\"}"
+        COMMAND_SUBDIR="${COMMAND_SUBDIR#\"}"
+        COMMAND_SUBDIR="${COMMAND_SUBDIR%\'}"
+        COMMAND_SUBDIR="${COMMAND_SUBDIR#\'}"
+        COMMAND_ROOT="$PROJECT_ROOT/$COMMAND_SUBDIR"
+        COMMAND_TO_RUN="${COMMAND_TO_RUN#* && }"
+        ;;
+esac
+FIRST_BIN="$(echo "$COMMAND_TO_RUN" | awk '{print $1}')"
 if [ -n "$FIRST_BIN" ] && ! command -v "$FIRST_BIN" >/dev/null 2>&1; then
     /usr/bin/osascript -e "display alert \"$APP_NAME can't start\" message \"Required binary not found on PATH:\n$FIRST_BIN\n\nThe launcher's PATH covers Homebrew, nvm, pnpm-store, Bun, Deno, Volta, mise, asdf, cargo. Install the missing tool or adjust START_COMMAND.\""
     exit 1
@@ -73,10 +97,10 @@ fi
 
 # --- Pre-flight: node_modules present? ---------------------------------
 # Only check if START_COMMAND is a node-package-manager invocation.
-case "$START_COMMAND" in
+case "$COMMAND_TO_RUN" in
     npm\ *|pnpm\ *|yarn\ *|bun\ run*|bunx*|npx*)
-        if [ ! -d "$PROJECT_ROOT/node_modules" ]; then
-            /usr/bin/osascript -e "display alert \"$APP_NAME can't start\" message \"node_modules is missing in:\n$PROJECT_ROOT\n\nRun 'npm install' (or pnpm/yarn/bun) in that folder, then click again.\""
+        if [ ! -d "$COMMAND_ROOT/node_modules" ]; then
+            /usr/bin/osascript -e "display alert \"$APP_NAME can't start\" message \"node_modules is missing in:\n$COMMAND_ROOT\n\nRun 'npm install' (or pnpm/yarn/bun) in that folder, then click again.\""
             exit 1
         fi
         ;;
@@ -117,8 +141,16 @@ if [ -f "$PID_FILE" ] && [ -f "$PORT_FILE" ]; then
             DESCENDANTS="$EXPECTED_PID"
             CURRENT="$EXPECTED_PID"
             for _ in 1 2 3 4; do
-                NEXT_GEN="$(pgrep -P "$CURRENT" 2>/dev/null | tr '\n' ' ')"
-                [ -z "$NEXT_GEN" ] && break
+                # Expand one PID per pgrep call. macOS `pgrep -P` returns nothing
+                # for a space-joined / trailing-space argument, so passing the
+                # whole generation at once would silently halt the walk at the
+                # first level and miss deeper listeners (npm → node-vite,
+                # pnpm → node → next-server). Walk per-pid so each call is clean.
+                NEXT_GEN=""
+                for _pid in $CURRENT; do
+                    NEXT_GEN="$NEXT_GEN $(pgrep -P "$_pid" 2>/dev/null | tr '\n' ' ')"
+                done
+                [ -z "${NEXT_GEN// /}" ] && break
                 DESCENDANTS="$DESCENDANTS $NEXT_GEN"
                 CURRENT="$NEXT_GEN"
             done
@@ -218,6 +250,18 @@ if [ -z "$CHOSEN_PORT" ]; then
 fi
 
 URL="http://localhost:$CHOSEN_PORT"
+
+# --- Headless smoke seam (CI / SSH / --check) --------------------------
+# Everything a real Dock click does has now run EXCEPT opening the window:
+# the dev server is up, daemonized, reachable, and its pid/port are recorded.
+# With APP_IT_SMOKE set, print the runtime URL and exit 0 instead of handing
+# off to the GUI wrapper. The server stays warm so the caller can probe it
+# (curl, desktop:doctor) and then stop it (desktop:quit). Zero effect on a
+# normal Dock launch (APP_IT_SMOKE unset).
+if [ -n "${APP_IT_SMOKE:-}" ]; then
+    echo "app-it smoke: $APP_NAME ready at $URL (server pid $(cat "$PID_FILE" 2>/dev/null))"
+    exit 0
+fi
 
 # --- Hand off to the native WebKit wrapper -----------------------------
 # exec replaces this bash process with the Swift binary. The .app's identity

@@ -46,6 +46,14 @@
         <div id="resume-card" class="resume-card" role="status" aria-live="polite" hidden></div>
         <aside class="overview" aria-label="Campaign overview">
           <div class="overview-card">
+            <img
+              id="overview-active-indicator"
+              class="overview-active-indicator"
+              src="/assets/automation-active-indicator.webp"
+              alt=""
+              aria-hidden="true"
+              hidden
+            />
             <img id="campaign-logo" class="campaign-logo" alt="" hidden />
             <p class="overview-kicker">Progress</p>
             <strong id="progress-label">0 of 0 done</strong>
@@ -69,6 +77,7 @@
         <p class="library-eyebrow">All campaigns</p>
         <h1 class="library-title">Campaigns</h1>
       </header>
+      <section id="library-lessons" class="library-lessons" hidden></section>
       <div id="library-grid" class="library-grid"></div>
       <div id="library-empty" class="library-empty" hidden>
         <p class="library-empty-title">No campaigns yet.</p>

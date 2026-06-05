@@ -1,0 +1,293 @@
+/*
+ * Campaign Companion — compact, operational surface.
+ *
+ * Self-contained on purpose: this page loads in a tiny browser popup (and later
+ * a native NSPanel), not inside the main app shell, so it carries its own lean
+ * token set instead of pulling in the 4k-line app stylesheet. Tokens mirror the
+ * main visual language (styles.css :root) so the two surfaces feel related.
+ * Quiet and operational — a status readout, not a marketing panel.
+ */
+
+:root {
+  color-scheme: light dark;
+  --page: #ffffff;
+  --ink: #121212;
+  --ink-soft: #5f5b56;
+  --ink-faint: #6f6a62;
+  --line: #dedbd5;
+  --line-soft: #ece9e4;
+  --paper: #f6f5f2;
+  --accent: #0b66d8;
+
+  /* Status hues — one per companion status, shared by the dot and the label. */
+  --running: #1e7e34;
+  --queued: #0b66d8;
+  --stalled: #a66d00;
+  --failed: #b3261e;
+  --halted: #6f6a62;
+  --paused: #5f6b7a;
+  --stale: #8a7320;
+  --idle: #8b857c;
+  --completed: #4f7a3a;
+
+  --mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  --sans:
+    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+}
+
+body.companion {
+  /* Sized to live happily in a 320–380 × 420–520 popup; the surrounding window
+     does the clamping, the page just fills it without horizontal scroll. */
+  display: flex;
+  flex-direction: column;
+  min-width: 300px;
+  background: var(--page);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 13px;
+  line-height: 1.4;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ------------------------------ Header -------------------------------------- */
+
+.companion-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px 12px;
+  border-bottom: 1px solid var(--line);
+  flex: 0 0 auto;
+}
+
+.companion-pet {
+  flex: 0 0 auto;
+  width: 56px;
+  height: 60px;
+  display: grid;
+  place-items: center;
+}
+
+/* Sprite size + position are driven from the API grid in companion.js; this
+   only declares how a single rendered cell is clipped and rendered crisply. */
+.companion-pet-sprite {
+  background-repeat: no-repeat;
+  image-rendering: auto;
+}
+
+.companion-head-text {
+  min-width: 0; /* let the title ellipsize instead of pushing width */
+}
+
+.companion-eyebrow {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+.companion-title {
+  margin: 1px 0 2px;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.companion-counts {
+  margin: 0;
+  font-size: 11px;
+  color: var(--ink-soft);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+}
+
+.companion-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+
+.companion-count-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+}
+
+/* ------------------------------ List ---------------------------------------- */
+
+.companion-list {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 6px 0;
+}
+
+.companion-empty {
+  margin: 0;
+  padding: 28px 16px;
+  text-align: center;
+  color: var(--ink-faint);
+  font-size: 12px;
+}
+
+.companion-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: baseline;
+  gap: 4px 10px;
+  padding: 9px 16px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.companion-row:last-child {
+  border-bottom: 0;
+}
+
+.companion-row-dot {
+  grid-row: 1 / span 2;
+  align-self: center;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+}
+
+/* The running dot gets a soft pulse so live work reads at a glance. */
+.companion-row-dot.is-running {
+  box-shadow: 0 0 0 0 currentColor;
+  animation: companion-pulse 2s ease-out infinite;
+}
+
+@keyframes companion-pulse {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, currentColor 45%, transparent);
+  }
+  70% {
+    box-shadow: 0 0 0 5px color-mix(in srgb, currentColor 0%, transparent);
+  }
+  100% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, currentColor 0%, transparent);
+  }
+}
+
+.companion-row-title {
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 550;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.companion-row-title.is-missing {
+  color: var(--ink-faint);
+  font-style: italic;
+}
+
+.companion-row-status {
+  justify-self: end;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.companion-row-meta {
+  grid-column: 2 / span 2;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 8px;
+  font-size: 11px;
+  color: var(--ink-soft);
+  min-width: 0;
+}
+
+.companion-row-meta .sep {
+  color: var(--line);
+}
+
+.companion-row-meta .backend {
+  font-family: var(--mono);
+  text-transform: lowercase;
+  color: var(--ink-faint);
+}
+
+.companion-row-meta .step {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ------------------------------ Footer -------------------------------------- */
+
+.companion-foot {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 16px;
+  border-top: 1px solid var(--line);
+  font-size: 10.5px;
+  color: var(--ink-faint);
+  font-family: var(--mono);
+}
+
+.companion-foot-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--idle);
+  flex: 0 0 auto;
+}
+
+.companion-foot-dot.is-live {
+  background: var(--running);
+}
+
+.companion-foot-dot.is-error {
+  background: var(--failed);
+}
+
+/* ------------------------------ Dark mode ----------------------------------- */
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --page: #1a1a18;
+    --ink: #f0ece4;
+    --ink-soft: #b8b2a8;
+    --ink-faint: #8a857c;
+    --line: #34322d;
+    --line-soft: #2a2823;
+    --paper: #232220;
+
+    --running: #6dd58c;
+    --queued: #6ba6f0;
+    --stalled: #fdd663;
+    --failed: #ff7370;
+    --halted: #9a958c;
+    --paused: #9aa6b4;
+    --stale: #d8c577;
+    --idle: #8a857c;
+    --completed: #9cc77e;
+  }
+}

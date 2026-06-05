@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Campaign Companion</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/companion.css" />
+  </head>
+  <body class="companion">
+    <header class="companion-head">
+      <div class="companion-pet" id="companion-pet" hidden>
+        <div class="companion-pet-sprite" id="companion-pet-sprite" aria-hidden="true"></div>
+      </div>
+      <div class="companion-head-text">
+        <p class="companion-eyebrow">Companion</p>
+        <h1 class="companion-title" id="companion-title">Campaigns</h1>
+        <p class="companion-counts" id="companion-counts" aria-live="polite"></p>
+      </div>
+    </header>
+
+    <main class="companion-list" id="companion-list" aria-live="polite">
+      <p class="companion-empty" id="companion-empty">Loading…</p>
+    </main>
+
+    <footer class="companion-foot">
+      <span class="companion-foot-dot" id="companion-foot-dot" aria-hidden="true"></span>
+      <span class="companion-foot-text" id="companion-foot-text">Connecting…</span>
+    </footer>
+
+    <script type="module" src="/companion.js"></script>
+  </body>
+</html>

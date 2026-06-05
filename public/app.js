@@ -3,6 +3,7 @@ const LEGACY_PREFS_KEY = 'campaign-guide-prefs:v1';
 const MIGRATION_FLAG_KEY = 'campaigns-migrated:v1';
 const DOC_SECTIONS_RESET_FLAG_KEY = 'campaigns-doc-sections-reset:v1';
 const STANDARD_SETTINGS_MIGRATION_FLAG_KEY = 'campaigns-standard-settings-2026-05-24:v1';
+const LIBRARY_COLLECTIONS_EXPANDED_KEY = 'campaigns-library-collections-expanded:v1';
 const AUTOSAVE_DELAY_MS = 700;
 const TODAY_INACTIVITY_MS = 12 * 60 * 60 * 1000;
 
@@ -46,6 +47,8 @@ const state = {
   stepCheckMap: new Map(),
   stepSections: [],
   libraryParkedExpanded: false,
+  libraryExpandedCollections: loadLibraryExpandedCollections(),
+  libraryDragCampaignId: '',
   id: '',
   homeDir: '',
 };
@@ -61,6 +64,7 @@ const elements = {
   homeButton: document.querySelector('#home-button'),
   mobileBottombar: document.querySelector('#mobile-bottombar'),
   openFileButton: document.querySelector('#open-file-button'),
+  overviewActiveIndicator: document.querySelector('#overview-active-indicator'),
   phaseBanner: document.querySelector('#phase-banner'),
   progressFill: document.querySelector('#progress-fill'),
   progressLabel: document.querySelector('#progress-label'),
@@ -73,6 +77,7 @@ const elements = {
   switchButton: document.querySelector('#switch-button'),
   switchMenu: document.querySelector('#switch-menu'),
   library: document.querySelector('#library'),
+  libraryLessons: document.querySelector('#library-lessons'),
   libraryGrid: document.querySelector('#library-grid'),
   libraryEmpty: document.querySelector('#library-empty'),
   toast: document.querySelector('#toast'),
@@ -1477,12 +1482,16 @@ async function copyCode(key) {
 }
 
 async function copyDocumentPath() {
-  if (!state.filePath) {
+  await copyCampaignPath(state.filePath);
+}
+
+async function copyCampaignPath(filePath) {
+  if (!filePath) {
     showToast('No campaign path to copy yet.');
     return;
   }
   try {
-    await navigator.clipboard.writeText(state.filePath);
+    await navigator.clipboard.writeText(filePath);
     showToast('Path copied.');
   } catch {
     showToast('Copy failed. Select the path manually.');
@@ -1976,6 +1985,7 @@ async function renderLibrary() {
 
   state.homeDir = typeof registry.homeDir === 'string' ? registry.homeDir : '';
   const campaigns = Array.isArray(registry.campaigns) ? registry.campaigns : [];
+  renderLibraryLessons(await fetchCampaignLessons());
 
   if (campaigns.length === 0) {
     elements.libraryEmpty.hidden = false;
@@ -1987,6 +1997,158 @@ async function renderLibrary() {
 
   const sorted = sortCampaigns(campaigns);
   elements.libraryGrid.replaceChildren(...buildLibraryItems(sorted));
+}
+
+async function fetchCampaignLessons() {
+  try {
+    const response = await fetch('/api/lessons');
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.error || 'Could not load lessons.');
+    return payload;
+  } catch (error) {
+    return {
+      available: false,
+      error: error.message || 'Could not load lessons.',
+    };
+  }
+}
+
+function renderLibraryLessons(lessons) {
+  if (!elements.libraryLessons) return;
+
+  if (!lessons?.available) {
+    const header = element('div', { className: 'library-lessons-header' });
+    header.append(
+      element('span', { className: 'library-lessons-title', text: 'Lessons' }),
+      element('span', { className: 'library-lessons-meta', text: 'Unavailable' }),
+    );
+    elements.libraryLessons.hidden = false;
+    elements.libraryLessons.replaceChildren(
+      header,
+      element('p', {
+        className: 'library-lessons-unavailable',
+        text: lessons?.error || 'Campaign lessons are unavailable.',
+      }),
+    );
+    return;
+  }
+
+  const backends = new Map((lessons.backends || []).map((backend) => [backend.id, backend]));
+  const claude = backends.get('claude');
+  const codex = backends.get('codex');
+  const total = positiveWholeNumber(lessons.scanned?.total);
+  const metricItems = [
+    lessonMetric('First try', backendRates([claude, codex], 'firstTryRate')),
+    lessonMetric('Rework', backendRates([claude, codex], 'reworkRate')),
+    lessonMetric('Halts', haltSummary(lessons.halt)),
+    lessonMetric('Recovery', recoverySummary(lessons.recovery)),
+    lessonMetric('Warnings', dataQualitySummary(lessons.dataQuality)),
+    lessonMetric('Step count', sizingSummary(lessons.sizing)),
+  ];
+
+  const header = element('div', { className: 'library-lessons-header' });
+  header.append(
+    element('span', { className: 'library-lessons-title', text: 'Lessons' }),
+    element('span', {
+      className: 'library-lessons-meta',
+      text: total > 0 ? `${total} local runs scanned` : 'Local run history',
+    }),
+  );
+
+  const metrics = element('div', { className: 'library-lessons-metrics' });
+  metrics.replaceChildren(...metricItems);
+
+  const tags = renderLessonTags(lessons.reasons);
+  elements.libraryLessons.hidden = false;
+  elements.libraryLessons.replaceChildren(header, metrics, tags);
+}
+
+function lessonMetric(label, value) {
+  const item = element('div', { className: 'library-lessons-metric' });
+  item.append(
+    element('span', { className: 'library-lessons-metric-label', text: label }),
+    element('span', { className: 'library-lessons-metric-value', text: value }),
+  );
+  return item;
+}
+
+function backendRates(backends, field) {
+  const parts = backends
+    .filter(Boolean)
+    .map((backend) => `${backend.label} ${formatPercent(backend[field])}`);
+  return parts.length ? parts.join(' / ') : 'No verdicts yet';
+}
+
+function haltSummary(halt) {
+  const overall = formatPercent(halt?.overallRate);
+  const highStep = formatPercent(halt?.highStepCountRate);
+  if (overall === 'n/a' && highStep === 'n/a') return 'No halt signal yet';
+  return `${overall} overall / ${highStep} above guidance`;
+}
+
+function recoverySummary(recovery) {
+  const campaigns = positiveWholeNumber(recovery?.campaigns);
+  const events = positiveWholeNumber(recovery?.events);
+  if (campaigns === 0 && events === 0) return 'No recoveries logged';
+  return `${campaigns} campaign${campaigns === 1 ? '' : 's'} / ${events} event${events === 1 ? '' : 's'}`;
+}
+
+function dataQualitySummary(dataQuality) {
+  const warnings = positiveWholeNumber(dataQuality?.warnings);
+  if (warnings === 0) return 'No warnings';
+  return `${warnings} warning${warnings === 1 ? '' : 's'}`;
+}
+
+function sizingSummary(sizing) {
+  const avoidAbove = positiveWholeNumber(sizing?.avoidAboveSteps);
+  const median = formatCompactNumber(sizing?.medianSteps);
+  if (avoidAbove > 0) return `Avoid above ${avoidAbove}; median ${median}`;
+  return median === 'n/a' ? 'No sizing data' : `Median ${median}`;
+}
+
+function renderLessonTags(reasons) {
+  const row = element('div', { className: 'library-lessons-tags' });
+  const tags = Array.isArray(reasons?.topTags) ? reasons.topTags : [];
+
+  row.append(element('span', { className: 'library-lessons-tags-label', text: 'Reason tags' }));
+
+  if (tags.length > 0) {
+    for (const tag of tags) {
+      row.append(renderLessonTag(tag));
+    }
+    return row;
+  }
+
+  const legacy = Array.isArray(reasons?.legacyTopTags) ? reasons.legacyTopTags : [];
+  if (legacy.length > 0) {
+    row.append(element('span', { className: 'library-lessons-tags-empty', text: 'Legacy' }));
+    for (const tag of legacy) {
+      row.append(renderLessonTag(tag, { legacy: true }));
+    }
+    return row;
+  }
+
+  row.append(element('span', { className: 'library-lessons-tags-empty', text: 'No review tags yet.' }));
+  return row;
+}
+
+function renderLessonTag(tag, options = {}) {
+  return element('span', {
+    className: `library-lessons-tag${options.legacy ? ' legacy' : ''}`,
+    text: `${tag.tag} ${positiveWholeNumber(tag.count)}`,
+  });
+}
+
+function formatPercent(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return 'n/a';
+  return `${Math.round(number * 100)}%`;
+}
+
+function formatCompactNumber(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return 'n/a';
+  return Number.isInteger(number) ? String(number) : number.toFixed(1);
 }
 
 function sortCampaigns(campaigns) {
@@ -2011,35 +2173,110 @@ function campaignActivityMs(campaign) {
 }
 
 function isComplete(campaign) {
-  return campaign.progress?.total > 0 && campaign.progress.done === campaign.progress.total;
+  return normalizeProgress(campaign.progress).complete;
+}
+
+function normalizeProgress(progress) {
+  const total = positiveWholeNumber(progress?.total);
+  const done = Math.min(positiveWholeNumber(progress?.done), total);
+  return {
+    complete: total > 0 && done === total,
+    done,
+    ratio: total > 0 ? done / total : 0,
+    total,
+  };
+}
+
+function positiveWholeNumber(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number <= 0) return 0;
+  return Math.floor(number);
 }
 
 function buildLibraryItems(campaigns) {
+  const entries = groupLibraryCampaigns(campaigns);
   const active = [];
   const parked = [];
   const complete = [];
 
-  for (const campaign of campaigns) {
-    if (isComplete(campaign)) {
-      complete.push(campaign);
-    } else if (campaign.parkedAt) {
-      parked.push(campaign);
+  for (const entry of entries) {
+    if (entry.bucket === 2) {
+      complete.push(entry);
+    } else if (entry.bucket === 1) {
+      parked.push(entry);
     } else {
-      active.push(campaign);
+      active.push(entry);
     }
   }
 
-  const children = active.map((campaign) => buildLibraryCard(campaign));
+  const children = active.flatMap((entry) => buildLibraryEntry(entry));
 
   if (parked.length > 0) {
-    children.push(buildParkedCampaignDivider(parked.length));
+    const parkedCampaignCount = parked.reduce(
+      (count, entry) => count + libraryEntryCampaignCount(entry),
+      0,
+    );
+    children.push(buildParkedCampaignDivider(parkedCampaignCount));
     if (state.libraryParkedExpanded) {
-      children.push(...parked.map((campaign) => buildLibraryCard(campaign)));
+      children.push(...parked.flatMap((entry) => buildLibraryEntry(entry)));
     }
   }
 
-  children.push(...complete.map((campaign) => buildLibraryCard(campaign)));
+  children.push(...complete.flatMap((entry) => buildLibraryEntry(entry)));
   return children;
+}
+
+function groupLibraryCampaigns(campaigns) {
+  const groups = new Map();
+  const entries = [];
+
+  for (const campaign of campaigns) {
+    const collectionId = campaignCollectionId(campaign);
+    if (!collectionId) {
+      entries.push({
+        type: 'campaign',
+        campaign,
+        bucket: campaignBucket(campaign),
+      });
+      continue;
+    }
+
+    let group = groups.get(collectionId);
+    if (!group) {
+      group = {
+        type: 'collection',
+        id: collectionId,
+        campaigns: [],
+        bucket: 2,
+      };
+      groups.set(collectionId, group);
+      entries.push(group);
+    }
+
+    group.campaigns.push(campaign);
+    group.bucket = Math.min(group.bucket, campaignBucket(campaign));
+  }
+
+  return entries.flatMap((entry) => {
+    if (entry.type !== 'collection' || entry.campaigns.length > 1) return [entry];
+    return entry.campaigns.map((campaign) => ({
+      type: 'campaign',
+      campaign,
+      bucket: campaignBucket(campaign),
+    }));
+  });
+}
+
+function buildLibraryEntry(entry) {
+  if (entry.type === 'campaign') return [buildLibraryCard(entry.campaign)];
+  if (state.libraryExpandedCollections.has(entry.id)) {
+    return [buildLibraryCollectionSection(entry)];
+  }
+  return [buildLibraryCollectionCard(entry)];
+}
+
+function libraryEntryCampaignCount(entry) {
+  return entry.type === 'collection' ? entry.campaigns.length : 1;
 }
 
 function buildParkedCampaignDivider(count) {
@@ -2072,8 +2309,215 @@ function buildParkedCampaignDivider(count) {
   return divider;
 }
 
-function buildLibraryCard(campaign) {
+function buildLibraryCollectionCard(group) {
+  const stats = collectionStats(group.campaigns);
+  const complete = collectionComplete(stats);
+  const title = collectionTitle(group.campaigns);
+  const card = element('article', {
+    className: `library-card library-collection-card${complete ? ' complete' : ''}`,
+    dataset: {
+      collectionId: group.id,
+      campaignIds: group.campaigns.map((campaign) => campaign.id).join(' '),
+    },
+  });
+  card.tabIndex = 0;
+  card.setAttribute('role', 'button');
+  card.setAttribute('aria-expanded', 'false');
+  card.setAttribute('aria-label', `${title}. ${group.campaigns.length} campaigns. Press to expand.`);
+
+  const toggle = () => toggleLibraryCollection(group.id);
+  card.addEventListener('click', toggle);
+  card.addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    event.preventDefault();
+    toggle();
+  });
+  bindLibraryDropTarget(card, { targetCollectionId: group.id });
+
+  card.append(
+    element('span', { className: 'library-card-title', text: title }),
+    element('span', {
+      className: 'library-card-path',
+      text: `${group.campaigns.length} campaign${group.campaigns.length === 1 ? '' : 's'} collected`,
+    }),
+  );
+
+  appendCollectionProgress(card, stats);
+  card.append(
+    element('span', {
+      className: 'library-card-time',
+      text: stats.lastActivityMs ? `Active ${relativeTime(new Date(stats.lastActivityMs).toISOString())}` : '',
+    }),
+    element('span', {
+      className: 'library-collection-count',
+      text: String(group.campaigns.length),
+      ariaHidden: 'true',
+    }),
+  );
+  card.append(buildCollectionCopyButton(group));
+
+  return card;
+}
+
+function buildLibraryCollectionSection(group) {
+  const stats = collectionStats(group.campaigns);
+  const complete = collectionComplete(stats);
+  const title = collectionTitle(group.campaigns);
+  const section = element('section', {
+    className: `library-collection-section${complete ? ' complete' : ''}`,
+    dataset: {
+      collectionId: group.id,
+      campaignIds: group.campaigns.map((campaign) => campaign.id).join(' '),
+    },
+  });
+  section.setAttribute('aria-label', title);
+  bindLibraryDropTarget(section, { targetCollectionId: group.id });
+
+  const header = element('button', {
+    className: 'library-collection-header',
+    type: 'button',
+    title: 'Collapse collection',
+    ariaLabel: 'Collapse collection',
+  });
+  header.setAttribute('aria-expanded', 'true');
+  header.append(
+    element('span', { className: 'library-collection-title', text: title }),
+    element('span', {
+      className: 'library-collection-meta',
+      text: `${group.campaigns.length} campaign${group.campaigns.length === 1 ? '' : 's'} collected`,
+    }),
+    element('span', { className: 'library-collection-collapse', text: '-', ariaHidden: 'true' }),
+  );
+  header.addEventListener('click', () => toggleLibraryCollection(group.id));
+
+  const grid = element('div', { className: 'library-collection-grid' });
+  grid.replaceChildren(
+    ...group.campaigns.map((campaign) => buildLibraryCard(campaign, { collectionMember: true })),
+  );
+
+  if (stats.total > 0) {
+    section.dataset.progress = `${stats.done}/${stats.total}`;
+  }
+  section.append(header, buildCollectionCopyButton(group), grid);
+  return section;
+}
+
+function appendCollectionProgress(parent, stats) {
+  if (stats.total <= 0) return;
+
+  const progress = element('div', { className: 'library-card-progress' });
+  const track = element('div', { className: 'library-card-progress-track' });
+  const fill = element('div', { className: 'library-card-progress-fill' });
+  fill.style.width = `${Math.round((stats.done / stats.total) * 100)}%`;
+  track.append(fill);
+  progress.append(
+    track,
+    element('span', {
+      className: 'library-card-progress-label',
+      text: stats.done === stats.total ? 'All done' : `${stats.done} / ${stats.total}`,
+    }),
+  );
+  parent.append(progress);
+}
+
+function collectionStats(campaigns) {
+  return campaigns.reduce(
+    (stats, campaign) => {
+      const progress = normalizeProgress(campaign.progress);
+      stats.done += progress.done;
+      stats.total += progress.total;
+      stats.lastActivityMs = Math.max(stats.lastActivityMs, campaignActivityMs(campaign));
+      return stats;
+    },
+    { done: 0, total: 0, lastActivityMs: 0 },
+  );
+}
+
+function collectionComplete(stats) {
+  return stats.total > 0 && stats.done === stats.total;
+}
+
+function collectionTitle(campaigns) {
+  const titles = campaigns.map((campaign) => campaign.title || '').filter(Boolean);
+  const numbers = titles
+    .map((title) => title.match(/^Campaign\s+(\d+)\b/i))
+    .filter(Boolean)
+    .map((match) => Number(match[1]))
+    .filter((number) => Number.isFinite(number));
+
+  if (numbers.length === titles.length && numbers.length > 1) {
+    const sorted = [...new Set(numbers)].sort((a, b) => a - b);
+    const isContiguous = sorted[sorted.length - 1] - sorted[0] + 1 === sorted.length;
+    if (isContiguous) return `Campaigns ${sorted[0]}-${sorted[sorted.length - 1]}`;
+    const visible = sorted.slice(0, 3).join(', ');
+    return sorted.length > 3 ? `Campaigns ${visible} + ${sorted.length - 3}` : `Campaigns ${visible}`;
+  }
+
+  return titles[0] || 'Campaign collection';
+}
+
+function campaignCollectionId(campaign) {
+  return typeof campaign.collectionId === 'string' ? campaign.collectionId.trim() : '';
+}
+
+function toggleLibraryCollection(collectionId) {
+  if (state.libraryExpandedCollections.has(collectionId)) {
+    state.libraryExpandedCollections.delete(collectionId);
+  } else {
+    state.libraryExpandedCollections.add(collectionId);
+  }
+  saveLibraryExpandedCollections();
+  renderLibrary();
+}
+
+function buildCollectionCopyButton(group) {
+  const button = element('button', {
+    className: 'library-collection-copy-button',
+    type: 'button',
+    title: 'Copy automation link',
+    ariaLabel: 'Copy automation link',
+  });
+  if (copyIconTemplate?.content?.firstElementChild) {
+    button.append(copyIconTemplate.content.firstElementChild.cloneNode(true));
+  } else {
+    button.textContent = 'Copy';
+  }
+  button.addEventListener('click', async (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    await copyCollectionAutomationLink(group);
+  });
+  return button;
+}
+
+async function copyCollectionAutomationLink(group) {
+  const text = collectionAutomationText(group);
+  try {
+    await navigator.clipboard.writeText(text);
+    showToast('Stack automation link copied.');
+  } catch {
+    showToast('Copy failed. Select the stack details manually.');
+  }
+}
+
+function collectionAutomationText(group) {
+  const title = collectionTitle(group.campaigns);
+  const lines = [
+    `Use $campaign-automate on campaigns-stack://${group.id}`,
+    `Stack: ${title}`,
+    'Campaign files:',
+  ];
+
+  for (const campaign of group.campaigns) {
+    if (campaign.filePath) lines.push(`- ${campaign.filePath}`);
+  }
+
+  return lines.join('\n');
+}
+
+function buildLibraryCard(campaign, options = {}) {
   const complete = isComplete(campaign);
+  const progressStats = normalizeProgress(campaign.progress);
   const parked = Boolean(campaign.parkedAt) && !complete;
   const modifiers = [
     complete ? 'complete' : '',
@@ -2085,7 +2529,10 @@ function buildLibraryCard(campaign) {
 
   const card = element('article', {
     className: `library-card${modifiers ? ` ${modifiers}` : ''}${campaign.hasLogo ? ' has-logo' : ''}`,
+    dataset: { campaignId: campaign.id },
   });
+  bindLibraryDragSource(card, campaign);
+  bindLibraryDropTarget(card, { targetId: campaign.id });
 
   const link = element('a', {
     className: 'library-card-link',
@@ -2097,17 +2544,17 @@ function buildLibraryCard(campaign) {
     element('span', { className: 'library-card-path', text: relativeHomePath(campaign.filePath, state.homeDir) }),
   );
 
-  if (campaign.progress?.total > 0) {
+  if (progressStats.total > 0) {
     const progress = element('div', { className: 'library-card-progress' });
     const track = element('div', { className: 'library-card-progress-track' });
     const fill = element('div', { className: 'library-card-progress-fill' });
-    fill.style.width = `${Math.round((campaign.progress.done / campaign.progress.total) * 100)}%`;
+    fill.style.width = `${Math.round(progressStats.ratio * 100)}%`;
     track.append(fill);
     progress.append(
       track,
       element('span', {
         className: 'library-card-progress-label',
-        text: complete ? 'All done' : `${campaign.progress.done} / ${campaign.progress.total}`,
+        text: complete ? 'All done' : `${progressStats.done} / ${progressStats.total}`,
       }),
     );
     link.append(progress);
@@ -2138,7 +2585,140 @@ function buildLibraryCard(campaign) {
     card.append(buildDeleteMissingButton(campaign));
   }
 
+  if (campaign.filePath) {
+    card.append(buildCampaignCopyButton(campaign));
+  }
+
+  // Delete button — always available alongside park. Moves the .md to Trash.
+  if (!campaign.missing) {
+    card.append(buildDeleteButton(campaign));
+  }
+
+  if (options.collectionMember && campaignCollectionId(campaign) && !campaign.missing) {
+    card.append(buildCollectionRemoveButton(campaign));
+  }
+
   return card;
+}
+
+function buildCampaignCopyButton(campaign) {
+  const button = element('button', {
+    className: 'library-card-copy-button',
+    type: 'button',
+    title: 'Copy campaign path',
+    ariaLabel: 'Copy campaign path',
+  });
+  if (copyIconTemplate?.content?.firstElementChild) {
+    button.append(copyIconTemplate.content.firstElementChild.cloneNode(true));
+  } else {
+    button.textContent = 'Copy';
+  }
+  button.addEventListener('click', async (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    await copyCampaignPath(campaign.filePath);
+  });
+  return button;
+}
+
+function bindLibraryDragSource(card, campaign) {
+  if (campaign.missing) return;
+
+  card.draggable = true;
+  card.addEventListener('dragstart', (event) => {
+    if (event.target instanceof HTMLElement && event.target.closest('button')) {
+      event.preventDefault();
+      return;
+    }
+
+    state.libraryDragCampaignId = campaign.id;
+    card.classList.add('is-dragging');
+    if (!event.dataTransfer) return;
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData('application/x-campaign-id', campaign.id);
+    event.dataTransfer.setData('text/plain', campaign.id);
+  });
+  card.addEventListener('dragend', () => {
+    state.libraryDragCampaignId = '';
+    card.classList.remove('is-dragging');
+    clearLibraryDropTargets();
+  });
+}
+
+function bindLibraryDropTarget(node, target) {
+  node.addEventListener('dragover', (event) => {
+    const sourceId = dragCampaignId(event);
+    if (!sourceId || sourceId === target.targetId) return;
+    event.preventDefault();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+    node.classList.add('is-drop-target');
+  });
+
+  node.addEventListener('dragleave', (event) => {
+    if (event.relatedTarget instanceof Node && node.contains(event.relatedTarget)) return;
+    node.classList.remove('is-drop-target');
+  });
+
+  node.addEventListener('drop', async (event) => {
+    const sourceId = dragCampaignId(event);
+    if (!sourceId || sourceId === target.targetId) return;
+    event.preventDefault();
+    event.stopPropagation();
+    clearLibraryDropTargets();
+
+    try {
+      const result = await stackCampaignInLibrary(sourceId, target);
+      if (result.collectionId) {
+        state.libraryExpandedCollections.delete(result.collectionId);
+        saveLibraryExpandedCollections();
+      }
+      await renderLibrary();
+      showToast(result.changed ? 'Campaigns collected.' : 'Already in that collection.');
+    } catch (error) {
+      showToast(error.message || 'Could not collect campaigns.');
+    } finally {
+      state.libraryDragCampaignId = '';
+    }
+  });
+}
+
+function dragCampaignId(event) {
+  return (
+    state.libraryDragCampaignId ||
+    event.dataTransfer?.getData('application/x-campaign-id') ||
+    event.dataTransfer?.getData('text/plain') ||
+    ''
+  );
+}
+
+function clearLibraryDropTargets() {
+  document
+    .querySelectorAll('.is-drop-target')
+    .forEach((node) => node.classList.remove('is-drop-target'));
+}
+
+function buildCollectionRemoveButton(campaign) {
+  const button = element('button', {
+    className: 'library-card-collection-remove',
+    type: 'button',
+    text: 'Remove',
+    title: 'Remove from collection',
+    ariaLabel: 'Remove from collection',
+  });
+  button.addEventListener('click', async (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    button.disabled = true;
+    try {
+      await removeCampaignFromCollection(campaign.id);
+      await renderLibrary();
+      showToast('Removed from collection.');
+    } catch (error) {
+      button.disabled = false;
+      showToast(error.message || 'Could not update collection.');
+    }
+  });
+  return button;
 }
 
 function buildParkButton(campaign, parked) {
@@ -2191,6 +2771,92 @@ function buildDeleteMissingButton(campaign) {
   return button;
 }
 
+function buildDeleteButton(campaign) {
+  const button = element('button', {
+    className: 'library-card-trash-button',
+    type: 'button',
+    title: 'Delete campaign',
+    ariaLabel: 'Delete campaign',
+  });
+  button.innerHTML =
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v5"/><path d="M14 11v5"/></svg>';
+  button.addEventListener('click', (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    showDeleteCampaignConfirm(campaign, button);
+  });
+  return button;
+}
+
+function showDeleteCampaignConfirm(campaign, sourceButton) {
+  const existing = document.getElementById('delete-campaign-modal');
+  if (existing) existing.remove();
+
+  const overlay = element('div', { className: 'nudge-confirm-modal', id: 'delete-campaign-modal' });
+  const card = element('div', { className: 'nudge-confirm-card' });
+
+  card.append(
+    element('h3', {
+      className: 'nudge-confirm-title',
+      text: `Delete "${campaign.title || 'this campaign'}"?`,
+    }),
+    element('p', {
+      className: 'nudge-confirm-desc',
+      text: 'Moves the markdown file to your Trash and removes it from the library. You can put it back from Finder.',
+    }),
+  );
+
+  const pathLine = element('p', { className: 'nudge-confirm-desc nudge-confirm-path' });
+  pathLine.textContent = campaign.filePath || '';
+  card.append(pathLine);
+
+  const footer = element('div', { className: 'nudge-confirm-footer' });
+  const cancelBtn = element('button', { className: 'button', text: 'Cancel', type: 'button' });
+  const confirmBtn = element('button', {
+    className: 'button button-danger',
+    text: 'Delete',
+    type: 'button',
+  });
+
+  cancelBtn.addEventListener('click', () => overlay.remove());
+  confirmBtn.addEventListener('click', async () => {
+    confirmBtn.disabled = true;
+    cancelBtn.disabled = true;
+    confirmBtn.textContent = 'Deleting…';
+    try {
+      const res = await fetch('/api/registry', {
+        method: 'DELETE',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ id: campaign.id, deleteFile: true }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `Delete failed (${res.status})`);
+      overlay.remove();
+      await renderLibrary();
+      showToast(data.trashed ? 'Campaign moved to Trash.' : 'Campaign removed.');
+    } catch (error) {
+      confirmBtn.disabled = false;
+      cancelBtn.disabled = false;
+      confirmBtn.textContent = 'Delete';
+      showToast(error.message || 'Could not delete campaign.');
+    }
+  });
+
+  footer.append(cancelBtn, confirmBtn);
+  card.append(footer);
+
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay) overlay.remove();
+  });
+  overlay.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') overlay.remove();
+  });
+
+  overlay.append(card);
+  document.body.append(overlay);
+  confirmBtn.focus();
+}
+
 async function togglePark(id, parked) {
   const response = await fetch('/api/registry/park', {
     method: 'POST',
@@ -2200,6 +2866,34 @@ async function togglePark(id, parked) {
   if (!response.ok) {
     const payload = await response.json().catch(() => ({}));
     throw new Error(payload.error || 'Could not update park state.');
+  }
+}
+
+async function stackCampaignInLibrary(sourceId, target) {
+  const body = target.targetCollectionId
+    ? { action: 'stack', sourceId, targetCollectionId: target.targetCollectionId }
+    : { action: 'stack', sourceId, targetId: target.targetId };
+  const response = await fetch('/api/registry/collection', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(payload.error || 'Could not collect campaigns.');
+  }
+  return payload;
+}
+
+async function removeCampaignFromCollection(id) {
+  const response = await fetch('/api/registry/collection', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ action: 'remove', id }),
+  });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(payload.error || 'Could not update collection.');
   }
 }
 
@@ -3391,7 +4085,7 @@ function getProgressStats(blocks) {
   let total = 0;
   let done = 0;
 
-  for (const block of blocks) {
+  for (const block of progressChecklistBlocks(blocks)) {
     if (block.type === 'check') {
       total += 1;
       done += block.checked ? 1 : 0;
@@ -3412,6 +4106,23 @@ function getProgressStats(blocks) {
   }
 
   return { done, total };
+}
+
+function progressChecklistBlocks(blocks) {
+  const start = blocks.findIndex((block) => (
+    block.type === 'heading' &&
+    block.level === 2 &&
+    block.text.toLowerCase().includes('progress checklist')
+  ));
+  if (start === -1) return blocks;
+
+  const scoped = [];
+  for (let index = start + 1; index < blocks.length; index += 1) {
+    const block = blocks[index];
+    if (block.type === 'heading' && block.level === 2) break;
+    scoped.push(block);
+  }
+  return scoped;
 }
 
 function inlineMarkdown(text) {
@@ -3656,6 +4367,28 @@ function migrateStandardCampaignSettings(allPrefs) {
   }
   localStorage.setItem(STANDARD_SETTINGS_MIGRATION_FLAG_KEY, 'done');
   return mutated;
+}
+
+function loadLibraryExpandedCollections() {
+  try {
+    const raw = localStorage.getItem(LIBRARY_COLLECTIONS_EXPANDED_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    if (!Array.isArray(parsed)) return new Set();
+    return new Set(parsed.filter((id) => typeof id === 'string' && id.trim() !== ''));
+  } catch {
+    return new Set();
+  }
+}
+
+function saveLibraryExpandedCollections() {
+  try {
+    localStorage.setItem(
+      LIBRARY_COLLECTIONS_EXPANDED_KEY,
+      JSON.stringify([...state.libraryExpandedCollections]),
+    );
+  } catch {
+    /* ignore */
+  }
 }
 
 function loadPrefs(filePath) {
@@ -4228,13 +4961,10 @@ async function handleCompletionEffects(prevPhases, nextPhases, prevStats, nextSt
 /* ------------------------------ Automate drawer ----------------------------- */
 
 const DRAWER_WIDTH_KEY = 'campaigns-drawer-width:v1';
-const DRAWER_OPEN_KEY = 'campaigns-drawer-open:v1';
-const DRAWER_AUTO_OPENED_PREFIX = 'campaigns-drawer-auto-opened:';
 
 const drawerState = {
   open: false,
   width: 420,
-  autoOpenedThisSession: false,
 };
 
 function initAutomateDrawer() {
@@ -4250,15 +4980,6 @@ function initAutomateDrawer() {
     if (w >= 320 && w <= 720) drawerState.width = w;
   }
   panel.style.setProperty('--drawer-width', `${drawerState.width}px`);
-
-  const savedOpen = localStorage.getItem(DRAWER_OPEN_KEY);
-  if (savedOpen === 'true') openAutomateDrawer();
-
-  if (state.id) {
-    drawerState.autoOpenedThisSession = !!sessionStorage.getItem(
-      DRAWER_AUTO_OPENED_PREFIX + state.id,
-    );
-  }
 
   toggleBtn.addEventListener('click', () => {
     if (drawerState.open) closeAutomateDrawer();
@@ -4287,7 +5008,6 @@ function openAutomateDrawer() {
   drawerState.open = true;
   drawer.removeAttribute('hidden');
   toggleBtn?.setAttribute('aria-expanded', 'true');
-  localStorage.setItem(DRAWER_OPEN_KEY, 'true');
 
   if (automateState.current) {
     renderDrawerBody(automateState.current);
@@ -4296,8 +5016,8 @@ function openAutomateDrawer() {
       tickDrawerElapsed();
       const statusEl = document.getElementById('automate-status');
       const data = automateState.current;
-      if (statusEl && data && (data.status === 'active' || data.status === 'stalled')) {
-        renderAutomateStatusContent(statusEl, data, data.status === 'halted' || data.status === 'failed');
+      if (statusEl && data && (isAutomateRunning(data) || isAutomateAttention(data))) {
+        renderAutomateStatusContent(statusEl, data);
       }
     }, 60_000);
   }
@@ -4312,41 +5032,29 @@ function closeAutomateDrawer() {
   drawerState.open = false;
   drawer.setAttribute('hidden', '');
   toggleBtn?.setAttribute('aria-expanded', 'false');
-  localStorage.setItem(DRAWER_OPEN_KEY, 'false');
 
   clearInterval(automateState.elapsedTimer);
   automateState.elapsedTimer = null;
 }
 
-function autoOpenDrawerOnce() {
-  if (drawerState.autoOpenedThisSession || drawerState.open) return;
-  if (!state.id) return;
-
-  drawerState.autoOpenedThisSession = true;
-  sessionStorage.setItem(DRAWER_AUTO_OPENED_PREFIX + state.id, '1');
-  openAutomateDrawer();
-}
-
-function syncDrawerToggleVisibility(hasActiveState) {
+function syncDrawerToggleVisibility(status) {
   const toggleBtn = document.querySelector('#automate-drawer-toggle');
   if (!toggleBtn) return;
 
   toggleBtn.hidden = false;
 
   const existingDot = toggleBtn.querySelector('.drawer-indicator');
-  if (hasActiveState && !existingDot) {
-    const dot = document.createElement('span');
-    dot.className = 'drawer-indicator';
-    toggleBtn.append(dot);
-  } else if (!hasActiveState && existingDot) {
-    existingDot.remove();
+  if (!status) {
+    if (existingDot) existingDot.remove();
+    return;
   }
-}
 
-function syncDrawerToggleDotWarn(isWarn) {
-  const dot = document.querySelector('#automate-drawer-toggle .drawer-indicator');
-  if (!dot) return;
-  dot.classList.toggle('drawer-indicator--warn', isWarn);
+  const next = automateIndicator(status, 'drawer-indicator');
+  if (existingDot) {
+    existingDot.replaceWith(next);
+  } else {
+    toggleBtn.append(next);
+  }
 }
 
 function initDrawerResize(handle, panel) {
@@ -4392,6 +5100,52 @@ const automateState = {
 };
 
 let automateVisibilityBound = false;
+
+function automateDisplayStatus(data) {
+  if (!data?.status) return null;
+  if (data.status === 'active' && data.is_active === false) return 'stalled';
+  return data.status;
+}
+
+function isAutomateRunning(data) {
+  return automateDisplayStatus(data) === 'active';
+}
+
+function isAutomateAttention(data) {
+  const status = automateDisplayStatus(data);
+  return status === 'stalled' || status === 'halted' || status === 'failed' || status === 'blocked';
+}
+
+function automateIndicator(status, extraClass = '') {
+  const indicatorType = status === 'active'
+    ? 'running'
+    : status === 'completed'
+      ? 'complete'
+      : status === 'stalled' || status === 'halted' || status === 'failed' || status === 'blocked'
+        ? 'attention'
+        : 'idle';
+  const className = [
+    'automate-indicator',
+    `automate-indicator--${indicatorType}`,
+    extraClass,
+  ].filter(Boolean).join(' ');
+  const node = element('span', { className, ariaHidden: 'true' });
+  if (indicatorType === 'attention') node.textContent = '!';
+  if (indicatorType === 'complete') node.textContent = '✓';
+  return node;
+}
+
+function libraryAutomationIndicatorStatus(data) {
+  const status = automateDisplayStatus(data);
+  if (status === 'active') return 'active';
+  if (status === 'stalled' || status === 'halted' || status === 'failed' || status === 'blocked') return status;
+  return null;
+}
+
+function syncOverviewActiveIndicator(active) {
+  if (!elements.overviewActiveIndicator) return;
+  elements.overviewActiveIndicator.hidden = !active;
+}
 
 function startAutomatePolling() {
   clearInterval(automateState.libraryTimer);
@@ -4448,21 +5202,21 @@ async function fetchCampaignAutomateState() {
     const next = await response.json();
     automateState.current = next;
 
-    const prevStatus = prev?.status || null;
-    const nextStatus = next?.status || null;
+    const prevStatus = automateDisplayStatus(prev);
+    const nextStatus = automateDisplayStatus(next);
     const statusChanged = prevStatus !== nextStatus;
     const stepChanged = (prev?.current_step?.id || null) !== (next?.current_step?.id || null);
     const timelineChanged = (prev?.timeline_events?.length || 0) !== (next?.timeline_events?.length || 0);
     const logChanged = (prev?.current_step_log?.length || 0) !== (next?.current_step_log?.length || 0);
 
-    if (!prev && next && nextStatus) {
-      autoOpenDrawerOnce();
-    }
-
     if (statusChanged || stepChanged || timelineChanged || !prev) {
       updateAutomateStatusLine();
     } else if (logChanged && drawerState.open) {
       updateDrawerLog(next);
+      // Parsed activity (latest text, action chips, effort row) lives in the
+      // Now block and changes with every new tool call. Re-render the body so
+      // it stays current. Cheap: replaceChildren on the drawer body only.
+      renderDrawerBody(next);
     }
   } catch {
     /* silent */
@@ -4470,8 +5224,18 @@ async function fetchCampaignAutomateState() {
 }
 
 function updateLibraryDots() {
-  const cards = document.querySelectorAll('.library-card');
+  const collectionNodes = document.querySelectorAll(
+    '.library-collection-card[data-campaign-ids], .library-collection-section[data-campaign-ids]',
+  );
+  for (const node of collectionNodes) {
+    updateLibraryCollectionIndicator(node);
+  }
+
+  const cards = document.querySelectorAll('.library-card[data-campaign-id]');
   for (const card of cards) {
+    const existing = card.querySelector('.library-card-automate-dot');
+    if (existing) existing.remove();
+    if (card.classList.contains('library-collection-card') || card.classList.contains('complete')) continue;
     const link = card.querySelector('.library-card-link');
     if (!link) continue;
     const href = link.getAttribute('href') || '';
@@ -4480,20 +5244,84 @@ function updateLibraryDots() {
     const id = decodeURIComponent(match[1]);
     const entry = automateState.bulk[id];
 
-    const existing = card.querySelector('.library-card-automate-dot');
-    if (existing) existing.remove();
+    const indicatorStatus = libraryAutomationIndicatorStatus(entry);
+    if (!indicatorStatus) continue;
 
-    if (!entry || !entry.status) continue;
-    const isActive = entry.status === 'active' || entry.status === 'stalled';
-    const isWarn = entry.status === 'halted' || entry.status === 'failed';
-    if (!isActive && !isWarn) continue;
-
-    const dot = element('span', {
-      className: `automate-dot library-card-automate-dot${isWarn ? ' automate-dot--warn' : ''}`,
-    });
-    dot.title = entry.current_step_name || entry.status;
-    card.append(dot);
+    const indicator = automateIndicator(indicatorStatus, 'library-card-automate-dot');
+    indicator.title = entry.current_step_name || indicatorStatus;
+    card.append(indicator);
   }
+}
+
+function updateLibraryCollectionIndicator(node) {
+  node
+    .querySelectorAll('.library-collection-automate-status')
+    .forEach((existing) => existing.remove());
+  if (node.classList.contains('complete')) return;
+
+  const ids = (node.dataset.campaignIds || '').split(/\s+/).filter(Boolean);
+  const summary = collectionAutomationSummary(ids);
+  if (!summary) return;
+
+  const status = element('span', { className: 'library-collection-automate-status' });
+  status.append(
+    automateIndicator(summary.indicatorStatus),
+    element('span', { text: summary.text }),
+  );
+  status.title = summary.title;
+
+  if (node.classList.contains('library-collection-section')) {
+    const header = node.querySelector('.library-collection-header');
+    const collapse = header?.querySelector('.library-collection-collapse');
+    if (header && collapse) {
+      header.insertBefore(status, collapse);
+      return;
+    }
+  }
+
+  const time = node.querySelector('.library-card-time');
+  if (time) {
+    node.insertBefore(status, time);
+  } else {
+    node.append(status);
+  }
+}
+
+function collectionAutomationSummary(campaignIds) {
+  const counts = {
+    active: 0,
+    attention: 0,
+  };
+  const titles = [];
+
+  for (const id of campaignIds) {
+    const entry = automateState.bulk[id];
+    const status = libraryAutomationIndicatorStatus(entry);
+    if (!status) continue;
+
+    if (status === 'active') {
+      counts.active += 1;
+    } else {
+      counts.attention += 1;
+    }
+    titles.push(entry?.current_step_name || status);
+  }
+
+  if (counts.active === 0 && counts.attention === 0) return null;
+
+  const parts = [];
+  if (counts.active > 0) {
+    parts.push(`${counts.active} running`);
+  }
+  if (counts.attention > 0) {
+    parts.push(`${counts.attention} attention`);
+  }
+
+  return {
+    indicatorStatus: counts.active > 0 ? 'active' : 'failed',
+    text: parts.join(' · '),
+    title: titles.join('\n'),
+  };
 }
 
 function updateAutomateStatusLine() {
@@ -4505,27 +5333,31 @@ function updateAutomateStatusLine() {
     statusEl.hidden = true;
     clearInterval(automateState.elapsedTimer);
     automateState.elapsedTimer = null;
-    syncDrawerToggleVisibility(false);
+    syncDrawerToggleVisibility(null);
+    syncOverviewActiveIndicator(false);
     renderDrawerBody(null);
     return;
   }
 
-  const isCompleted = data.status === 'completed';
-  const isActive = data.status === 'active' || data.status === 'stalled';
-  const isWarn = data.status === 'halted' || data.status === 'failed';
+  const displayStatus = automateDisplayStatus(data);
+  const isCompleted = displayStatus === 'completed';
+  const isAbandoned = displayStatus === 'abandoned';
+  const isActive = isAutomateRunning(data);
+  const isWarn = isAutomateAttention(data);
 
-  if (!isActive && !isWarn && !isCompleted) {
+  if (!isActive && !isWarn && !isCompleted && !isAbandoned) {
     statusEl.hidden = true;
     clearInterval(automateState.elapsedTimer);
     automateState.elapsedTimer = null;
-    syncDrawerToggleVisibility(false);
+    syncDrawerToggleVisibility(null);
+    syncOverviewActiveIndicator(false);
     renderDrawerBody(null);
     return;
   }
 
   if (isActive || isWarn) {
     statusEl.hidden = false;
-    renderAutomateStatusContent(statusEl, data, isWarn);
+    renderAutomateStatusContent(statusEl, data);
   } else {
     statusEl.hidden = true;
   }
@@ -4533,30 +5365,46 @@ function updateAutomateStatusLine() {
   clearInterval(automateState.elapsedTimer);
   if ((isActive || isCompleted) && drawerState.open) {
     automateState.elapsedTimer = setInterval(() => {
-      if (isActive) renderAutomateStatusContent(statusEl, data, isWarn);
+      if (isActive || isWarn) renderAutomateStatusContent(statusEl, data);
       tickDrawerElapsed();
     }, 60_000);
   }
 
-  syncDrawerToggleVisibility(isActive || isWarn || isCompleted);
-  syncDrawerToggleDotWarn(isWarn);
+  syncDrawerToggleVisibility(isActive || isWarn || isCompleted || isAbandoned ? displayStatus : null);
+  syncOverviewActiveIndicator(isActive);
   statusEl.onclick = () => openAutomateDrawer();
-  if (isActive) autoOpenDrawerOnce();
   renderDrawerBody(data);
 }
 
-function renderAutomateStatusContent(el, data, isWarn) {
-  const stepId = data.current_step?.id || data.current_step_id || '';
+function renderAutomateStatusContent(el, data) {
+  const unit = data.current_step || { id: data.current_step_id };
+  const unitLabel = formatAutomateUnitLabel(unit);
   const elapsed = formatAutomateElapsed(data.current_step?.started_at);
+  const displayStatus = automateDisplayStatus(data);
+  const prefix = {
+    stalled: 'Stalled',
+    halted: 'Halted',
+    failed: 'Failed',
+  }[displayStatus];
 
-  const dotClass = `automate-dot${isWarn ? ' automate-dot--warn' : ''}`;
-  const text = elapsed ? `Step ${stepId} · ${elapsed}` : `Step ${stepId}`;
+  const text = prefix ? `${prefix} · ${unitLabel}` : elapsed ? `${unitLabel} · ${elapsed}` : unitLabel;
 
   el.replaceChildren(
-    element('span', { className: dotClass }),
+    automateIndicator(displayStatus),
     element('span', { className: 'automate-status-text', text }),
   );
   el.title = data.current_step?.name || data.current_step_name || '';
+}
+
+function formatAutomateUnitLabel(unit) {
+  const id = unit?.id ? String(unit.id) : '';
+  if (!id) return 'Automation';
+  if (/^\d+(?:\.\d+)*$/.test(id)) return `Step ${id}`;
+  return id
+    .split(/[_-]+/)
+    .filter(Boolean)
+    .map((part) => `${part.charAt(0).toUpperCase()}${part.slice(1)}`)
+    .join(' ');
 }
 
 function formatAutomateElapsed(startedAt) {
@@ -4585,8 +5433,9 @@ function renderDrawerBody(data) {
     return;
   }
 
-  const isCompleted = data.status === 'completed';
-  const isActive = data.status === 'active' || data.status === 'stalled';
+  const displayStatus = automateDisplayStatus(data);
+  const isCompleted = displayStatus === 'completed';
+  const isActive = isAutomateRunning(data);
 
   const children = [];
 
@@ -4595,18 +5444,24 @@ function renderDrawerBody(data) {
   const nudge = renderDrawerNudge(data);
   if (nudge) children.push(nudge);
 
-  children.push(renderDrawerVitals(data));
+  const finalizeHalt = renderDrawerFinalizeHalt(data);
+  if (finalizeHalt) children.push(finalizeHalt);
 
-  const phaseRibbon = renderDrawerPhaseRibbon(data);
-  if (phaseRibbon) children.push(phaseRibbon);
-
-  if (!isCompleted && data.current_step) {
+  // "Now" block: subsumes the old current-step block AND replaces the raw log
+  // as the primary "what's happening" surface. Only active campaigns get this.
+  // Falls back to the legacy current-step block when live_activity is missing
+  // (older campaigns with text-only logs).
+  const now = renderDrawerNow(data);
+  if (now) {
+    children.push(now);
+  } else if (isActive && data.current_step) {
     children.push(renderDrawerCurrentStep(data));
   }
 
   children.push(renderDrawerTimeline(data));
   children.push(renderDrawerReceipts(data, isCompleted));
 
+  // Raw log: collapsed by default — debugging fallback, not primary signal.
   if (!isCompleted && isActive && data.current_step_log != null) {
     children.push(renderDrawerLogTail(data));
   }
@@ -4614,18 +5469,97 @@ function renderDrawerBody(data) {
   body.replaceChildren(...children);
 }
 
+function renderDrawerNow(data) {
+  const isActive = isAutomateRunning(data);
+  if (!isActive || !data.current_step) return null;
+
+  const step = data.current_step;
+  const live = data.live_activity;
+
+  const block = element('section', { className: 'drawer-now' });
+
+  const header = element('div', { className: 'drawer-now-header' });
+  header.append(
+    element('span', { className: 'drawer-now-step-id', text: formatAutomateUnitLabel(step) }),
+    element('span', { className: 'drawer-now-step-name', text: step.name || '' }),
+    element('span', {
+      className: 'drawer-now-elapsed',
+      text: formatAutomateElapsed(step.started_at) || '0m',
+    }),
+  );
+  block.append(header);
+
+  if (live?.latest_text) {
+    const voice = element('p', { className: 'drawer-now-voice' });
+    const text = live.latest_text.length > 320
+      ? `${live.latest_text.slice(0, 320)}…`
+      : live.latest_text;
+    voice.textContent = text;
+    block.append(voice);
+  } else if (!live) {
+    // Legacy log format — no JSON events to parse.
+    const note = element('p', {
+      className: 'drawer-now-voice drawer-now-voice--legacy',
+      text: 'Live activity will appear here once the next step launches. (Older steps used plain-text logs.)',
+    });
+    block.append(note);
+  }
+
+  if (live?.recent_actions?.length) {
+    const stream = element('div', { className: 'drawer-now-actions' });
+    for (const act of live.recent_actions) {
+      const toolKey = (act.tool || '').toLowerCase().replace(/[^a-z]/g, '') || 'other';
+      const chip = element('span', {
+        className: `drawer-now-action drawer-now-action--${toolKey}`,
+      });
+      chip.title = act.detail || act.label || '';
+      chip.textContent = act.label;
+      stream.append(chip);
+    }
+    block.append(stream);
+  }
+
+  if (live?.effort) {
+    const e = live.effort;
+    const pluralize = (n, singular, plural = `${singular}s`) => `${n} ${n === 1 ? singular : plural}`;
+    const parts = [];
+    if (e.tools_called) parts.push(pluralize(e.tools_called, 'tool'));
+    if (e.files_touched) parts.push(pluralize(e.files_touched, 'file'));
+    if (e.edits) parts.push(pluralize(e.edits, 'edit'));
+    if (e.bash_commands) parts.push(`${e.bash_commands} bash`);
+    if (e.tokens_used) parts.push(`${formatTokenCount(e.tokens_used)} tokens`);
+    if (parts.length) {
+      block.append(element('div', { className: 'drawer-now-effort', text: parts.join(' · ') }));
+    }
+  }
+
+  const stepData = data.steps?.find((s) => s.id === step.id);
+  if (stepData?.prompt) {
+    const details = element('details', { className: 'drawer-now-prompt-toggle' });
+    details.append(element('summary', { text: 'Show step prompt' }));
+    const pre = element('pre', { className: 'drawer-step-prompt-code' });
+    pre.textContent = stepData.prompt.length > 2000
+      ? `${stepData.prompt.slice(0, 2000)}…`
+      : stepData.prompt;
+    details.append(pre);
+    block.append(details);
+  }
+
+  return block;
+}
+
+function formatTokenCount(n) {
+  if (n < 1000) return String(n);
+  if (n < 1_000_000) return `${(n / 1000).toFixed(1)}k`;
+  return `${(n / 1_000_000).toFixed(2)}M`;
+}
+
 function renderDrawerStatusPill(data) {
-  const pill = element('div', { className: `drawer-status-pill drawer-status-pill--${data.status}` });
-  const dotMap = {
-    active: '●',
-    stalled: '●',
-    halted: '●',
-    completed: '✓',
-    failed: '●',
-  };
+  const status = automateDisplayStatus(data);
+  const pill = element('div', { className: `drawer-status-pill drawer-status-pill--${status}` });
   pill.append(
-    element('span', { className: 'drawer-status-dot', text: dotMap[data.status] || '●' }),
-    element('span', { className: 'drawer-status-label', text: data.status }),
+    automateIndicator(status),
+    element('span', { className: 'drawer-status-label', text: status }),
   );
   return pill;
 }
@@ -4639,24 +5573,28 @@ function renderDrawerNudge(data) {
   const section = element('div', { className: 'drawer-nudge' });
 
   const stepId = data.current_step?.id || '?';
+  const unitLabel = formatAutomateUnitLabel(data.current_step || { id: stepId });
   const stepElapsedMs = data.current_step?.started_at
     ? Date.now() - Date.parse(data.current_step.started_at)
     : 0;
   const elapsedMin = Math.floor(stepElapsedMs / 60_000);
   const cap = data.max_step_minutes || 60;
-  const statusLabel = data.status === 'failed'
-    ? `Step ${stepId} failed.`
-    : `Step ${stepId} has been running for ${elapsedMin} minutes (cap: ${cap}).`;
+  const displayStatus = automateDisplayStatus(data);
+  const statusLabel = displayStatus === 'failed'
+    ? `${unitLabel} failed.`
+    : displayStatus === 'stalled'
+      ? `${unitLabel} is not currently running.`
+      : `${unitLabel} has been running for ${elapsedMin} minutes (cap: ${cap}).`;
 
   section.append(element('p', { className: 'drawer-nudge-header', text: `${statusLabel} What would you like to do?` }));
 
   const actions = element('div', { className: 'drawer-nudge-actions' });
 
   const confirmDescriptions = {
-    continue: `This re-launches step ${stepId} with a prompt telling the agent to check git state and finish what's left. Safe default — work that already landed won't be redone.`,
-    restart: `This wipes step ${stepId}'s progress entirely and runs it again from scratch. Any work the previous attempt landed stays in git, but the agent starts fresh.`,
-    skip: `This marks step ${stepId} as done without verifying and advances to the next step. If the work isn't actually there, the chain will have a silent gap.`,
-    restart_failed: `This re-runs the failed step ${stepId} from scratch. The previous failure's log and state will be replaced.`,
+    continue: modes.continue?.description || `This re-launches ${unitLabel} with a prompt telling the agent to check git state and finish what's left. Safe default — work that already landed won't be redone.`,
+    restart: modes.restart?.description || `This wipes ${unitLabel}'s progress entirely and runs it again from scratch. Any work the previous attempt landed stays in git, but the agent starts fresh.`,
+    skip: `This marks ${unitLabel} as done without verifying and advances to the next step. If the work isn't actually there, the chain will have a silent gap.`,
+    restart_failed: modes.restart_failed?.description || `This re-runs the failed ${unitLabel} from scratch. The previous failure's log and state will be replaced.`,
   };
 
   if (modes.continue.available) {
@@ -4708,6 +5646,7 @@ function showNudgeConfirmModal(data, mode, label, description, requireCheckbox) 
   if (existing) existing.remove();
 
   const stepId = data.current_step?.id || '?';
+  const unitLabel = formatAutomateUnitLabel(data.current_step || { id: stepId });
   const overlay = element('div', { className: 'nudge-confirm-modal', id: 'nudge-confirm-modal' });
 
   const card = element('div', { className: 'nudge-confirm-card' });
@@ -4749,7 +5688,7 @@ function showNudgeConfirmModal(data, mode, label, description, requireCheckbox) 
     const result = await executeNudge(state.id, mode);
     overlay.remove();
     if (result.ok) {
-      showToast(`Step ${stepId} nudged — ${mode === 'continue' ? 'continuing' : mode === 'skip' ? 'skipping' : 'restarting'}.`);
+      showToast(`${unitLabel} nudged — ${mode === 'continue' ? 'continuing' : mode === 'skip' ? 'skipping' : 'restarting'}.`);
       playAudioFeedback('tick');
       nudgePendingPulse = true;
       fetchCampaignAutomateState();
@@ -4786,119 +5725,253 @@ async function executeNudge(id, mode) {
   }
 }
 
-function renderDrawerVitals(data) {
-  const row = element('div', { className: 'drawer-vitals' });
+function renderDrawerFinalizeHalt(data) {
+  const actions = data.finalize_actions;
+  if (!actions || !actions.rerun_finalize?.available) return null;
 
-  const campaignElapsed = formatAutomateElapsed(data.started_at);
-  const phaseElapsed = computePhaseElapsed(data);
-  const stepElapsed = data.current_step ? formatAutomateElapsed(data.current_step.started_at) : '';
+  const fin = data.finalize || {};
+  const attempts = fin.attempts || 1;
+  const haltedReason = fin.halted_reason || 'the fix-agent could not produce a commit';
 
-  row.append(
-    buildVitalItem('Campaign', campaignElapsed || '–', 'drawer-vital-campaign'),
-    buildVitalItem('Phase', phaseElapsed || '–', 'drawer-vital-phase'),
-    buildVitalItem('Step', stepElapsed || '–', 'drawer-vital-step'),
+  const section = element('div', { className: 'drawer-finalize-halt' });
+
+  section.append(
+    element('p', {
+      className: 'drawer-finalize-halt-header',
+      text: `Auto-finalize said NEEDS WORK on attempt ${attempts}.`,
+    }),
+    element('p', {
+      className: 'drawer-finalize-halt-body',
+      text: `The chain halted because ${haltedReason}.`,
+    }),
   );
-  return row;
-}
 
-function buildVitalItem(label, value, className) {
-  const item = element('div', { className: `drawer-vital ${className || ''}` });
-  item.append(
-    element('span', { className: 'drawer-vital-value', text: value }),
-    element('span', { className: 'drawer-vital-label', text: label }),
-  );
-  return item;
-}
-
-function computePhaseElapsed(data) {
-  if (!data.steps) return '';
-  let targetPhase = data.current_step?.phase;
-  if (targetPhase == null) {
-    const phases = data.steps.map((s) => s.phase).filter((p) => p != null);
-    targetPhase = phases.length > 0 ? Math.max(...phases) : null;
+  const reviewPreview = extractReviewFailuresSnippet(fin.review_content);
+  if (reviewPreview) {
+    const preview = element('div', { className: 'drawer-finalize-halt-preview' });
+    preview.innerHTML = renderSimpleMarkdown(reviewPreview);
+    section.append(preview);
   }
-  if (targetPhase == null) return '';
-  const phaseSteps = data.steps.filter((s) => s.phase === targetPhase);
-  const firstStarted = phaseSteps
-    .map((s) => s.started_at)
-    .filter(Boolean)
-    .sort()[0];
-  if (!firstStarted) return '';
-  if (data.status === 'completed') {
-    const lastCompleted = phaseSteps
-      .map((s) => s.completed_at)
-      .filter(Boolean)
-      .sort()
-      .pop();
-    if (lastCompleted) {
-      const ms = Date.parse(lastCompleted) - Date.parse(firstStarted);
-      if (Number.isFinite(ms) && ms >= 0) {
-        const minutes = Math.floor(ms / 60_000);
-        if (minutes < 60) return `${minutes}m`;
-        return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+
+  const actionsRow = element('div', { className: 'drawer-finalize-halt-actions' });
+
+  const rerunBtn = element('button', {
+    className: 'button button-primary drawer-finalize-halt-btn',
+    text: actions.rerun_finalize.label,
+    type: 'button',
+  });
+  rerunBtn.addEventListener('click', () => {
+    showFinalizeRerunConfirm(data);
+  });
+  actionsRow.append(rerunBtn);
+
+  if (actions.view_review?.available) {
+    const viewBtn = element('button', {
+      className: 'button drawer-finalize-halt-btn drawer-finalize-halt-btn--secondary',
+      text: actions.view_review.label,
+      type: 'button',
+    });
+    viewBtn.addEventListener('click', () => {
+      showFinalizeReviewModal(data);
+    });
+    actionsRow.append(viewBtn);
+  }
+
+  if (actions.mark_abandoned?.available) {
+    const abandonBtn = element('button', {
+      className: 'button drawer-finalize-halt-btn drawer-finalize-halt-btn--tertiary',
+      text: actions.mark_abandoned.label,
+      type: 'button',
+    });
+    abandonBtn.addEventListener('click', () => {
+      showFinalizeAbandonConfirm(data);
+    });
+    actionsRow.append(abandonBtn);
+  }
+
+  section.append(actionsRow);
+  return section;
+}
+
+// The review markdown can be hundreds of lines. The drawer banner only has
+// room for a teaser — the "Failures" section is what blocks the user, so
+// surface that and let the modal handle the rest.
+function extractReviewFailuresSnippet(content) {
+  if (!content) return null;
+  const headingRegex = /^#{2,3}\s+failures?/im;
+  const match = headingRegex.exec(content);
+  if (!match) return null;
+
+  const start = match.index;
+  const afterHeading = content.slice(start + match[0].length);
+  const nextHeadingMatch = /^#{1,3}\s+/m.exec(afterHeading);
+  const end = nextHeadingMatch ? start + match[0].length + nextHeadingMatch.index : content.length;
+  return content.slice(start, end).trim();
+}
+
+function showFinalizeRerunConfirm(data) {
+  showFinalizeConfirmModal({
+    title: 'Re-run finalize review',
+    body: 'Spawn another auto-finalize pass. Use this after you’ve manually closed the gaps the last review flagged. The review runs in the background — refresh to see results.',
+    confirmLabel: 'Start finalize',
+    busyLabel: 'Starting…',
+    onConfirm: async () => {
+      const result = await executeFinalizeRerun(state.id);
+      if (result.ok) {
+        showToast(result.message || 'Finalize started.');
+        playAudioFeedback('tick');
+        fetchCampaignAutomateState();
+      } else {
+        showToast(result.message || 'Could not start finalize.');
       }
+    },
+  });
+}
+
+function showFinalizeAbandonConfirm(data) {
+  showFinalizeConfirmModal({
+    title: 'Mark campaign abandoned',
+    body: 'Close this campaign out without running finalize again. The status pill turns neutral; you can still re-open or revisit the markdown.',
+    confirmLabel: 'Mark abandoned',
+    busyLabel: 'Marking…',
+    onConfirm: async () => {
+      const result = await executeFinalizeAbandon(state.id);
+      if (result.ok) {
+        showToast(result.message || 'Marked abandoned.');
+        fetchCampaignAutomateState();
+      } else {
+        showToast(result.message || 'Could not mark abandoned.');
+      }
+    },
+  });
+}
+
+function showFinalizeConfirmModal({ title, body, confirmLabel, busyLabel, onConfirm }) {
+  let existing = document.getElementById('nudge-confirm-modal');
+  if (existing) existing.remove();
+
+  const overlay = element('div', { className: 'nudge-confirm-modal', id: 'nudge-confirm-modal' });
+  const card = element('div', { className: 'nudge-confirm-card' });
+  card.append(
+    element('h3', { className: 'nudge-confirm-title', text: title }),
+    element('p', { className: 'nudge-confirm-desc', text: body }),
+  );
+
+  const footer = element('div', { className: 'nudge-confirm-footer' });
+  const cancelBtn = element('button', { className: 'button', text: 'Cancel', type: 'button' });
+  const confirmBtn = element('button', {
+    className: 'button button-primary',
+    text: confirmLabel,
+    type: 'button',
+  });
+
+  cancelBtn.addEventListener('click', () => overlay.remove());
+  confirmBtn.addEventListener('click', async () => {
+    confirmBtn.disabled = true;
+    cancelBtn.disabled = true;
+    confirmBtn.textContent = busyLabel;
+    try {
+      await onConfirm();
+    } finally {
+      overlay.remove();
     }
+  });
+
+  footer.append(cancelBtn, confirmBtn);
+  card.append(footer);
+
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay) overlay.remove();
+  });
+  overlay.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') overlay.remove();
+  });
+
+  overlay.append(card);
+  document.body.append(overlay);
+  confirmBtn.focus();
+}
+
+function showFinalizeReviewModal(data) {
+  let existing = document.getElementById('finalize-review-modal');
+  if (existing) existing.remove();
+
+  const fin = data.finalize || {};
+  const content = fin.review_content || 'Review content unavailable.';
+  const reviewPath = fin.review_path || '';
+
+  const overlay = element('div', {
+    className: 'finalize-review-modal',
+    id: 'finalize-review-modal',
+  });
+  const card = element('div', { className: 'finalize-review-card' });
+
+  const header = element('div', { className: 'finalize-review-header' });
+  header.append(
+    element('h3', { className: 'finalize-review-title', text: `Finalize review — verdict ${fin.verdict || 'unknown'}` }),
+    element('button', {
+      className: 'icon-button finalize-review-close',
+      ariaLabel: 'Close review',
+      text: '×',
+      type: 'button',
+    }),
+  );
+
+  if (reviewPath) {
+    header.append(element('p', { className: 'finalize-review-path', text: reviewPath }));
   }
-  return formatAutomateElapsed(firstStarted);
+
+  const body = element('div', { className: 'finalize-review-body' });
+  body.innerHTML = renderSimpleMarkdown(content);
+
+  card.append(header, body);
+  overlay.append(card);
+
+  const closeModal = () => overlay.remove();
+  header.querySelector('.finalize-review-close')?.addEventListener('click', closeModal);
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay) closeModal();
+  });
+  overlay.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') closeModal();
+  });
+
+  document.body.append(overlay);
+  card.tabIndex = -1;
+  card.focus();
+}
+
+async function executeFinalizeRerun(id) {
+  try {
+    const response = await fetch('/api/automate-finalize', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id }),
+    });
+    return await response.json();
+  } catch (error) {
+    return { ok: false, message: error.message };
+  }
+}
+
+async function executeFinalizeAbandon(id) {
+  try {
+    const response = await fetch('/api/automate-abandon', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id }),
+    });
+    return await response.json();
+  } catch (error) {
+    return { ok: false, message: error.message };
+  }
 }
 
 function tickDrawerElapsed() {
   const data = automateState.current;
-  if (!data) return;
-
-  const campaignEl = document.querySelector('.drawer-vital-campaign .drawer-vital-value');
-  const phaseEl = document.querySelector('.drawer-vital-phase .drawer-vital-value');
-  const stepEl = document.querySelector('.drawer-vital-step .drawer-vital-value');
-
-  if (campaignEl) campaignEl.textContent = formatAutomateElapsed(data.started_at) || '–';
-  if (phaseEl) phaseEl.textContent = computePhaseElapsed(data) || '–';
-  if (stepEl && data.current_step) {
-    stepEl.textContent = formatAutomateElapsed(data.current_step.started_at) || '–';
-  }
-}
-
-function renderDrawerPhaseRibbon(data) {
-  if (!data.steps || data.steps.length === 0) return null;
-
-  const phases = [];
-  const seen = new Set();
-  for (const step of data.steps) {
-    if (!seen.has(step.phase)) {
-      seen.add(step.phase);
-      phases.push({ number: step.phase, name: step.phase_name || `Phase ${step.phase}` });
-    }
-  }
-
-  if (phases.length <= 1) return null;
-
-  const currentPhase = data.current_step?.phase ?? null;
-  const ribbon = element('div', { className: 'drawer-phase-ribbon' });
-
-  for (const phase of phases) {
-    const phaseSteps = data.steps.filter((s) => s.phase === phase.number);
-    const doneCount = phaseSteps.filter((s) => s.status === 'done').length;
-    const total = phaseSteps.length;
-    const isActive = phase.number === currentPhase;
-    const isDone = doneCount === total;
-
-    const label = total <= 4
-      ? `${phase.name} ${doneCount}/${total}`
-      : phase.name;
-
-    const pill = element('button', {
-      className: `drawer-phase-pill${isActive ? ' active' : ''}${isDone ? ' done' : ''}`,
-      text: label,
-      type: 'button',
-      title: `${phase.name}: ${doneCount}/${total} done`,
-    });
-    pill.addEventListener('click', () => {
-      const anchor = document.querySelector(`.phase-header[data-phase-number="${phase.number}"]`);
-      if (anchor) anchor.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    });
-    ribbon.append(pill);
-  }
-
-  return ribbon;
+  if (!data?.current_step) return;
+  const el = document.querySelector('.drawer-now-elapsed');
+  if (el) el.textContent = formatAutomateElapsed(data.current_step.started_at) || '0m';
 }
 
 function renderDrawerCurrentStep(data) {
@@ -4907,7 +5980,7 @@ function renderDrawerCurrentStep(data) {
 
   const header = element('div', { className: 'drawer-current-step-header' });
   header.append(
-    element('span', { className: 'drawer-current-step-id', text: `Step ${step.id}` }),
+    element('span', { className: 'drawer-current-step-id', text: formatAutomateUnitLabel(step) }),
     element('span', { className: 'drawer-current-step-name', text: step.name || '' }),
   );
 
@@ -5025,7 +6098,7 @@ function renderDrawerReceipts(data, isCompleted) {
 }
 
 function renderDrawerLogTail(data) {
-  const wrapper = element('details', { className: 'drawer-log-tail', open: true });
+  const wrapper = element('details', { className: 'drawer-log-tail' });
   wrapper.append(element('summary', { className: 'drawer-section-title', text: 'Step log' }));
 
   const logContainer = element('div', { className: 'drawer-log-container' });

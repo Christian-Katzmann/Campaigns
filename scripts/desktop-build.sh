@@ -1,16 +1,16 @@
 #!/bin/bash
-# Builds desktop/<AppName>.app bundle(s) for every entry in scripts/appify.config.json
+# Builds desktop/<AppName>.app bundle(s) for every entry in scripts/app-it.config.json
 # (or, for backward compat, a bash APPS=(...) array below). Idempotent.
 #
-# This file is a TEMPLATE. The agent customizes appify.config.json (preferred)
+# This file is a TEMPLATE. The agent customizes app-it.config.json (preferred)
 # and chooses the launcher mode (swift|chrome) by editing the file or setting
-# APPIFY_LAUNCHER_MODE in the environment.
+# APP_IT_LAUNCHER_MODE in the environment.
 #
-# Worktree-aware: ROOT honors APPIFY_PROJECT_ROOT env (build from worktree,
+# Worktree-aware: ROOT honors APP_IT_PROJECT_ROOT env (build from worktree,
 # bake the canonical persistent path). Without it, ROOT is derived from
 # this script's location (the repo it was copied into).
 #
-# appify.config.json shape:
+# app-it.config.json shape:
 # {
 #   "apps": [
 #     {
@@ -31,14 +31,14 @@
 
 set -euo pipefail
 
-# Worktree workflow: APPIFY_PROJECT_ROOT overrides the auto-derived path.
+# Worktree workflow: APP_IT_PROJECT_ROOT overrides the auto-derived path.
 # Helper scripts (icons, install, quit) live next to this script — those
 # stay relative to $0. Only PROJECT_ROOT-baked-into-runtime is overridden.
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-ROOT="${APPIFY_PROJECT_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
-export APPIFY_PROJECT_ROOT="$ROOT"
+ROOT="${APP_IT_PROJECT_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
+export APP_IT_PROJECT_ROOT="$ROOT"
 
-CONFIG_FILE="$SCRIPT_DIR/appify.config.json"
+CONFIG_FILE="$SCRIPT_DIR/app-it.config.json"
 
 # --- Load apps from JSON (preferred) or bash APPS array (backward compat) ----
 APPS=()
@@ -71,8 +71,8 @@ for a in cfg.get("apps", []):
 PY
 )
 else
-    echo "Note: scripts/appify.config.json not found — falling back to bash APPS array." >&2
-    echo "      Recommended: copy templates/appify.config.example.json to scripts/." >&2
+    echo "Note: scripts/app-it.config.json not found — falling back to bash APPS array." >&2
+    echo "      Recommended: copy templates/app-it.config.example.json to scripts/." >&2
     APPS=(
       # Replace these with your apps. One line per app.
       # Format: name|slug|port|start_command|bundle_id|version|polyfill_path|backend_port|backend_start_command
@@ -81,7 +81,7 @@ else
 fi
 
 if [ "${#APPS[@]}" -eq 0 ]; then
-    echo "ERROR: no apps configured. Edit scripts/appify.config.json." >&2
+    echo "ERROR: no apps configured. Edit scripts/app-it.config.json." >&2
     exit 1
 fi
 
@@ -103,7 +103,7 @@ for entry in "${APPS[@]}"; do
 done
 
 # --- Launcher mode -----------------------------------------------------
-LAUNCHER_MODE="${APPIFY_LAUNCHER_MODE:-swift}"
+LAUNCHER_MODE="${APP_IT_LAUNCHER_MODE:-swift}"
 if [ "$LAUNCHER_MODE" = "swift" ] && ! command -v swiftc >/dev/null 2>&1; then
     echo "swiftc not found — falling back to Chrome --app launcher." >&2
     echo "(Install Xcode Command Line Tools: xcode-select --install)" >&2
@@ -130,7 +130,7 @@ fi
 
 # --- Compile the native WebKit wrapper (cached, universal) -------------
 # Build arm64 + x86_64 by default and lipo into a universal binary, so the
-# wrapper runs on both Apple Silicon and Intel Macs. APPIFY_SWIFT_ARCHS
+# wrapper runs on both Apple Silicon and Intel Macs. APP_IT_SWIFT_ARCHS
 # overrides ("arm64,x86_64", "arm64", "x86_64").
 if [ "$LAUNCHER_MODE" = "swift" ]; then
     if [ ! -f "$WRAPPER_SRC" ]; then
@@ -139,7 +139,7 @@ if [ "$LAUNCHER_MODE" = "swift" ]; then
     fi
     mkdir -p "$(dirname "$WRAPPER_BUILD")"
 
-    SWIFT_ARCHS="${APPIFY_SWIFT_ARCHS:-arm64,x86_64}"
+    SWIFT_ARCHS="${APP_IT_SWIFT_ARCHS:-arm64,x86_64}"
     NEEDS_REBUILD=0
     if [ ! -x "$WRAPPER_BUILD" ] || [ "$WRAPPER_SRC" -nt "$WRAPPER_BUILD" ]; then
         NEEDS_REBUILD=1
@@ -152,7 +152,7 @@ if [ "$LAUNCHER_MODE" = "swift" ]; then
         for arch in "${ARCH_LIST[@]}"; do
             arch_clean="$(echo "$arch" | tr -d ' ')"
             BIN="$WRAPPER_BUILD.$arch_clean"
-            if swiftc -O "$WRAPPER_SRC" \
+            if swiftc "$WRAPPER_SRC" \
                 -o "$BIN" \
                 -framework Cocoa -framework WebKit \
                 -target "$arch_clean-apple-macosx11" 2>/dev/null; then
@@ -165,7 +165,7 @@ if [ "$LAUNCHER_MODE" = "swift" ]; then
         if [ "${#ARCH_BINS[@]}" -eq 0 ]; then
             # Last resort: build for host arch with no -target.
             echo "All targeted archs failed — building for host arch only." >&2
-            swiftc -O "$WRAPPER_SRC" -o "$WRAPPER_BUILD" -framework Cocoa -framework WebKit
+            swiftc "$WRAPPER_SRC" -o "$WRAPPER_BUILD" -framework Cocoa -framework WebKit
         elif [ "${#ARCH_BINS[@]}" -eq 1 ]; then
             mv "${ARCH_BINS[0]}" "$WRAPPER_BUILD"
         else
@@ -233,7 +233,7 @@ for entry in "${APPS[@]}"; do
             "__BACKEND_PORT__=$BACKEND_PORT" \
             "__BACKEND_START_COMMAND__=$BACKEND_START_COMMAND" \
             "__POLYFILL_PATH__=$POLYFILL_PATH" \
-            > "$MACOS/run"
+            > "$MACOS/run.sh"
     else
         substitute "$SELECTED_RUN_TEMPLATE" \
             "__APP_NAME__=$APP_NAME" \
@@ -242,9 +242,19 @@ for entry in "${APPS[@]}"; do
             "__PORT__=$PORT" \
             "__START_COMMAND__=$START_COMMAND" \
             "__POLYFILL_PATH__=$POLYFILL_PATH" \
-            > "$MACOS/run"
+            > "$MACOS/run.sh"
     fi
-    chmod +x "$MACOS/run"
+    chmod +x "$MACOS/run.sh"
+
+    if [ -f "$SCRIPT_DIR/run-stub.c" ]; then
+        if ! /usr/bin/clang -arch arm64 -arch x86_64 "$SCRIPT_DIR/run-stub.c" -o "$MACOS/run" 2>/dev/null; then
+            /usr/bin/clang "$SCRIPT_DIR/run-stub.c" -o "$MACOS/run"
+        fi
+        chmod +x "$MACOS/run"
+    else
+        cp "$MACOS/run.sh" "$MACOS/run"
+        chmod +x "$MACOS/run"
+    fi
 
     if [ "$LAUNCHER_MODE" = "swift" ]; then
         cp "$WRAPPER_BUILD" "$MACOS/wrapper"
@@ -265,10 +275,9 @@ for entry in "${APPS[@]}"; do
     # launched from Finder/Dock with "X can't be opened" — even when
     # there's no quarantine flag. An ad-hoc (self) signature satisfies
     # the "must be signed" check without requiring an Apple Developer
-    # ID. Strip xattrs first because iCloud Drive (which syncs ~/Desktop
-    # and ~/Documents by default) writes com.apple.FinderInfo into
-    # bundle dirs, and codesign refuses with "resource fork, Finder
-    # information, or similar detritus not allowed".
+    # ID. Strip xattrs first because synced folders can write
+    # com.apple.FinderInfo into bundle dirs, and codesign refuses with
+    # "resource fork, Finder information, or similar detritus not allowed".
     /usr/bin/xattr -cr "$APP_DIR" 2>/dev/null || true
     if ! /usr/bin/codesign --force --deep --sign - "$APP_DIR" >/dev/null 2>&1; then
         echo "  WARN: codesign --sign - failed for $APP_DIR (app may be blocked by Gatekeeper)" >&2
@@ -277,4 +286,4 @@ done
 
 echo
 echo "Built ${#APPS[@]} app(s) under $ROOT/desktop/  (mode: $LAUNCHER_MODE)"
-echo "  Install:  ./scripts/desktop-install.sh    # copies to ~/Desktop/MyApps/, refreshes Dock"
+echo "  Install:  ./scripts/desktop-install.sh    # copies to ~/Applications/App It/, refreshes Dock"

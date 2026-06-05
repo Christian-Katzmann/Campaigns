@@ -42,6 +42,7 @@ Useful flags and environment variables:
 - `--port <number>` or `PORT=4179`
 - `CAMPAIGNS_REGISTRY_DIR=/path/to/state`
 - `CAMPAIGNS_PORT_FILE=/path/to/server.port`
+- `CAMPAIGNS_LESSONS_HELPER=/path/to/read-past-campaigns.py`
 
 ## Choose Your Path
 
@@ -63,6 +64,10 @@ Any markdown file opens. These conventions unlock the richer campaign UI:
 Legacy campaigns with per-step or per-phase review templates still render.
 
 See [examples/sample-campaign.md](examples/sample-campaign.md) for a small file you can edit safely.
+
+The library lessons view is local evidence from past automation ledgers. Its
+data contract and caveats are documented in
+[docs/learning-loop-data-contract.md](docs/learning-loop-data-contract.md).
 
 ## How It Works
 
