@@ -27,6 +27,11 @@
 #   __BACKEND_PORT__             preferred backend port
 #   __BACKEND_START_COMMAND__    backend command (honors API_PORT)
 #   __POLYFILL_PATH__
+#   __COMPANION_PATH__           optional same-origin floating-panel route
+#                                (e.g. "/companion"); empty disables the
+#                                window.campaignCompanion bridge. The panel
+#                                rides the frontend dev server — no extra
+#                                process or pid/port files to clean up.
 
 set -e
 
@@ -36,6 +41,7 @@ PROJECT_ROOT="__PROJECT_ROOT__"
 PREFERRED_FE_PORT=__PORT__
 PREFERRED_BE_PORT=__BACKEND_PORT__
 POLYFILL_PATH="__POLYFILL_PATH__"
+COMPANION_PATH="__COMPANION_PATH__"
 
 # Keep `$PORT` / `$API_PORT` and other shell syntax literal until the daemon
 # spawns below. A plain double-quoted assignment here would expand those values
@@ -274,4 +280,4 @@ fi
 # as siblings of $PID_FILE in the same log dir, so Cmd+Q tears down both
 # servers without further argv plumbing. desktop-quit.sh remains the
 # defensive sweep for whatever Cmd+Q didn't catch (re-parented children).
-exec "$WRAPPER" "$URL" "$APP_NAME" "$CHOSEN_FE_PORT" "$PID_FILE" "$POLYFILL_PATH"
+exec "$WRAPPER" "$URL" "$APP_NAME" "$CHOSEN_FE_PORT" "$PID_FILE" "$POLYFILL_PATH" "$COMPANION_PATH"

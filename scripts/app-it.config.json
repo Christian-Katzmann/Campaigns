@@ -9,7 +9,8 @@
       "version": "0.1.0",
       "polyfill_path": "",
       "backend_port": null,
-      "backend_start_command": null
+      "backend_start_command": null,
+      "companion_path": "/companion"
     }
   ]
 }

@@ -22,7 +22,8 @@
 #       "version": "0.1.0",
 #       "polyfill_path": "",
 #       "backend_port": null,                  // optional, A3.2 multi-server
-#       "backend_start_command": null          // optional, A3.2 multi-server
+#       "backend_start_command": null,         // optional, A3.2 multi-server
+#       "companion_path": "/companion"         // optional, floating companion panel route
 #     }
 #   ]
 # }
@@ -44,7 +45,7 @@ CONFIG_FILE="$SCRIPT_DIR/app-it.config.json"
 APPS=()
 if [ -f "$CONFIG_FILE" ]; then
     # Convert each app to pipe-delimited internal record.
-    # Format: name|slug|port|start_command|bundle_id|version|polyfill_path|backend_port|backend_start_command
+    # Format: name|slug|port|start_command|bundle_id|version|polyfill_path|backend_port|backend_start_command|companion_path
     while IFS= read -r line; do
         [ -n "$line" ] && APPS+=("$line")
     done < <(/usr/bin/python3 - "$CONFIG_FILE" <<'PY'
@@ -62,6 +63,7 @@ for a in cfg.get("apps", []):
         a.get("polyfill_path", ""),
         str(a.get("backend_port") or ""),
         a.get("backend_start_command") or "",
+        a.get("companion_path") or "",
     ]
     # Reject any field containing pipe — would corrupt parsing.
     if any("|" in f for f in fields):
@@ -75,8 +77,8 @@ else
     echo "      Recommended: copy templates/app-it.config.example.json to scripts/." >&2
     APPS=(
       # Replace these with your apps. One line per app.
-      # Format: name|slug|port|start_command|bundle_id|version|polyfill_path|backend_port|backend_start_command
-      "__APP_NAME__|__APP_SLUG__|__PORT__|__START_COMMAND__|__BUNDLE_ID__|__VERSION__|__POLYFILL_PATH_ENTRY__||"
+      # Format: name|slug|port|start_command|bundle_id|version|polyfill_path|backend_port|backend_start_command|companion_path
+      "__APP_NAME__|__APP_SLUG__|__PORT__|__START_COMMAND__|__BUNDLE_ID__|__VERSION__|__POLYFILL_PATH_ENTRY__|||"
     )
 fi
 
@@ -93,7 +95,7 @@ fi
 # so the safest answer is to never use the prefix at all.
 USER_PREFIX="com.$(id -un | tr 'A-Z' 'a-z')."
 for entry in "${APPS[@]}"; do
-    IFS='|' read -r _ _ _ _ BID _ _ _ _ <<<"$entry"
+    IFS='|' read -r _ _ _ _ BID _ _ _ _ _ <<<"$entry"
     BID_LOWER="$(echo "$BID" | tr 'A-Z' 'a-z')"
     case "$BID_LOWER" in
         "$USER_PREFIX"*)
@@ -196,7 +198,7 @@ PY
 
 # --- Build each app -----------------------------------------------------
 for entry in "${APPS[@]}"; do
-    IFS='|' read -r APP_NAME APP_SLUG PORT START_COMMAND BUNDLE_ID VERSION POLYFILL_PATH BACKEND_PORT BACKEND_START_COMMAND <<<"$entry"
+    IFS='|' read -r APP_NAME APP_SLUG PORT START_COMMAND BUNDLE_ID VERSION POLYFILL_PATH BACKEND_PORT BACKEND_START_COMMAND COMPANION_PATH <<<"$entry"
     POLYFILL_PATH="${POLYFILL_PATH//@ROOT@/$ROOT}"
 
     APP_DIR="$ROOT/desktop/${APP_NAME}.app"
@@ -233,6 +235,7 @@ for entry in "${APPS[@]}"; do
             "__BACKEND_PORT__=$BACKEND_PORT" \
             "__BACKEND_START_COMMAND__=$BACKEND_START_COMMAND" \
             "__POLYFILL_PATH__=$POLYFILL_PATH" \
+            "__COMPANION_PATH__=$COMPANION_PATH" \
             > "$MACOS/run.sh"
     else
         substitute "$SELECTED_RUN_TEMPLATE" \
@@ -242,6 +245,7 @@ for entry in "${APPS[@]}"; do
             "__PORT__=$PORT" \
             "__START_COMMAND__=$START_COMMAND" \
             "__POLYFILL_PATH__=$POLYFILL_PATH" \
+            "__COMPANION_PATH__=$COMPANION_PATH" \
             > "$MACOS/run.sh"
     fi
     chmod +x "$MACOS/run.sh"

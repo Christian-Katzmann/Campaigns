@@ -22,6 +22,14 @@
 #                      chosen port will be ignored — bypass via direct binary
 #                      (`pnpm exec next dev`) or add a `dev:app-it` script.
 #   __POLYFILL_PATH__  optional absolute path to a JS polyfill file (empty if none)
+#   __COMPANION_PATH__ optional same-origin path for a floating companion panel
+#                      (e.g. "/companion"). When non-empty the wrapper wires the
+#                      window.campaignCompanion bridge and can open a sticky
+#                      always-on-top panel on that route. The panel rides THIS
+#                      dev server — no second server, no extra pid/port files —
+#                      so Cmd+Q / desktop:quit tear it down with the main app.
+#                      Empty disables the bridge (generic app-it apps are
+#                      unaffected).
 #
 # PROJECT_ROOT is baked at build time. Honors APP_IT_PROJECT_ROOT env override
 # at build time (for worktree workflows). Re-run desktop:build if the repo moves.
@@ -33,6 +41,7 @@ APP_SLUG="__APP_SLUG__"
 PROJECT_ROOT="__PROJECT_ROOT__"
 PREFERRED_PORT=__PORT__
 POLYFILL_PATH="__POLYFILL_PATH__"
+COMPANION_PATH="__COMPANION_PATH__"
 
 # Keep `$PORT` and other shell syntax literal until the daemon spawns below.
 # A plain double-quoted assignment here would expand `$PORT` before the
@@ -273,4 +282,4 @@ if [ ! -x "$WRAPPER" ]; then
     exit 1
 fi
 
-exec "$WRAPPER" "$URL" "$APP_NAME" "$CHOSEN_PORT" "$PID_FILE" "$POLYFILL_PATH"
+exec "$WRAPPER" "$URL" "$APP_NAME" "$CHOSEN_PORT" "$PID_FILE" "$POLYFILL_PATH" "$COMPANION_PATH"
