@@ -1,12 +1,17 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream } from 'node:fs';
-import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFile } from 'node:child_process';
-import { getAutomateState, nudgeAutomateState } from './lib/automate-providers.mjs';
+import {
+  abandonAutomateCampaign,
+  getAutomateState,
+  nudgeAutomateState,
+  rerunAutomateFinalize,
+} from './lib/automate-providers.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
@@ -15,9 +20,59 @@ const APP_SLUG = 'campaigns';
 const registryDir = process.env.CAMPAIGNS_REGISTRY_DIR || defaultRegistryDir();
 const registryPath = path.join(registryDir, 'registry.json');
 const portFilePath = process.env.CAMPAIGNS_PORT_FILE || defaultPortFilePath();
+const lessonsHelperPath = process.env.CAMPAIGNS_LESSONS_HELPER || defaultLessonsHelperPath();
 const MISSING_PRUNE_AFTER_MS = 24 * 60 * 60 * 1000;
+// How long a registered campaign can sit with no active automation before the
+// companion calls it "stale". Conservative first pass — long enough that a
+// normal pause between work sessions doesn't trip it. Tune this one constant.
+const COMPANION_STALE_AFTER_MS = 14 * 24 * 60 * 60 * 1000;
+// Companion-facing status vocabulary. Provider/registry states collapse into
+// exactly these values so the companion UI only ever renders a known set.
+const COMPANION_STATUSES = [
+  'running',
+  'queued',
+  'stalled',
+  'paused',
+  'stale',
+  'halted',
+  'failed',
+  'completed',
+  'idle',
+];
+// Maps every status the provider layer (Claude/Codex) or registry can emit onto
+// the companion vocabulary above. Anything unmapped falls back to `idle`.
+const COMPANION_STATUS_BY_SOURCE = {
+  active: 'running',
+  running: 'running',
+  queued: 'queued',
+  scheduled: 'queued',
+  stalled: 'stalled',
+  blocked: 'stalled',
+  paused: 'paused',
+  parked: 'paused',
+  stale: 'stale',
+  halted: 'halted',
+  abandoned: 'halted',
+  failed: 'failed',
+  completed: 'completed',
+  complete: 'completed',
+  idle: 'idle',
+};
+const COMPANION_STATUS_LABELS = {
+  running: 'Running',
+  queued: 'Queued',
+  stalled: 'Stalled',
+  paused: 'Paused',
+  stale: 'Stale',
+  halted: 'Halted',
+  failed: 'Failed',
+  completed: 'Completed',
+  idle: 'Idle',
+};
 const NOTIFICATION_TITLE_MAX = 80;
 const NOTIFICATION_MESSAGE_MAX = 500;
+const LESSONS_HELPER_TIMEOUT_MS = 8_000;
+const LESSONS_TOP_LIMIT = 5;
 const NTFY_TOPIC_REGEX = /^[A-Za-z0-9_-]{3,64}$/;
 
 const args = process.argv.slice(2);
@@ -44,6 +99,7 @@ const mimeTypes = new Map([
   ['.js', 'text/javascript; charset=utf-8'],
   ['.json', 'application/json; charset=utf-8'],
   ['.svg', 'image/svg+xml'],
+  ['.webp', 'image/webp'],
 ]);
 
 const LOGO_MIME = new Map([
@@ -80,8 +136,18 @@ const server = createServer(async (request, response) => {
       return;
     }
 
+    if (url.pathname === '/api/registry/collection' && request.method === 'POST') {
+      await collectionEndpoint(request, response);
+      return;
+    }
+
     if (url.pathname === '/api/registry/icon' && request.method === 'GET') {
       await sendCampaignIcon(url, response);
+      return;
+    }
+
+    if (url.pathname === '/api/lessons' && request.method === 'GET') {
+      await sendLessons(response);
       return;
     }
 
@@ -110,8 +176,23 @@ const server = createServer(async (request, response) => {
       return;
     }
 
+    if (url.pathname === '/api/companion-state' && request.method === 'GET') {
+      await sendCompanionState(response);
+      return;
+    }
+
     if (url.pathname === '/api/automate-nudge' && request.method === 'POST') {
       await handleAutomateNudge(request, response);
+      return;
+    }
+
+    if (url.pathname === '/api/automate-finalize' && request.method === 'POST') {
+      await handleAutomateFinalize(request, response);
+      return;
+    }
+
+    if (url.pathname === '/api/automate-abandon' && request.method === 'POST') {
+      await handleAutomateAbandon(request, response);
       return;
     }
 
@@ -193,6 +274,10 @@ function defaultPortFilePath() {
   return path.join(process.env.XDG_STATE_HOME || path.join(home, '.local', 'state'), APP_SLUG, 'server.port');
 }
 
+function defaultLessonsHelperPath() {
+  return path.join(homedir(), '.claude', 'skills', 'campaign-planner', 'bin', 'read-past-campaigns.py');
+}
+
 async function writeRuntimePort(actualPort) {
   await mkdir(path.dirname(portFilePath), { recursive: true });
   await writeFile(portFilePath, `${actualPort}\n`, 'utf8');
@@ -217,6 +302,37 @@ async function readRegistry() {
 async function writeRegistry(registry) {
   await mkdir(registryDir, { recursive: true });
   await writeFile(registryPath, `${JSON.stringify(registry, null, 2)}\n`, 'utf8');
+}
+
+function normalizeRegistryCollections(registry) {
+  let changed = false;
+  const counts = new Map();
+
+  for (const entry of registry.campaigns) {
+    if (typeof entry.collectionId !== 'string' || entry.collectionId.trim() === '') {
+      if ('collectionId' in entry) {
+        delete entry.collectionId;
+        changed = true;
+      }
+      continue;
+    }
+
+    const normalized = entry.collectionId.trim();
+    if (normalized !== entry.collectionId) {
+      entry.collectionId = normalized;
+      changed = true;
+    }
+    counts.set(normalized, (counts.get(normalized) ?? 0) + 1);
+  }
+
+  for (const entry of registry.campaigns) {
+    if (entry.collectionId && (counts.get(entry.collectionId) ?? 0) < 2) {
+      delete entry.collectionId;
+      changed = true;
+    }
+  }
+
+  return changed;
 }
 
 async function ensureRegistered(absolutePath) {
@@ -271,6 +387,49 @@ async function setCampaignParked(id, parked) {
   return { found: true, parkedAt: entry.parkedAt ?? null };
 }
 
+async function stackCampaign(sourceId, target) {
+  const registry = await readRegistry();
+  const source = registry.campaigns.find((entry) => entry.id === sourceId);
+  if (!source) return { found: false };
+
+  let collectionId = '';
+  if (target.targetCollectionId) {
+    collectionId = target.targetCollectionId;
+    const collectionExists = registry.campaigns.some((entry) => entry.collectionId === collectionId);
+    if (!collectionExists) return { found: false };
+  } else if (target.targetId) {
+    const targetEntry = registry.campaigns.find((entry) => entry.id === target.targetId);
+    if (!targetEntry) return { found: false };
+    if (targetEntry.id === source.id) {
+      return { found: true, changed: false, collectionId: source.collectionId ?? '', count: 0 };
+    }
+    collectionId = targetEntry.collectionId || randomUUID();
+    targetEntry.collectionId = collectionId;
+  }
+
+  if (!collectionId) return { found: false };
+
+  const changed = source.collectionId !== collectionId;
+  source.collectionId = collectionId;
+  const normalized = normalizeRegistryCollections(registry);
+  await writeRegistry(registry);
+
+  const count = registry.campaigns.filter((entry) => entry.collectionId === collectionId).length;
+  return { found: true, changed: changed || normalized, collectionId, count };
+}
+
+async function removeCampaignFromCollection(id) {
+  const registry = await readRegistry();
+  const entry = registry.campaigns.find((campaign) => campaign.id === id);
+  if (!entry) return { found: false };
+  if (!entry.collectionId) return { found: true, changed: false };
+
+  delete entry.collectionId;
+  normalizeRegistryCollections(registry);
+  await writeRegistry(registry);
+  return { found: true, changed: true };
+}
+
 async function deleteMissingCampaign(id) {
   const registry = await readRegistry();
   const index = registry.campaigns.findIndex((c) => c.id === id);
@@ -283,9 +442,62 @@ async function deleteMissingCampaign(id) {
   } catch {
     registry.campaigns.splice(index, 1);
     if (defaultCampaignId === id) defaultCampaignId = null;
+    normalizeRegistryCollections(registry);
     await writeRegistry(registry);
     return { found: true, removed: true };
   }
+}
+
+// Full delete: move the campaign markdown to the macOS Trash, then unregister.
+// Using mv to ~/.Trash (collision-safe with a timestamp suffix) instead of
+// fs.unlink — the user explicitly asked for a delete option, but losing a
+// hand-written campaign markdown permanently is the wrong default. Trash
+// gives them Finder-level "Put Back" recovery.
+async function fullDeleteCampaign(id) {
+  const registry = await readRegistry();
+  const index = registry.campaigns.findIndex((c) => c.id === id);
+  if (index === -1) return { found: false, removed: false, trashed: false };
+
+  const entry = registry.campaigns[index];
+  let trashed = false;
+  let trashError = null;
+  try {
+    await trashCampaignFile(entry.filePath);
+    trashed = true;
+  } catch (err) {
+    if (err.code === 'ENOENT') {
+      trashed = false; // file was already gone — proceed to unregister anyway
+    } else {
+      trashError = err.message;
+    }
+  }
+
+  if (trashError) {
+    return { found: true, removed: false, trashed: false, error: trashError };
+  }
+
+  registry.campaigns.splice(index, 1);
+  if (defaultCampaignId === id) defaultCampaignId = null;
+  normalizeRegistryCollections(registry);
+  await writeRegistry(registry);
+  return { found: true, removed: true, trashed };
+}
+
+async function trashCampaignFile(filePath) {
+  const trashDir = path.join(homedir(), '.Trash');
+  const base = path.basename(filePath);
+  let dest = path.join(trashDir, base);
+  try {
+    await stat(dest);
+    // Collision — append a timestamp to keep both files.
+    const ext = path.extname(base);
+    const stem = base.slice(0, base.length - ext.length);
+    const ts = new Date().toISOString().replace(/[:.]/g, '-');
+    dest = path.join(trashDir, `${stem} (${ts})${ext}`);
+  } catch {
+    /* no collision — original dest is fine */
+  }
+  await rename(filePath, dest);
 }
 
 async function setCampaignLogo(id, logoPath) {
@@ -345,7 +557,7 @@ async function resolveCampaign(url) {
 async function sendRegistry(response) {
   const registry = await readRegistry();
   const now = Date.now();
-  let registryChanged = false;
+  let registryChanged = normalizeRegistryCollections(registry);
 
   const enriched = await Promise.all(
     registry.campaigns.map(async (entry) => {
@@ -398,6 +610,8 @@ async function sendRegistry(response) {
     registry.campaigns = registry.campaigns.filter((entry) => keepIds.has(entry.id));
     registryChanged = true;
   }
+
+  registryChanged = normalizeRegistryCollections(registry) || registryChanged;
 
   if (registryChanged) {
     await writeRegistry(registry);
@@ -458,6 +672,133 @@ async function sendCampaignIcon(url, response) {
   } catch {
     sendJson(response, 404, { error: 'Logo file is no longer present.' });
   }
+}
+
+/* ------------------------------ API: lessons -------------------------------- */
+
+async function sendLessons(response) {
+  try {
+    await stat(lessonsHelperPath);
+    const analysis = await readLessonsAnalysis();
+    sendJson(response, 200, summarizeLessons(analysis));
+  } catch (error) {
+    const missing = error.code === 'ENOENT';
+    sendJson(response, missing ? 200 : 502, {
+      available: false,
+      generatedAt: new Date().toISOString(),
+      error: missing ? 'Campaign lessons helper is not available.' : 'Campaign lessons could not be loaded.',
+    });
+  }
+}
+
+function readLessonsAnalysis() {
+  return new Promise((resolve, reject) => {
+    execFile(
+      'python3',
+      [lessonsHelperPath, '--include-raw'],
+      { maxBuffer: 8 * 1024 * 1024, timeout: LESSONS_HELPER_TIMEOUT_MS },
+      (error, stdout, stderr) => {
+        if (error) {
+          error.stderr = stderr;
+          reject(error);
+          return;
+        }
+        try {
+          resolve(JSON.parse(stdout));
+        } catch (parseError) {
+          reject(parseError);
+        }
+      },
+    );
+  });
+}
+
+function summarizeLessons(analysis) {
+  const raw = Array.isArray(analysis?.raw) ? analysis.raw : [];
+  const recoveredCampaigns = raw.filter((row) => positiveNumber(row.recover_count) > 0).length;
+  const warningTags = raw.flatMap((row) => stringArray(row.data_quality_warnings));
+  const reasonTags = raw.flatMap((row) => stringArray(row.reasons));
+  const legacyReasonTags = raw.flatMap((row) => stringArray(row.legacy_reasons));
+
+  return {
+    available: true,
+    generatedAt: new Date().toISOString(),
+    scanned: {
+      claude: positiveNumber(analysis?.scanned?.claude),
+      codex: positiveNumber(analysis?.scanned?.codex),
+      total: positiveNumber(analysis?.scanned?.total),
+    },
+    backends: Object.entries(analysis?.backends ?? {}).map(([id, backend]) => ({
+      id,
+      label: id === 'codex' ? 'Codex' : id === 'claude' ? 'Claude' : titleCase(id),
+      total: positiveNumber(backend?.n_total),
+      withVerdict: positiveNumber(backend?.n_with_verdict),
+      approvalRate: nullableNumber(backend?.approval_rate),
+      firstTryRate: nullableNumber(backend?.first_try_rate),
+      reworkRate: nullableNumber(backend?.rework_rate),
+      needsWorkAttempts: positiveNumber(backend?.needs_work_attempt_n),
+      dataQualityWarnings: positiveNumber(backend?.data_quality_warning_n),
+      medianStepCount: nullableNumber(backend?.median_step_count),
+    })),
+    sizing: {
+      medianSteps: nullableNumber(analysis?.sizing?.median_steps),
+      p90Steps: nullableNumber(analysis?.sizing?.p90_steps),
+      maxFirstTrySteps: nullableNumber(analysis?.sizing?.max_first_try),
+      avoidAboveSteps: nullableNumber(analysis?.sizing?.avoid_above),
+      sample: positiveNumber(analysis?.sizing?.sample),
+    },
+    halt: {
+      highStepCountCorrelatesWithHalt: Boolean(analysis?.halt_signals?.high_step_count_correlates_with_halt),
+      overallRate: nullableNumber(analysis?.halt_signals?.halt_rate_overall),
+      highStepCountRate: nullableNumber(analysis?.halt_signals?.halt_rate_high_step_count),
+      examples: stringArray(analysis?.halt_signals?.examples).slice(0, 3),
+    },
+    recovery: {
+      campaigns: recoveredCampaigns,
+      events: raw.reduce((total, row) => total + positiveNumber(row.recover_count), 0),
+    },
+    dataQuality: {
+      warnings: warningTags.length,
+      topWarnings: topCounts(warningTags, LESSONS_TOP_LIMIT),
+    },
+    reasons: {
+      topTags: topCounts(reasonTags, LESSONS_TOP_LIMIT),
+      legacyTopTags: topCounts(legacyReasonTags, LESSONS_TOP_LIMIT),
+    },
+  };
+}
+
+function stringArray(value) {
+  return Array.isArray(value) ? value.filter((item) => typeof item === 'string' && item.trim()) : [];
+}
+
+function topCounts(values, limit) {
+  const counts = new Map();
+  for (const value of values) {
+    const normalized = value.trim();
+    if (!normalized) continue;
+    counts.set(normalized, (counts.get(normalized) ?? 0) + 1);
+  }
+  return [...counts.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .slice(0, limit)
+    .map(([tag, count]) => ({ tag, count }));
+}
+
+function positiveNumber(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? number : 0;
+}
+
+function nullableNumber(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function titleCase(value) {
+  return String(value)
+    .replace(/[-_]+/g, ' ')
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
 /* ------------------------------ API: document ------------------------------- */
@@ -537,10 +878,77 @@ async function parkEndpoint(request, response) {
   sendJson(response, 200, { ok: true, parkedAt: result.parkedAt });
 }
 
+async function collectionEndpoint(request, response) {
+  const payload = await readJsonBody(request);
+
+  if (payload.action === 'remove') {
+    if (typeof payload.id !== 'string') {
+      sendJson(response, 400, { error: 'Expected { action: "remove", id: string }.' });
+      return;
+    }
+    const result = await removeCampaignFromCollection(payload.id);
+    if (!result.found) {
+      sendJson(response, 404, { error: 'Campaign not found.' });
+      return;
+    }
+    sendJson(response, 200, { ok: true, changed: result.changed });
+    return;
+  }
+
+  if (payload.action === 'stack') {
+    const targetId = typeof payload.targetId === 'string' ? payload.targetId : '';
+    const targetCollectionId =
+      typeof payload.targetCollectionId === 'string' ? payload.targetCollectionId : '';
+    if (
+      typeof payload.sourceId !== 'string' ||
+      (targetId === '' && targetCollectionId === '') ||
+      (targetId !== '' && targetCollectionId !== '')
+    ) {
+      sendJson(response, 400, {
+        error:
+          'Expected { action: "stack", sourceId: string, targetId: string } or { action: "stack", sourceId: string, targetCollectionId: string }.',
+      });
+      return;
+    }
+
+    const result = await stackCampaign(payload.sourceId, { targetId, targetCollectionId });
+    if (!result.found) {
+      sendJson(response, 404, { error: 'Campaign or collection not found.' });
+      return;
+    }
+    sendJson(response, 200, {
+      ok: true,
+      changed: result.changed,
+      collectionId: result.collectionId,
+      count: result.count,
+    });
+    return;
+  }
+
+  sendJson(response, 400, { error: 'Expected action to be "stack" or "remove".' });
+}
+
 async function deleteMissingRegistryEndpoint(request, response) {
   const payload = await readJsonBody(request);
   if (typeof payload.id !== 'string') {
     sendJson(response, 400, { error: 'Expected { id: string }.' });
+    return;
+  }
+
+  // Two modes:
+  //   - { id }                       → legacy: unregister only if file already missing
+  //   - { id, deleteFile: true }     → full delete: move file to Trash + unregister
+  if (payload.deleteFile === true) {
+    const result = await fullDeleteCampaign(payload.id);
+    if (!result.found) {
+      sendJson(response, 404, { error: 'Campaign not found.' });
+      return;
+    }
+    if (result.error) {
+      sendJson(response, 500, { error: `Could not move file to Trash: ${result.error}` });
+      return;
+    }
+    sendJson(response, 200, { ok: true, trashed: result.trashed });
     return;
   }
 
@@ -730,7 +1138,24 @@ function extractTitle(markdown) {
 function countProgress(markdown) {
   let total = 0;
   let done = 0;
-  for (const line of markdown.split('\n')) {
+  const lines = markdown.split('\n');
+  const hasProgressChecklist = lines.some((line) => isProgressChecklistHeadingLine(line));
+  let inProgressChecklist = !hasProgressChecklist;
+  let inCodeFence = false;
+
+  for (const line of lines) {
+    if (/^\s*```/.test(line)) {
+      inCodeFence = !inCodeFence;
+      continue;
+    }
+    if (inCodeFence) continue;
+
+    if (isH2HeadingLine(line)) {
+      inProgressChecklist = isProgressChecklistHeadingLine(line);
+      continue;
+    }
+    if (!inProgressChecklist) continue;
+
     const checkMatch = line.match(/^\s*[-*]\s+\[([ xX])\]/);
     if (checkMatch) {
       total += 1;
@@ -748,6 +1173,15 @@ function countProgress(markdown) {
     }
   }
   return { done, total };
+}
+
+function isH2HeadingLine(line) {
+  return /^\s*##(?!#)\s+/.test(line);
+}
+
+function isProgressChecklistHeadingLine(line) {
+  const match = line.match(/^\s*##(?!#)\s+(.+?)\s*#*\s*$/);
+  return Boolean(match && match[1].toLowerCase().includes('progress checklist'));
 }
 
 /* ------------------------------ API: automate state ------------------------- */
@@ -777,6 +1211,121 @@ async function sendAutomateState(url, response) {
   sendJson(response, 200, states);
 }
 
+/* ------------------------------ API: companion state ------------------------ */
+
+// Read-only aggregate for the Campaign Companion. Turns the registry + the
+// automation provider summaries into one compact payload: no file paths, no
+// prompt/log bodies, just enough to show what each campaign is doing. This
+// endpoint must not mutate the registry, markdown, or automation state — unlike
+// sendRegistry it never writes back.
+async function sendCompanionState(response) {
+  const registry = await readRegistry();
+  const now = Date.now();
+
+  const campaigns = await Promise.all(
+    registry.campaigns.map((entry) => buildCompanionCampaign(entry, now)),
+  );
+
+  sendJson(response, 200, {
+    generatedAt: new Date(now).toISOString(),
+    counts: tallyCompanionCounts(campaigns),
+    campaigns,
+  });
+}
+
+async function buildCompanionCampaign(entry, now) {
+  const parked = Boolean(entry.parkedAt);
+  const lastActivityAt = entry.lastActivityAt ?? entry.lastOpenedAt ?? entry.createdAt ?? null;
+
+  let title;
+  let progress;
+  let missing;
+  try {
+    const markdown = await readFile(entry.filePath, 'utf8');
+    title = extractTitle(markdown) ?? path.basename(entry.filePath, path.extname(entry.filePath));
+    progress = countProgress(markdown);
+    missing = false;
+  } catch {
+    // Markdown gone from disk — represent it clearly, never crash aggregation.
+    title = path.basename(entry.filePath);
+    progress = { done: 0, total: 0 };
+    missing = true;
+  }
+
+  let summary = null;
+  try {
+    summary = await getAutomateState(entry.filePath, { summary: true });
+  } catch (error) {
+    // A single bad provider state must not take down the whole companion feed.
+    console.error(`companion-state: automation summary failed for ${entry.id}:`, error.message);
+  }
+
+  const backend = summary?.backend ?? null;
+  const status = deriveCompanionStatus({ summary, parked, lastActivityAt, now });
+  const currentStep =
+    summary?.current_step_id || summary?.current_step_name
+      ? { id: summary.current_step_id ?? null, name: summary.current_step_name ?? null }
+      : null;
+
+  return {
+    id: entry.id,
+    title,
+    backend,
+    status,
+    label: COMPANION_STATUS_LABELS[status] ?? COMPANION_STATUS_LABELS.idle,
+    is_active: status === 'running',
+    current_step: currentStep,
+    progress,
+    lastActivityAt,
+    parked,
+    missing,
+  };
+}
+
+// Collapses provider + registry signals into one companion status. Mirrors the
+// frontend's automateDisplayStatus (an 'active' summary with is_active === false
+// is really stalled), then layers on stale detection and the parked → paused
+// rule.
+function deriveCompanionStatus({ summary, parked, lastActivityAt, now }) {
+  let providerStatus = summary?.status ?? null;
+  if (providerStatus === 'active' && summary?.is_active === false) {
+    providerStatus = 'stalled';
+  }
+
+  let status = providerStatus ? COMPANION_STATUS_BY_SOURCE[providerStatus] ?? 'idle' : 'idle';
+
+  // A registered campaign with nothing running that hasn't moved in a long time
+  // reads as stale rather than merely idle.
+  if (status === 'idle' && isCompanionStale(lastActivityAt, now)) {
+    status = 'stale';
+  }
+
+  // Parked is a deliberate user action — it wins over idle/stale, but real
+  // automation evidence (running, an attention state, a terminal result) still
+  // shows through so a parked-but-active campaign isn't hidden.
+  if (parked && (status === 'idle' || status === 'stale')) {
+    status = 'paused';
+  }
+
+  return status;
+}
+
+function isCompanionStale(lastActivityAt, now) {
+  if (!lastActivityAt) return false;
+  const ms = Date.parse(lastActivityAt);
+  if (!Number.isFinite(ms)) return false;
+  return now - ms > COMPANION_STALE_AFTER_MS;
+}
+
+function tallyCompanionCounts(campaigns) {
+  const counts = { total: campaigns.length };
+  for (const status of COMPANION_STATUSES) counts[status] = 0;
+  for (const campaign of campaigns) {
+    counts[campaign.status] = (counts[campaign.status] ?? 0) + 1;
+  }
+  return counts;
+}
+
 async function handleAutomateNudge(request, response) {
   const payload = await readJsonBody(request);
 
@@ -801,6 +1350,42 @@ async function handleAutomateNudge(request, response) {
   }
 
   const result = await nudgeAutomateState(entry.filePath, payload.mode);
+  sendJson(response, result.ok ? 200 : 502, result);
+}
+
+async function handleAutomateFinalize(request, response) {
+  const payload = await readJsonBody(request);
+  if (typeof payload.id !== 'string') {
+    sendJson(response, 400, { error: 'Expected { id: string }.' });
+    return;
+  }
+
+  const registry = await readRegistry();
+  const entry = registry.campaigns.find((c) => c.id === payload.id);
+  if (!entry) {
+    sendJson(response, 404, { error: 'Campaign not found.' });
+    return;
+  }
+
+  const result = await rerunAutomateFinalize(entry.filePath);
+  sendJson(response, result.ok ? 200 : 502, result);
+}
+
+async function handleAutomateAbandon(request, response) {
+  const payload = await readJsonBody(request);
+  if (typeof payload.id !== 'string') {
+    sendJson(response, 400, { error: 'Expected { id: string }.' });
+    return;
+  }
+
+  const registry = await readRegistry();
+  const entry = registry.campaigns.find((c) => c.id === payload.id);
+  if (!entry) {
+    sendJson(response, 404, { error: 'Campaign not found.' });
+    return;
+  }
+
+  const result = await abandonAutomateCampaign(entry.filePath);
   sendJson(response, result.ok ? 200 : 502, result);
 }
 
