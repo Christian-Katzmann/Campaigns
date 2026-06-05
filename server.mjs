@@ -204,6 +204,14 @@ const server = createServer(async (request, response) => {
       return;
     }
 
+    // Extensionless route for the companion page. Both the browser-popup
+    // fallback and the native desktop panel point at `/companion`; serve the
+    // real file so neither lands on a 404.
+    if (url.pathname === '/companion' && (request.method === 'GET' || request.method === 'HEAD')) {
+      await sendStatic('/companion.html', response, request.method === 'HEAD');
+      return;
+    }
+
     if (url.pathname === '/api/automate-nudge' && request.method === 'POST') {
       await handleAutomateNudge(request, response);
       return;

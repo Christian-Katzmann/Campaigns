@@ -2,7 +2,7 @@
 // .app bundle owns its window (and therefore its Dock icon, activation, and
 // single-instance semantics).
 //
-// Usage: wrapper <url> [app-name] [port] [pid-file] [polyfill-js-path]
+// Usage: wrapper <url> [app-name] [port] [pid-file] [polyfill-js-path] [companion-path]
 //   url               — http(s) URL to load (typically http://localhost:PORT)
 //   app-name          — window title and Dock badge (e.g. "Momó Studio")
 //   port              — optional, used by Cmd+Q to sweep stragglers off the dev port
@@ -19,6 +19,14 @@
 //                       The polyfill is the agent's responsibility — see the
 //                       skill's `fsa-polyfill-template.js` for a worked
 //                       example. Pass an empty string to skip injection.
+//   companion-path    — optional. When set (e.g. "/companion"), the wrapper
+//                       exposes a `window.campaignCompanion` JS bridge in the
+//                       main window and, on request, opens a small floating
+//                       NSPanel pointed at <base-origin><companion-path>. The
+//                       panel rides on the SAME dev server — no second server
+//                       is launched — and stays visible across Spaces and apps
+//                       without stealing key focus. Empty/absent disables the
+//                       bridge entirely, so generic app-it apps are unaffected.
 //
 // Build: swiftc -O wrapper.swift -o <out> -framework Cocoa -framework WebKit
 //
@@ -45,32 +53,38 @@ final class AppDelegate: NSObject,
     NSApplicationDelegate,
     NSWindowDelegate,
     WKNavigationDelegate,
-    WKUIDelegate
+    WKUIDelegate,
+    WKScriptMessageHandler
 {
     private let url: URL
     private let appName: String
     private let port: Int?
     private let pidFilePath: String?
     private let polyfillJSPath: String?
+    private let companionPath: String?
     private var window: NSWindow!
     private var webView: WKWebView!
     private var quittingViaWindowClose = false
     private var keyMonitor: Any?
     private var findBar: FindBar?
     private var lastFindQuery = ""
+    private var companionPanel: NSPanel?
+    private var companionWebView: WKWebView?
 
     init(
         url: URL,
         appName: String,
         port: Int?,
         pidFilePath: String?,
-        polyfillJSPath: String?
+        polyfillJSPath: String?,
+        companionPath: String?
     ) {
         self.url = url
         self.appName = appName
         self.port = port
         self.pidFilePath = pidFilePath
         self.polyfillJSPath = polyfillJSPath
+        self.companionPath = companionPath
         super.init()
     }
 
@@ -130,6 +144,21 @@ final class AppDelegate: NSObject,
                 forMainFrameOnly: true
             )
             config.userContentController.addUserScript(userScript)
+        }
+
+        // Companion bridge. Only wired when a companion path was passed, so a
+        // generic app-it app never gets the `window.campaignCompanion` global
+        // or the message handler. The page-side launch control (app.js
+        // launchCompanion) feature-detects this bridge and delegates to it
+        // instead of opening a browser popup.
+        if companionPath != nil {
+            config.userContentController.add(self, name: "campaignCompanion")
+            let bridge = WKUserScript(
+                source: Self.companionBridgeJS,
+                injectionTime: .atDocumentStart,
+                forMainFrameOnly: true
+            )
+            config.userContentController.addUserScript(bridge)
         }
 
         webView = WKWebView(frame: frame, configuration: config)
@@ -196,6 +225,11 @@ final class AppDelegate: NSObject,
     private var hasSynthesizedGesture = false
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        // The companion panel shares this navigation delegate (for the
+        // external-link policy below). The gesture synthesis is a main-window
+        // media-autoplay unlock — irrelevant to the companion — so skip it for
+        // any web view that isn't the main one.
+        guard webView === self.webView else { return }
         // WebKit treats the first user click as the platform user-activation
         // that unlocks programmatic media playback. Posting a synthetic
         // NSEvent mouseDown/mouseUp pair counts as a real gesture (unlike
@@ -343,6 +377,121 @@ final class AppDelegate: NSObject,
                 completionHandler(nil)
             }
         }
+    }
+
+    // MARK: - Companion panel
+
+    // JS injected into the main window. Mirrors the bridge shape app.js
+    // feature-detects: `window.campaignCompanion.open()`. close()/toggle() are
+    // provided for symmetry and future use. Wrapped in try/catch so a missing
+    // message handler can never throw into page code.
+    private static let companionBridgeJS = """
+    (function () {
+      function send(action) {
+        try {
+          window.webkit.messageHandlers.campaignCompanion.postMessage({ action: action });
+        } catch (e) {}
+      }
+      window.campaignCompanion = {
+        open:   function () { send('open');   },
+        close:  function () { send('close');  },
+        toggle: function () { send('toggle'); },
+      };
+    })();
+    """
+
+    // Resolves the companion page URL against the main window's origin so the
+    // panel rides the SAME dev server. Accepts an absolute path ("/companion")
+    // or a full URL; falls back to nil when no companion path was configured.
+    private func resolveCompanionURL() -> URL? {
+        guard let path = companionPath, !path.isEmpty else { return nil }
+        if let full = URL(string: path), full.scheme != nil { return full }
+        guard var comps = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return nil }
+        comps.path = path.hasPrefix("/") ? path : "/" + path
+        comps.query = nil
+        comps.fragment = nil
+        return comps.url
+    }
+
+    func userContentController(
+        _ userContentController: WKUserContentController,
+        didReceive message: WKScriptMessage
+    ) {
+        guard message.name == "campaignCompanion" else { return }
+        let action = (message.body as? [String: Any])?["action"] as? String ?? "open"
+        switch action {
+        case "close":  companionPanel?.orderOut(nil)
+        case "toggle": toggleCompanionPanel()
+        default:       showCompanionPanel()
+        }
+    }
+
+    private func toggleCompanionPanel() {
+        if let panel = companionPanel, panel.isVisible {
+            panel.orderOut(nil)
+        } else {
+            showCompanionPanel()
+        }
+    }
+
+    private func showCompanionPanel() {
+        guard let companionURL = resolveCompanionURL() else { return }
+        let panel = companionPanel ?? makeCompanionPanel(loading: companionURL)
+        companionPanel = panel
+        positionCompanionPanel(panel)
+        // orderFrontRegardless shows the panel WITHOUT activating the app or
+        // taking key focus — the user keeps typing wherever they were. Combined
+        // with the .nonactivatingPanel style mask, even clicking the panel
+        // later won't steal focus from the foreground app.
+        panel.orderFrontRegardless()
+    }
+
+    private func makeCompanionPanel(loading companionURL: URL) -> NSPanel {
+        let size = NSSize(width: 360, height: 520)
+        let panel = NSPanel(
+            contentRect: NSRect(origin: .zero, size: size),
+            styleMask: [.titled, .closable, .resizable, .utilityWindow,
+                        .nonactivatingPanel, .fullSizeContentView],
+            backing: .buffered,
+            defer: false
+        )
+        panel.title = "\(appName) Companion"
+        panel.titlebarAppearsTransparent = true
+        panel.titleVisibility = .hidden
+        panel.isFloatingPanel = true
+        panel.level = .floating
+        panel.hidesOnDeactivate = false
+        panel.isReleasedWhenClosed = false
+        panel.minSize = NSSize(width: 300, height: 380)
+        panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
+        panel.standardWindowButton(.zoomButton)?.isHidden = true
+        // Ride along every Space and float over fullscreen apps, so the
+        // companion stays glanceable no matter where the user is working.
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+
+        let config = WKWebViewConfiguration()
+        config.websiteDataStore = .default()
+        let companionView = WKWebView(frame: NSRect(origin: .zero, size: size), configuration: config)
+        companionView.navigationDelegate = self  // reuse external-link policy
+        companionView.autoresizingMask = [.width, .height]
+        panel.contentView = companionView
+        companionView.load(URLRequest(url: companionURL))
+        companionWebView = companionView
+        return panel
+    }
+
+    private func positionCompanionPanel(_ panel: NSPanel) {
+        // Only auto-place the first time it's shown; respect the user's drag
+        // afterwards. Anchor to the top-right of the main window's screen.
+        guard !panel.isVisible else { return }
+        let screen = bestScreen(for: window?.frame ?? panel.frame) ?? NSScreen.main
+        guard let visible = screen?.visibleFrame else { panel.center(); return }
+        let margin: CGFloat = 24
+        let origin = NSPoint(
+            x: visible.maxX - panel.frame.width - margin,
+            y: visible.maxY - panel.frame.height - margin
+        )
+        panel.setFrameOrigin(origin)
     }
 
     private func killServer() {
@@ -851,13 +1000,14 @@ final class FindBar: NSView, NSTextFieldDelegate, NSSearchFieldDelegate {
 let arguments = CommandLine.arguments
 guard arguments.count >= 2, let url = URL(string: arguments[1]) else {
     FileHandle.standardError.write(
-        Data("usage: wrapper <url> [app-name] [port] [pid-file] [polyfill-js-path]\n".utf8))
+        Data("usage: wrapper <url> [app-name] [port] [pid-file] [polyfill-js-path] [companion-path]\n".utf8))
     exit(2)
 }
 let appName = arguments.count >= 3 ? arguments[2] : "App"
 let port = arguments.count >= 4 ? Int(arguments[3]) : nil
 let pidFilePath = arguments.count >= 5 && !arguments[4].isEmpty ? arguments[4] : nil
 let polyfillJSPath = arguments.count >= 6 && !arguments[5].isEmpty ? arguments[5] : nil
+let companionPath = arguments.count >= 7 && !arguments[6].isEmpty ? arguments[6] : nil
 
 let app = NSApplication.shared
 let delegate = AppDelegate(
@@ -865,7 +1015,8 @@ let delegate = AppDelegate(
     appName: appName,
     port: port,
     pidFilePath: pidFilePath,
-    polyfillJSPath: polyfillJSPath
+    polyfillJSPath: polyfillJSPath,
+    companionPath: companionPath
 )
 app.delegate = delegate
 app.setActivationPolicy(.regular)
