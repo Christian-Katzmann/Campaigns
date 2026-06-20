@@ -32,6 +32,7 @@
     "desktop:icons": "APP_NAME='Campaigns' APP_SLUG='campaigns' ./scripts/desktop-icons.sh",
     "desktop:build": "./scripts/desktop-build.sh",
     "desktop:install": "./scripts/desktop-install.sh",
+    "desktop:login-item": "./scripts/desktop-login-item.sh",
     "desktop:quit": "./scripts/desktop-quit.sh",
     "desktop:icons:preview": "APP_NAME='Campaigns' APP_SLUG='campaigns' ./scripts/desktop-icons-preview.sh",
     "desktop:doctor": "./scripts/desktop-doctor.sh"

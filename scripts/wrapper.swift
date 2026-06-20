@@ -2,7 +2,7 @@
 // .app bundle owns its window (and therefore its Dock icon, activation, and
 // single-instance semantics).
 //
-// Usage: wrapper <url> [app-name] [port] [pid-file] [polyfill-js-path] [companion-path]
+// Usage: wrapper <url> [app-name] [port] [pid-file] [polyfill-js-path] [companion-path] [launch-mode]
 //   url               — http(s) URL to load (typically http://localhost:PORT)
 //   app-name          — window title and Dock badge (e.g. "Momó Studio")
 //   port              — optional, used by Cmd+Q to sweep stragglers off the dev port
@@ -27,6 +27,9 @@
 //                       is launched — and stays visible across Spaces and apps
 //                       without stealing key focus. Empty/absent disables the
 //                       bridge entirely, so generic app-it apps are unaffected.
+//   launch-mode       — optional. Use "menu-bar" to start hidden with only the
+//                       menu-bar item visible. The main window can still be
+//                       opened from the companion's Open App button.
 //
 // Build: swiftc -O wrapper.swift -o <out> -framework Cocoa -framework WebKit
 //
@@ -48,6 +51,17 @@ private let DEFAULT_WIDTH: CGFloat = 1280
 private let DEFAULT_HEIGHT: CGFloat = 820
 private let MIN_WIDTH: CGFloat = 720
 private let MIN_HEIGHT: CGFloat = 480
+private let COMPANION_EXPANDED_SIZE = NSSize(width: 360, height: 520)
+private let COMPANION_COLLAPSED_SIZE = NSSize(width: 82, height: 92)
+private let COMPANION_EXPANDED_MIN_SIZE = NSSize(width: 300, height: 380)
+private let COMPANION_PET_CELL_WIDTH = 192
+private let COMPANION_PET_CELL_HEIGHT = 208
+
+private enum CompanionPetAnimation: Hashable {
+    case idle
+    case running
+    case waving
+}
 
 final class AppDelegate: NSObject,
     NSApplicationDelegate,
@@ -62,6 +76,7 @@ final class AppDelegate: NSObject,
     private let pidFilePath: String?
     private let polyfillJSPath: String?
     private let companionPath: String?
+    private let launchMode: String?
     private var window: NSWindow!
     private var webView: WKWebView!
     private var quittingViaWindowClose = false
@@ -70,6 +85,11 @@ final class AppDelegate: NSObject,
     private var lastFindQuery = ""
     private var companionPanel: NSPanel?
     private var companionWebView: WKWebView?
+    private var companionStatusItem: NSStatusItem?
+    private var companionExpandedFrame: NSRect?
+    private var companionIsCollapsed = false
+    private var companionDragView: CompanionDragView?
+    private var companionBadgeCount = 0
 
     init(
         url: URL,
@@ -77,7 +97,8 @@ final class AppDelegate: NSObject,
         port: Int?,
         pidFilePath: String?,
         polyfillJSPath: String?,
-        companionPath: String?
+        companionPath: String?,
+        launchMode: String?
     ) {
         self.url = url
         self.appName = appName
@@ -85,6 +106,7 @@ final class AppDelegate: NSObject,
         self.pidFilePath = pidFilePath
         self.polyfillJSPath = polyfillJSPath
         self.companionPath = companionPath
+        self.launchMode = launchMode
         super.init()
     }
 
@@ -97,6 +119,7 @@ final class AppDelegate: NSObject,
         // first-responder default actions exist. Building this once at launch
         // wires up every standard shortcut a user expects from any macOS app.
         buildMenu()
+        installCompanionStatusItem()
         installKeyboardShortcutMonitor()
 
         let frame = NSRect(x: 0, y: 0, width: DEFAULT_WIDTH, height: DEFAULT_HEIGHT)
@@ -109,6 +132,7 @@ final class AppDelegate: NSObject,
             defer: false
         )
         window.title = appName
+        window.isReleasedWhenClosed = false
         window.setFrameAutosaveName(autosaveName)
         window.minSize = NSSize(width: MIN_WIDTH, height: MIN_HEIGHT)
         window.tabbingMode = .disallowed
@@ -168,8 +192,11 @@ final class AppDelegate: NSObject,
         window.contentView = webView
 
         webView.load(URLRequest(url: url))
-        window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        if launchMode == "menu-bar" && companionPath != nil {
+            NSApp.setActivationPolicy(.accessory)
+        } else {
+            showMainWindow()
+        }
     }
 
     private func restoreUsableWindowFrame(named autosaveName: String) {
@@ -286,10 +313,14 @@ final class AppDelegate: NSObject,
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        true
+        companionPath == nil
     }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
+        if companionPath != nil, sender === window {
+            window.orderOut(nil)
+            return false
+        }
         // Distinguish red-X close from Cmd+Q. Red-X = leave server warm
         // (daemon-mode); Cmd+Q = full shutdown including the dev server.
         quittingViaWindowClose = true
@@ -307,8 +338,8 @@ final class AppDelegate: NSObject,
         _ sender: NSApplication,
         hasVisibleWindows flag: Bool
     ) -> Bool {
-        if !flag, let window = window {
-            window.makeKeyAndOrderFront(nil)
+        if !flag {
+            showMainWindow()
         }
         return true
     }
@@ -381,21 +412,49 @@ final class AppDelegate: NSObject,
 
     // MARK: - Companion panel
 
+    private func installCompanionStatusItem() {
+        guard companionPath != nil else { return }
+        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        companionStatusItem = item
+        guard let button = item.button else { return }
+        if let image = NSImage(
+            systemSymbolName: "rectangle.split.2x1",
+            accessibilityDescription: "Campaign Companion"
+        ) {
+            image.isTemplate = true
+            button.image = image
+            button.imagePosition = .imageOnly
+        } else {
+            button.title = "C"
+        }
+        button.toolTip = "Campaign Companion"
+        button.target = self
+        button.action = #selector(companionStatusItemTapped)
+    }
+
+    @objc private func companionStatusItemTapped(_ sender: Any?) {
+        toggleCompanionPanel()
+    }
+
     // JS injected into the main window. Mirrors the bridge shape app.js
     // feature-detects: `window.campaignCompanion.open()`. close()/toggle() are
     // provided for symmetry and future use. Wrapped in try/catch so a missing
     // message handler can never throw into page code.
     private static let companionBridgeJS = """
     (function () {
-      function send(action) {
+      function send(action, payload) {
         try {
-          window.webkit.messageHandlers.campaignCompanion.postMessage({ action: action });
+          window.webkit.messageHandlers.campaignCompanion.postMessage(Object.assign({ action: action }, payload || {}));
         } catch (e) {}
       }
       window.campaignCompanion = {
-        open:   function () { send('open');   },
-        close:  function () { send('close');  },
-        toggle: function () { send('toggle'); },
+        open:         function () { send('open');   },
+        close:        function () { send('close');  },
+        toggle:       function () { send('toggle'); },
+        openApp:      function () { send('openApp'); },
+        setCollapsed: function (collapsed) { send('setCollapsed', { collapsed: !!collapsed }); },
+        setBadgeCount:function (count) { send('setBadgeCount', { count: Number(count) || 0 }); },
+        setPetActive: function (active) { send('setPetActive', { active: !!active }); },
       };
     })();
     """
@@ -418,12 +477,26 @@ final class AppDelegate: NSObject,
         didReceive message: WKScriptMessage
     ) {
         guard message.name == "campaignCompanion" else { return }
-        let action = (message.body as? [String: Any])?["action"] as? String ?? "open"
+        let body = message.body as? [String: Any]
+        let action = body?["action"] as? String ?? "open"
         switch action {
-        case "close":  companionPanel?.orderOut(nil)
-        case "toggle": toggleCompanionPanel()
-        default:       showCompanionPanel()
+        case "close":        companionPanel?.orderOut(nil)
+        case "toggle":       toggleCompanionPanel()
+        case "openApp":      showMainWindow()
+        case "setCollapsed": setCompanionPanelCollapsed((body?["collapsed"] as? Bool) ?? false)
+        case "setBadgeCount":
+            companionBadgeCount = body?["count"] as? Int ?? 0
+            companionDragView?.badgeCount = companionBadgeCount
+        case "setPetActive":
+            companionDragView?.petActive = (body?["active"] as? Bool) ?? false
+        default:             showCompanionPanel()
         }
+    }
+
+    private func showMainWindow() {
+        NSApp.setActivationPolicy(.regular)
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     private func toggleCompanionPanel() {
@@ -447,37 +520,168 @@ final class AppDelegate: NSObject,
     }
 
     private func makeCompanionPanel(loading companionURL: URL) -> NSPanel {
-        let size = NSSize(width: 360, height: 520)
         let panel = NSPanel(
-            contentRect: NSRect(origin: .zero, size: size),
+            contentRect: NSRect(origin: .zero, size: COMPANION_EXPANDED_SIZE),
             styleMask: [.titled, .closable, .resizable, .utilityWindow,
                         .nonactivatingPanel, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
         panel.title = "\(appName) Companion"
-        panel.titlebarAppearsTransparent = true
-        panel.titleVisibility = .hidden
+        configureCompanionPanel(panel, collapsed: false)
+
+        let config = WKWebViewConfiguration()
+        config.websiteDataStore = .default()
+        config.userContentController.add(self, name: "campaignCompanion")
+        config.userContentController.addUserScript(WKUserScript(
+            source: Self.companionBridgeJS,
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: true
+        ))
+
+        let host = NSView(frame: NSRect(origin: .zero, size: COMPANION_EXPANDED_SIZE))
+        host.autoresizingMask = [.width, .height]
+        host.wantsLayer = true
+        host.layer?.backgroundColor = NSColor.clear.cgColor
+
+        let companionView = WKWebView(frame: NSRect(origin: .zero, size: COMPANION_EXPANDED_SIZE), configuration: config)
+        companionView.navigationDelegate = self  // reuse external-link policy
+        companionView.autoresizingMask = [.width, .height]
+        companionView.wantsLayer = true
+        companionView.layer?.backgroundColor = NSColor.clear.cgColor
+        companionView.layer?.isOpaque = false
+        if companionView.responds(to: Selector(("setDrawsBackground:"))) {
+            companionView.setValue(false, forKey: "drawsBackground")
+        }
+        if #available(macOS 12.0, *) {
+            companionView.underPageBackgroundColor = .clear
+        }
+
+        let dragView = CompanionDragView(frame: host.bounds)
+        dragView.autoresizingMask = [.width, .height]
+        dragView.panel = panel
+        dragView.petAnimations = loadCollapsedPetAnimations()
+        dragView.badgeCount = companionBadgeCount
+        dragView.onExpand = { [weak self] in
+            self?.companionWebView?.evaluateJavaScript("window.campaignCompanionSetCollapsedFromNative && window.campaignCompanionSetCollapsedFromNative(false);")
+            self?.setCompanionPanelCollapsed(false)
+        }
+        dragView.isHidden = true
+
+        host.addSubview(companionView)
+        host.addSubview(dragView)
+        panel.contentView = host
+        companionView.load(URLRequest(url: companionURL))
+        companionWebView = companionView
+        companionDragView = dragView
+        return panel
+    }
+
+    private func setCompanionPanelCollapsed(_ collapsed: Bool) {
+        guard let panel = companionPanel else { return }
+        guard companionIsCollapsed != collapsed else { return }
+        companionIsCollapsed = collapsed
+
+        if collapsed {
+            companionExpandedFrame = panel.frame
+            configureCompanionPanel(panel, collapsed: true)
+            companionWebView?.isHidden = true
+            companionDragView?.isHidden = false
+            companionDragView?.startAnimation()
+            panel.minSize = COMPANION_COLLAPSED_SIZE
+            resizeCompanionPanel(panel, to: COMPANION_COLLAPSED_SIZE)
+        } else {
+            let current = panel.frame
+            let target = companionExpandedFrame ?? NSRect(
+                x: current.maxX - COMPANION_EXPANDED_SIZE.width,
+                y: current.maxY - COMPANION_EXPANDED_SIZE.height,
+                width: COMPANION_EXPANDED_SIZE.width,
+                height: COMPANION_EXPANDED_SIZE.height
+            )
+            configureCompanionPanel(panel, collapsed: false)
+            companionWebView?.isHidden = false
+            companionDragView?.isHidden = true
+            companionDragView?.stopAnimation()
+            panel.setFrame(target, display: true, animate: true)
+            panel.minSize = COMPANION_EXPANDED_MIN_SIZE
+        }
+    }
+
+    private func loadCollapsedPetAnimations() -> [CompanionPetAnimation: [NSImage]] {
+        let fm = FileManager.default
+        let home = fm.homeDirectoryForCurrentUser.path
+        let codexHome = ProcessInfo.processInfo.environment["CODEX_HOME"] ?? "\(home)/.codex"
+        let petId = ProcessInfo.processInfo.environment["CAMPAIGNS_COMPANION_PET"] ?? "kro"
+        let spritesheet = "\(codexHome)/pets/\(petId)/spritesheet.webp"
+        guard let sheet = NSImage(contentsOfFile: spritesheet),
+              let cg = sheet.cgImage(forProposedRect: nil, context: nil, hints: nil)
+        else { return [:] }
+
+        let rows: [(CompanionPetAnimation, Int, Int)] = [
+            (.idle, 0, 6),
+            (.running, 7, 6),
+            (.waving, 3, 4),
+        ]
+        var animations: [CompanionPetAnimation: [NSImage]] = [:]
+        for (state, row, frameCount) in rows {
+            var frames: [NSImage] = []
+            for index in 0..<frameCount {
+                let cropRect = CGRect(
+                    x: CGFloat(index * COMPANION_PET_CELL_WIDTH),
+                    y: CGFloat(cg.height - ((row + 1) * COMPANION_PET_CELL_HEIGHT)),
+                    width: CGFloat(COMPANION_PET_CELL_WIDTH),
+                    height: CGFloat(COMPANION_PET_CELL_HEIGHT)
+                )
+                guard let cropped = cg.cropping(to: cropRect) else { continue }
+                frames.append(NSImage(
+                    cgImage: cropped,
+                    size: NSSize(
+                        width: CGFloat(COMPANION_PET_CELL_WIDTH),
+                        height: CGFloat(COMPANION_PET_CELL_HEIGHT)
+                    )
+                ))
+            }
+            animations[state] = frames
+        }
+        return animations
+    }
+
+    private func configureCompanionPanel(_ panel: NSPanel, collapsed: Bool) {
+        if collapsed {
+            panel.styleMask = [.borderless, .nonactivatingPanel]
+            panel.backgroundColor = .clear
+            panel.isOpaque = false
+            panel.hasShadow = false
+            panel.isMovableByWindowBackground = false
+        } else {
+            panel.styleMask = [.titled, .closable, .resizable, .utilityWindow,
+                               .nonactivatingPanel, .fullSizeContentView]
+            panel.titlebarAppearsTransparent = true
+            panel.titleVisibility = .hidden
+            panel.backgroundColor = .windowBackgroundColor
+            panel.isOpaque = false
+            panel.hasShadow = true
+            panel.isMovableByWindowBackground = false
+            panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
+            panel.standardWindowButton(.zoomButton)?.isHidden = true
+        }
+
         panel.isFloatingPanel = true
         panel.level = .floating
         panel.hidesOnDeactivate = false
         panel.isReleasedWhenClosed = false
-        panel.minSize = NSSize(width: 300, height: 380)
-        panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
-        panel.standardWindowButton(.zoomButton)?.isHidden = true
-        // Ride along every Space and float over fullscreen apps, so the
-        // companion stays glanceable no matter where the user is working.
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+    }
 
-        let config = WKWebViewConfiguration()
-        config.websiteDataStore = .default()
-        let companionView = WKWebView(frame: NSRect(origin: .zero, size: size), configuration: config)
-        companionView.navigationDelegate = self  // reuse external-link policy
-        companionView.autoresizingMask = [.width, .height]
-        panel.contentView = companionView
-        companionView.load(URLRequest(url: companionURL))
-        companionWebView = companionView
-        return panel
+    private func resizeCompanionPanel(_ panel: NSPanel, to size: NSSize) {
+        let current = panel.frame
+        let target = NSRect(
+            x: current.maxX - size.width,
+            y: current.maxY - size.height,
+            width: size.width,
+            height: size.height
+        )
+        panel.setFrame(target, display: true, animate: true)
     }
 
     private func positionCompanionPanel(_ panel: NSPanel) {
@@ -830,6 +1034,212 @@ final class AppDelegate: NSObject,
 
 // MARK: - FindBar
 
+final class CompanionDragView: NSView {
+    weak var panel: NSPanel?
+    var onExpand: (() -> Void)?
+    fileprivate var petAnimations: [CompanionPetAnimation: [NSImage]] = [:] {
+        didSet {
+            animationState = .idle
+            frameIndex = 0
+            needsDisplay = true
+        }
+    }
+    var badgeCount: Int = 0 {
+        didSet {
+            needsDisplay = true
+        }
+    }
+    var petActive: Bool = false {
+        didSet {
+            updateAnimationState(resetFrame: false)
+        }
+    }
+
+    private var dragStartMouse = NSPoint.zero
+    private var dragStartOrigin = NSPoint.zero
+    private var didDrag = false
+    private var animationTimer: Timer?
+    private var animationState: CompanionPetAnimation = .idle
+    private var isHovering = false
+    private var frameIndex = 0
+
+    override var acceptsFirstResponder: Bool { true }
+    override var isOpaque: Bool { false }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        for area in trackingAreas {
+            removeTrackingArea(area)
+        }
+        addTrackingArea(NSTrackingArea(
+            rect: bounds,
+            options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+            owner: self,
+            userInfo: nil
+        ))
+    }
+
+    func startAnimation() {
+        stopAnimation()
+        updateAnimationState(resetFrame: true)
+        scheduleNextFrame()
+    }
+
+    func stopAnimation() {
+        animationTimer?.invalidate()
+        animationTimer = nil
+    }
+
+    private func updateAnimationState(resetFrame: Bool) {
+        let nextState: CompanionPetAnimation = isHovering ? .waving : (petActive ? .running : .idle)
+        if nextState != animationState || resetFrame {
+            animationState = nextState
+            frameIndex = 0
+            needsDisplay = true
+        }
+        if animationTimer != nil {
+            scheduleNextFrame()
+        }
+    }
+
+    private func scheduleNextFrame() {
+        animationTimer?.invalidate()
+        let frames = currentFrames()
+        guard frames.count > 1 else { return }
+        animationTimer = Timer.scheduledTimer(withTimeInterval: currentFrameDuration(), repeats: false) {
+            [weak self] _ in
+            guard let self else { return }
+            let frames = self.currentFrames()
+            guard !frames.isEmpty else { return }
+            self.frameIndex = (self.frameIndex + 1) % frames.count
+            self.needsDisplay = true
+            self.scheduleNextFrame()
+        }
+    }
+
+    private func currentFrames() -> [NSImage] {
+        if let frames = petAnimations[animationState], !frames.isEmpty {
+            return frames
+        }
+        if let idle = petAnimations[.idle], !idle.isEmpty {
+            return idle
+        }
+        return petAnimations.values.first ?? []
+    }
+
+    private func currentFrameDuration() -> TimeInterval {
+        let durations: [TimeInterval]
+        switch animationState {
+        case .idle:
+            durations = [0.28, 0.11, 0.11, 0.14, 0.14, 0.32]
+        case .running:
+            durations = [0.12, 0.12, 0.12, 0.12, 0.12, 0.22]
+        case .waving:
+            durations = [0.14, 0.14, 0.14, 0.28]
+        }
+        return durations[min(frameIndex, durations.count - 1)]
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        NSColor.clear.setFill()
+        dirtyRect.fill()
+
+        let petRect = bounds.insetBy(dx: 7, dy: 4)
+        let frames = currentFrames()
+        if !frames.isEmpty {
+            let frame = frames[frameIndex % frames.count]
+            frame.draw(in: petRect, from: .zero, operation: .sourceOver, fraction: 1)
+        } else {
+            let fallbackRect = NSRect(x: bounds.midX - 24, y: bounds.midY - 24, width: 48, height: 48)
+            NSColor(calibratedWhite: 0.1, alpha: 0.92).setFill()
+            NSBezierPath(ovalIn: fallbackRect).fill()
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: NSFont.monospacedSystemFont(ofSize: 19, weight: .bold),
+                .foregroundColor: NSColor.white,
+            ]
+            let text = NSString(string: "C")
+            let size = text.size(withAttributes: attrs)
+            text.draw(
+                at: NSPoint(x: fallbackRect.midX - size.width / 2, y: fallbackRect.midY - size.height / 2),
+                withAttributes: attrs
+            )
+        }
+
+        guard badgeCount > 0 else { return }
+        let label = String(min(badgeCount, 99)) as NSString
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 13, weight: .bold),
+            .foregroundColor: NSColor.white,
+        ]
+        let labelSize = label.size(withAttributes: attrs)
+        let badgeWidth = max(22, labelSize.width + 12)
+        let badgeRect = NSRect(
+            x: bounds.maxX - badgeWidth - 2,
+            y: bounds.maxY - 26,
+            width: badgeWidth,
+            height: 22
+        )
+        NSColor(calibratedRed: 0.66, green: 0.43, blue: 0.0, alpha: 1).setFill()
+        NSBezierPath(roundedRect: badgeRect, xRadius: 11, yRadius: 11).fill()
+        label.draw(
+            at: NSPoint(
+                x: badgeRect.midX - labelSize.width / 2,
+                y: badgeRect.midY - labelSize.height / 2
+            ),
+            withAttributes: attrs
+        )
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        isHovering = true
+        updateAnimationState(resetFrame: true)
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        isHovering = false
+        updateAnimationState(resetFrame: true)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        dragStartMouse = NSEvent.mouseLocation
+        dragStartOrigin = panel?.frame.origin ?? .zero
+        didDrag = false
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard let panel else { return }
+        let now = NSEvent.mouseLocation
+        let dx = now.x - dragStartMouse.x
+        let dy = now.y - dragStartMouse.y
+        if abs(dx) > 2 || abs(dy) > 2 {
+            didDrag = true
+        }
+        panel.setFrameOrigin(NSPoint(x: dragStartOrigin.x + dx, y: dragStartOrigin.y + dy))
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        if !didDrag {
+            onExpand?()
+        }
+    }
+
+    override func rightMouseDown(with event: NSEvent) {
+        let menu = NSMenu()
+        let expandItem = NSMenuItem(title: "Expand", action: #selector(expandFromMenu(_:)), keyEquivalent: "")
+        expandItem.target = self
+        menu.addItem(expandItem)
+        NSMenu.popUpContextMenu(menu, with: event, for: self)
+    }
+
+    @objc private func expandFromMenu(_ sender: Any?) {
+        onExpand?()
+    }
+
+    deinit {
+        stopAnimation()
+    }
+}
+
 // Floating find-in-page overlay. Hosted as a subview of the WKWebView so it
 // sits above page content. Uses NSVisualEffectView for the blurred pill look.
 // WKWebView.find() requires macOS 12+; the bar shows on all versions but the
@@ -1000,7 +1410,7 @@ final class FindBar: NSView, NSTextFieldDelegate, NSSearchFieldDelegate {
 let arguments = CommandLine.arguments
 guard arguments.count >= 2, let url = URL(string: arguments[1]) else {
     FileHandle.standardError.write(
-        Data("usage: wrapper <url> [app-name] [port] [pid-file] [polyfill-js-path] [companion-path]\n".utf8))
+        Data("usage: wrapper <url> [app-name] [port] [pid-file] [polyfill-js-path] [companion-path] [launch-mode]\n".utf8))
     exit(2)
 }
 let appName = arguments.count >= 3 ? arguments[2] : "App"
@@ -1008,6 +1418,7 @@ let port = arguments.count >= 4 ? Int(arguments[3]) : nil
 let pidFilePath = arguments.count >= 5 && !arguments[4].isEmpty ? arguments[4] : nil
 let polyfillJSPath = arguments.count >= 6 && !arguments[5].isEmpty ? arguments[5] : nil
 let companionPath = arguments.count >= 7 && !arguments[6].isEmpty ? arguments[6] : nil
+let launchMode = arguments.count >= 8 && !arguments[7].isEmpty ? arguments[7] : nil
 
 let app = NSApplication.shared
 let delegate = AppDelegate(
@@ -1016,8 +1427,9 @@ let delegate = AppDelegate(
     port: port,
     pidFilePath: pidFilePath,
     polyfillJSPath: polyfillJSPath,
-    companionPath: companionPath
+    companionPath: companionPath,
+    launchMode: launchMode
 )
 app.delegate = delegate
-app.setActivationPolicy(.regular)
+app.setActivationPolicy(launchMode == "menu-bar" ? .accessory : .regular)
 app.run()

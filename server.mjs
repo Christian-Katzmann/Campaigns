@@ -29,6 +29,8 @@ const APP_NAME = 'Campaigns';
 const APP_SLUG = 'campaigns';
 const registryDir = process.env.CAMPAIGNS_REGISTRY_DIR || defaultRegistryDir();
 const registryPath = path.join(registryDir, 'registry.json');
+const notificationSettingsPath = path.join(registryDir, 'notification-settings.json');
+const stopWatcherStatePath = path.join(registryDir, 'stop-watcher-state.json');
 const portFilePath = process.env.CAMPAIGNS_PORT_FILE || defaultPortFilePath();
 const lessonsHelperPath = process.env.CAMPAIGNS_LESSONS_HELPER || defaultLessonsHelperPath();
 // Codex custom pet packages for the Campaign Companion. Resolves to
@@ -84,9 +86,15 @@ const COMPANION_STATUS_LABELS = {
 };
 const NOTIFICATION_TITLE_MAX = 80;
 const NOTIFICATION_MESSAGE_MAX = 500;
+const STOP_WATCH_INTERVAL_MS = positiveDuration(process.env.CAMPAIGNS_STOP_WATCH_INTERVAL_MS, 30_000);
+const STOP_WATCH_NO_MOVEMENT_MS = positiveDuration(process.env.CAMPAIGNS_STOP_WATCH_NO_MOVEMENT_MS, 15 * 60 * 1000);
 const LESSONS_HELPER_TIMEOUT_MS = 8_000;
 const LESSONS_TOP_LIMIT = 5;
 const NTFY_TOPIC_REGEX = /^[A-Za-z0-9_-]{3,64}$/;
+const FINISHED_AUTOMATE_STATUSES = new Set(['completed', 'complete']);
+const STOPPED_AUTOMATE_STATUSES = new Set(['stalled', 'blocked', 'failed', 'halted', 'abandoned', 'cancelled', 'canceled']);
+const MOVING_AUTOMATE_STATUSES = new Set(['active', 'running']);
+const EXPECTED_AUTOMATE_STATUSES = new Set(['active', 'running', 'queued', 'scheduled']);
 
 const args = process.argv.slice(2);
 const options = parseArgs(args);
@@ -190,6 +198,16 @@ const server = createServer(async (request, response) => {
       return;
     }
 
+    if (url.pathname === '/api/notification-settings' && request.method === 'GET') {
+      await sendNotificationSettings(response);
+      return;
+    }
+
+    if (url.pathname === '/api/notification-settings' && request.method === 'PUT') {
+      await saveNotificationSettingsEndpoint(request, response);
+      return;
+    }
+
     if (url.pathname === '/api/automate-state' && request.method === 'GET') {
       await sendAutomateState(url, response);
       return;
@@ -255,6 +273,7 @@ server.listen(port, host, () => {
   writeRuntimePort(actualPort).catch((error) => {
     console.error(`Could not write port file: ${error.message}`);
   });
+  startStopWatcher();
 });
 
 function parseArgs(rawArgs) {
@@ -281,6 +300,11 @@ function parseArgs(rawArgs) {
   }
 
   return parsed;
+}
+
+function positiveDuration(value, fallback) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? number : fallback;
 }
 
 function defaultRegistryDir() {
@@ -422,6 +446,25 @@ async function setCampaignParked(id, parked) {
   }
   await writeRegistry(registry);
   return { found: true, parkedAt: entry.parkedAt ?? null };
+}
+
+async function setCollectionParked(collectionId, parked) {
+  const registry = await readRegistry();
+  normalizeRegistryCollections(registry);
+  const entries = registry.campaigns.filter((entry) => entry.collectionId === collectionId);
+  if (entries.length === 0) return { found: false, parkedAt: null, count: 0 };
+
+  const parkedAt = parked ? new Date().toISOString() : null;
+  for (const entry of entries) {
+    if (parkedAt) {
+      entry.parkedAt = parkedAt;
+    } else {
+      delete entry.parkedAt;
+    }
+  }
+
+  await writeRegistry(registry);
+  return { found: true, parkedAt, count: entries.length };
 }
 
 async function stackCampaign(sourceId, target) {
@@ -903,16 +946,23 @@ async function saveDocument(url, request, response) {
 
 async function parkEndpoint(request, response) {
   const payload = await readJsonBody(request);
-  if (typeof payload.id !== 'string' || typeof payload.parked !== 'boolean') {
-    sendJson(response, 400, { error: 'Expected { id: string, parked: boolean }.' });
+  const id = typeof payload.id === 'string' ? payload.id : '';
+  const collectionId = typeof payload.collectionId === 'string' ? payload.collectionId.trim() : '';
+  if (typeof payload.parked !== 'boolean' || (id === '' && collectionId === '') || (id !== '' && collectionId !== '')) {
+    sendJson(response, 400, {
+      error: 'Expected { id: string, parked: boolean } or { collectionId: string, parked: boolean }.',
+    });
     return;
   }
-  const result = await setCampaignParked(payload.id, payload.parked);
+
+  const result = collectionId
+    ? await setCollectionParked(collectionId, payload.parked)
+    : await setCampaignParked(id, payload.parked);
   if (!result.found) {
-    sendJson(response, 404, { error: 'Campaign not found.' });
+    sendJson(response, 404, { error: collectionId ? 'Stack not found.' : 'Campaign not found.' });
     return;
   }
-  sendJson(response, 200, { ok: true, parkedAt: result.parkedAt });
+  sendJson(response, 200, { ok: true, parkedAt: result.parkedAt, count: result.count ?? 1 });
 }
 
 async function collectionEndpoint(request, response) {
@@ -1004,6 +1054,58 @@ async function deleteMissingRegistryEndpoint(request, response) {
   sendJson(response, 200, { ok: true });
 }
 
+async function sendNotificationSettings(response) {
+  const { settings, configured } = await readNotificationSettingsWithMeta();
+  sendJson(response, 200, { ...settings, configured });
+}
+
+async function saveNotificationSettingsEndpoint(request, response) {
+  const payload = await readJsonBody(request);
+  const settings = sanitizeNotificationSettings(payload);
+  await writeNotificationSettings(settings);
+  sendJson(response, 200, { ok: true, ...settings, configured: true });
+}
+
+async function readNotificationSettingsWithMeta() {
+  try {
+    const raw = await readFile(notificationSettingsPath, 'utf8');
+    return { settings: sanitizeNotificationSettings(JSON.parse(raw)), configured: true };
+  } catch (error) {
+    if (error.code === 'ENOENT') {
+      return { settings: defaultNotificationSettings(), configured: false };
+    }
+    console.error(`Bad notification settings file: ${error.message}`);
+    return { settings: defaultNotificationSettings(), configured: false };
+  }
+}
+
+async function readNotificationSettings() {
+  const { settings } = await readNotificationSettingsWithMeta();
+  return settings;
+}
+
+async function writeNotificationSettings(settings) {
+  await mkdir(path.dirname(notificationSettingsPath), { recursive: true });
+  await writeFile(notificationSettingsPath, `${JSON.stringify(sanitizeNotificationSettings(settings), null, 2)}\n`, 'utf8');
+}
+
+function defaultNotificationSettings() {
+  return {
+    macNotificationsEnabled: false,
+    ntfyTopic: '',
+    webhookUrl: '',
+  };
+}
+
+function sanitizeNotificationSettings(value) {
+  const settings = value && typeof value === 'object' ? value : {};
+  return {
+    macNotificationsEnabled: settings.macNotificationsEnabled === true,
+    ntfyTopic: typeof settings.ntfyTopic === 'string' ? settings.ntfyTopic.trim() : '',
+    webhookUrl: typeof settings.webhookUrl === 'string' ? settings.webhookUrl.trim() : '',
+  };
+}
+
 async function sendNotification(request, response) {
   const payload = await readJsonBody(request);
   const title = notificationText(payload.title, 'Campaigns', NOTIFICATION_TITLE_MAX);
@@ -1014,93 +1116,141 @@ async function sendNotification(request, response) {
     return;
   }
 
-  if (process.platform !== 'darwin') {
-    sendJson(response, 501, { error: 'Native notifications are only available on macOS.' });
-    return;
+  try {
+    await displayNativeNotification(title, message, payload.sound);
+    sendJson(response, 200, { ok: true });
+  } catch (error) {
+    if (error.statusCode) {
+      sendJson(response, error.statusCode, { error: error.message });
+      return;
+    }
+    console.error('Failed to display native notification:', error);
+    sendJson(response, 500, { error: 'Failed to trigger notification.' });
   }
-
-  execFile(
-    'osascript',
-    [
-      '-e',
-      'on run argv',
-      '-e',
-      'display notification (item 2 of argv) with title (item 1 of argv) sound name "Glass"',
-      '-e',
-      'end run',
-      title,
-      message,
-    ],
-    { timeout: 5000 },
-    (error) => {
-      if (error) {
-        console.error('Failed to display native notification:', error);
-        sendJson(response, 500, { error: 'Failed to trigger notification.' });
-        return;
-      }
-      sendJson(response, 200, { ok: true });
-    },
-  );
 }
 
 async function sendRemoteNotification(request, response) {
   const payload = await readJsonBody(request);
   const title = notificationText(payload.title, 'Campaigns', NOTIFICATION_TITLE_MAX);
   const message = notificationText(payload.message, '', NOTIFICATION_MESSAGE_MAX);
-  const ntfyTopic = typeof payload.ntfyTopic === 'string' ? payload.ntfyTopic.trim() : '';
-  const webhookUrl = typeof payload.webhookUrl === 'string' ? payload.webhookUrl.trim() : '';
 
   if (!message) {
     sendJson(response, 400, { error: 'Message is required.' });
     return;
   }
 
-  const deliveries = [];
+  const result = await deliverRemoteNotification({
+    title,
+    message,
+    ntfyTopic: payload.ntfyTopic,
+    webhookUrl: payload.webhookUrl,
+    strict: true,
+  });
 
-  if (ntfyTopic) {
-    if (!NTFY_TOPIC_REGEX.test(ntfyTopic)) {
-      sendJson(response, 400, {
-        error: 'ntfy topic must be 3-64 letters, numbers, dashes, or underscores.',
-      });
-      return;
-    }
-
-    deliveries.push({
-      channel: 'ntfy',
-      promise: fetchWithTimeout(`https://ntfy.sh/${encodeURIComponent(ntfyTopic)}`, {
-        method: 'POST',
-        body: message,
-        headers: { Title: title },
-      }),
-    });
+  if (result.error) {
+    sendJson(response, result.statusCode ?? 400, { error: result.error });
+    return;
   }
 
-  if (webhookUrl) {
-    const webhook = parseWebhookUrl(webhookUrl);
-    if (!webhook) {
-      sendJson(response, 400, {
-        error: 'Webhook must be a Slack or Discord HTTPS webhook URL.',
+  if (result.failures.length > 0) {
+    sendJson(response, 502, { ok: false, failures: result.failures });
+    return;
+  }
+
+  sendJson(response, 200, { ok: true });
+}
+
+async function displayNativeNotification(title, message, sound = 'Glass') {
+  if (process.platform !== 'darwin') {
+    const error = new Error('Native notifications are only available on macOS.');
+    error.statusCode = 501;
+    throw error;
+  }
+
+  await new Promise((resolve, reject) => {
+    execFile(
+      'osascript',
+      [
+        '-e',
+        'on run argv',
+        '-e',
+        'display notification (item 2 of argv) with title (item 1 of argv) sound name (item 3 of argv)',
+        '-e',
+        'end run',
+        title,
+        message,
+        notificationSoundName(sound),
+      ],
+      { timeout: 5000 },
+      (error) => {
+        if (error) reject(error);
+        else resolve();
+      },
+    );
+  });
+}
+
+function notificationSoundName(value) {
+  return typeof value === 'string' && value.trim() ? value.trim().slice(0, 40) : 'Glass';
+}
+
+async function deliverRemoteNotification({ title, message, ntfyTopic, webhookUrl, strict = false }) {
+  const topic = typeof ntfyTopic === 'string' ? ntfyTopic.trim() : '';
+  const hook = typeof webhookUrl === 'string' ? webhookUrl.trim() : '';
+  const deliveries = [];
+
+  if (topic) {
+    if (!NTFY_TOPIC_REGEX.test(topic)) {
+      if (!strict) {
+        // Settings are persisted while the user types; ignore an incomplete topic.
+      } else {
+        return {
+          statusCode: 400,
+          error: 'ntfy topic must be 3-64 letters, numbers, dashes, or underscores.',
+        };
+      }
+    } else {
+      deliveries.push({
+        channel: 'ntfy',
+        promise: fetchWithTimeout(`https://ntfy.sh/${encodeURIComponent(topic)}`, {
+          method: 'POST',
+          body: message,
+          headers: { Title: title },
+        }),
       });
-      return;
     }
+  }
 
-    const body = webhook.kind === 'discord'
-      ? { content: `**${title}**: ${message}` }
-      : { text: `${title}: ${message}` };
+  if (hook) {
+    const webhook = parseWebhookUrl(hook);
+    if (!webhook) {
+      if (!strict) {
+        // Settings are persisted while the user types; ignore an incomplete webhook.
+      } else {
+        return {
+          statusCode: 400,
+          error: 'Webhook must be a Slack or Discord HTTPS webhook URL.',
+        };
+      }
+    } else {
+      const body = webhook.kind === 'discord'
+        ? { content: `**${title}**: ${message}` }
+        : { text: `${title}: ${message}` };
 
-    deliveries.push({
-      channel: webhook.kind,
-      promise: fetchWithTimeout(webhook.url, {
-        method: 'POST',
-        body: JSON.stringify(body),
-        headers: { 'Content-Type': 'application/json' },
-      }),
-    });
+      deliveries.push({
+        channel: webhook.kind,
+        promise: fetchWithTimeout(webhook.url, {
+          method: 'POST',
+          body: JSON.stringify(body),
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      });
+    }
   }
 
   if (deliveries.length === 0) {
-    sendJson(response, 400, { error: 'No remote notification channel is configured.' });
-    return;
+    if (!strict) return { failures: [], skipped: true };
+    return { statusCode: 400, error: 'No remote notification channel is configured.' };
   }
 
   const settled = await Promise.allSettled(deliveries.map((delivery) => delivery.promise));
@@ -1117,12 +1267,353 @@ async function sendRemoteNotification(request, response) {
     }
   });
 
-  if (failures.length > 0) {
-    sendJson(response, 502, { ok: false, failures });
-    return;
+  return { failures };
+}
+
+async function sendConfiguredServerNotification(title, message, { kind = 'stopped' } = {}) {
+  const cleanTitle = notificationText(title, 'Campaigns', NOTIFICATION_TITLE_MAX);
+  const cleanMessage = notificationText(message, '', NOTIFICATION_MESSAGE_MAX);
+  if (!cleanMessage) return false;
+
+  const settings = await readNotificationSettings();
+  const deliveries = [];
+  const sound = kind === 'finished' ? 'Glass' : 'Basso';
+
+  if (settings.macNotificationsEnabled) {
+    deliveries.push(displayNativeNotification(cleanTitle, cleanMessage, sound));
   }
 
-  sendJson(response, 200, { ok: true });
+  if (settings.ntfyTopic || settings.webhookUrl) {
+    deliveries.push(
+      deliverRemoteNotification({
+        title: cleanTitle,
+        message: cleanMessage,
+        ntfyTopic: settings.ntfyTopic,
+        webhookUrl: settings.webhookUrl,
+        strict: false,
+      }).then((result) => {
+        if (result.failures?.length) {
+          throw new Error(result.failures.map((failure) => `${failure.channel}: ${failure.error}`).join('; '));
+        }
+      }),
+    );
+  }
+
+  if (deliveries.length === 0) return false;
+
+  const settled = await Promise.allSettled(deliveries);
+  for (const result of settled) {
+    if (result.status === 'rejected') {
+      console.error('Stop watcher notification delivery failed:', result.reason?.message ?? result.reason);
+    }
+  }
+  return settled.some((result) => result.status === 'fulfilled');
+}
+
+/* ------------------------------ Stop watcher -------------------------------- */
+
+let stopWatcherTimer = null;
+let stopWatcherRunning = false;
+let stopWatcherState = null;
+
+function startStopWatcher() {
+  if (stopWatcherTimer) return;
+  runStopWatcherPass().catch((error) => {
+    console.error('Stop watcher failed:', error.message);
+  });
+  stopWatcherTimer = setInterval(() => {
+    runStopWatcherPass().catch((error) => {
+      console.error('Stop watcher failed:', error.message);
+    });
+  }, STOP_WATCH_INTERVAL_MS);
+}
+
+async function runStopWatcherPass() {
+  if (stopWatcherRunning) return;
+  stopWatcherRunning = true;
+
+  try {
+    const registry = await readRegistry();
+    const state = await getStopWatcherState();
+    const now = Date.now();
+    const nextCampaigns = {};
+
+    for (const entry of registry.campaigns) {
+      const previous = state.campaigns?.[entry.id] ?? null;
+      const snapshot = await buildStopWatcherSnapshot(entry);
+      const alerts = classifyStopWatcherAlerts(previous, snapshot, now);
+
+      for (const alert of alerts) {
+        if (alert.type === 'stop' && previous?.notifiedEventKey === alert.eventKey) continue;
+        await sendConfiguredServerNotification(alert.title, alert.message, { kind: alert.kind });
+      }
+
+      nextCampaigns[entry.id] = nextStopWatcherRecord(previous, snapshot, now, alerts);
+    }
+
+    stopWatcherState = { version: 1, updatedAt: new Date(now).toISOString(), campaigns: nextCampaigns };
+    await writeStopWatcherState(stopWatcherState);
+  } finally {
+    stopWatcherRunning = false;
+  }
+}
+
+async function getStopWatcherState() {
+  if (stopWatcherState) return stopWatcherState;
+  stopWatcherState = await readStopWatcherState();
+  return stopWatcherState;
+}
+
+async function readStopWatcherState() {
+  try {
+    const raw = await readFile(stopWatcherStatePath, 'utf8');
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || !parsed.campaigns || typeof parsed.campaigns !== 'object') {
+      return { version: 1, campaigns: {} };
+    }
+    return parsed;
+  } catch (error) {
+    if (error.code === 'ENOENT') return { version: 1, campaigns: {} };
+    console.error(`Bad stop watcher state file: ${error.message}`);
+    return { version: 1, campaigns: {} };
+  }
+}
+
+async function writeStopWatcherState(state) {
+  await mkdir(path.dirname(stopWatcherStatePath), { recursive: true });
+  await writeFile(stopWatcherStatePath, `${JSON.stringify(state, null, 2)}\n`, 'utf8');
+}
+
+async function buildStopWatcherSnapshot(entry) {
+  let title = path.basename(entry.filePath, path.extname(entry.filePath));
+  let missing = false;
+  let fileMtimeMs = null;
+  let progress = { done: 0, total: 0 };
+  let phases = [];
+
+  try {
+    const [markdown, details] = await Promise.all([
+      readFile(entry.filePath, 'utf8'),
+      stat(entry.filePath),
+    ]);
+    title = extractTitle(markdown) ?? title;
+    progress = countProgress(markdown);
+    phases = extractProgressPhases(markdown);
+    fileMtimeMs = details.mtimeMs;
+  } catch {
+    missing = true;
+  }
+
+  let automation = null;
+  let automationError = null;
+  try {
+    automation = await getAutomateState(entry.filePath);
+  } catch (error) {
+    automationError = error.message;
+  }
+
+  const status = normalizeStopWatcherStatus(automation);
+  const currentStep = automation?.current_step ?? null;
+  const fingerprint = stopWatcherFingerprint({
+    status,
+    automation,
+    progress,
+    fileMtimeMs,
+    missing,
+    automationError,
+  });
+
+  return {
+    id: entry.id,
+    title,
+    parked: Boolean(entry.parkedAt),
+    missing,
+    status,
+    backend: automation?.backend ?? null,
+    hasAutomationState: Boolean(automation),
+    hasActiveRun: automation?.has_active_run === true,
+    isActive: automation?.is_active === true,
+    currentStepId: currentStep?.id ?? automation?.current_step_id ?? null,
+    currentStepName: currentStep?.name ?? automation?.current_step_name ?? null,
+    progress,
+    phases,
+    completedPhaseKeys: phases.filter((phase) => phase.total > 0 && phase.done === phase.total).map((phase) => phase.key),
+    fingerprint,
+    maxStepMinutes: Number.isFinite(Number(automation?.max_step_minutes))
+      ? Number(automation.max_step_minutes)
+      : null,
+    automationError,
+  };
+}
+
+function normalizeStopWatcherStatus(automation) {
+  if (!automation || typeof automation !== 'object') return 'idle';
+  const rawStatus = typeof automation.status === 'string' ? automation.status : 'idle';
+  if (rawStatus === 'active' && automation.is_active === false) return 'stalled';
+  return rawStatus.toLowerCase();
+}
+
+function stopWatcherFingerprint({ status, automation, progress, fileMtimeMs, missing, automationError }) {
+  const stepStatuses = Array.isArray(automation?.steps)
+    ? automation.steps.map((step) => [step.id, step.status, Boolean(step.receipt)])
+    : [];
+  const timeline = Array.isArray(automation?.timeline_events) ? automation.timeline_events : [];
+  const lastTimeline = timeline.length ? timeline[timeline.length - 1] : null;
+  const log = typeof automation?.current_step_log === 'string' ? automation.current_step_log : '';
+  const live = automation?.live_activity && typeof automation.live_activity === 'object'
+    ? automation.live_activity
+    : null;
+
+  return hashString(JSON.stringify({
+    status,
+    backend: automation?.backend ?? null,
+    is_active: automation?.is_active ?? null,
+    has_active_run: automation?.has_active_run ?? null,
+    active_run_last_seen_at: automation?.active_run_last_seen_at ?? null,
+    current_step: automation?.current_step ?? null,
+    progress,
+    fileMtimeMs,
+    missing,
+    automationError,
+    stepStatuses,
+    timelineLength: timeline.length,
+    lastTimeline,
+    logLength: log.length,
+    logHash: hashString(log),
+    liveLastEventAt: live?.last_event_at ?? null,
+    liveEffort: live?.effort ?? null,
+  }));
+}
+
+function hashString(value) {
+  return createHash('sha256').update(String(value)).digest('hex').slice(0, 16);
+}
+
+function classifyStopWatcherAlerts(previous, snapshot, now) {
+  if (!previous || snapshot.parked) return [];
+
+  const wasExpected = previous.expectedActive === true || EXPECTED_AUTOMATE_STATUSES.has(previous.status);
+  if (!wasExpected) return [];
+
+  const alerts = phaseCompletionAlerts(previous, snapshot);
+
+  if (snapshot.missing) {
+    alerts.push(stopWatcherAlert('stopped', 'Campaign stopped', snapshot, 'markdown file disappeared'));
+    return alerts;
+  }
+
+  if (FINISHED_AUTOMATE_STATUSES.has(snapshot.status)) {
+    alerts.push(stopWatcherAlert('finished', 'Campaign finished', snapshot, 'completed normally'));
+    return alerts;
+  }
+
+  if (STOPPED_AUTOMATE_STATUSES.has(snapshot.status)) {
+    alerts.push(stopWatcherAlert('stopped', 'Campaign stopped', snapshot, stopWatcherStatusLabel(snapshot.status)));
+    return alerts;
+  }
+
+  if (previous.hasActiveRun && !snapshot.hasActiveRun && !EXPECTED_AUTOMATE_STATUSES.has(snapshot.status)) {
+    alerts.push(stopWatcherAlert('stopped', 'Campaign stopped', snapshot, 'active run disappeared'));
+    return alerts;
+  }
+
+  if (previous.expectedActive && snapshot.status === 'idle') {
+    const reason = snapshot.hasAutomationState ? 'automation went idle' : 'automation state disappeared';
+    alerts.push(stopWatcherAlert('stopped', 'Campaign stopped', snapshot, reason));
+    return alerts;
+  }
+
+  if (MOVING_AUTOMATE_STATUSES.has(snapshot.status)) {
+    const lastMovementAt = Number(previous.lastMovementAt ?? now);
+    if (Number.isFinite(lastMovementAt) && now - lastMovementAt >= STOP_WATCH_NO_MOVEMENT_MS) {
+      const minutes = Math.max(1, Math.round((now - lastMovementAt) / 60_000));
+      alerts.push(stopWatcherAlert('stopped', 'Campaign stopped', snapshot, `no movement for ${minutes} min`, 'no movement'));
+      return alerts;
+    }
+  }
+
+  return alerts;
+}
+
+function phaseCompletionAlerts(previous, snapshot) {
+  if (previous.phaseTrackingReady !== true) return [];
+
+  const previousKeys = new Set(Array.isArray(previous.completedPhaseKeys) ? previous.completedPhaseKeys : []);
+  const completed = snapshot.phases.filter((phase) => (
+    phase.total > 0 &&
+    phase.done === phase.total &&
+    !previousKeys.has(phase.key)
+  ));
+  if (completed.length === 0) return [];
+
+  if (completed.length === 1) {
+    const phase = completed[0];
+    return [{
+      type: 'phase',
+      kind: 'finished',
+      title: 'Campaign phase finished',
+      message: `${snapshot.title}: ${phase.title} finished (${phase.done}/${phase.total}).`,
+      eventKey: `phase:${snapshot.id}:${phase.key}:${phase.done}/${phase.total}`,
+    }];
+  }
+
+  const names = completed.slice(0, 3).map((phase) => phase.title).join(', ');
+  const suffix = completed.length > 3 ? `, +${completed.length - 3} more` : '';
+  return [{
+    type: 'phase',
+    kind: 'finished',
+    title: 'Campaign phases finished',
+    message: `${snapshot.title}: ${completed.length} phases finished: ${names}${suffix}.`,
+    eventKey: `phase:${snapshot.id}:${completed.map((phase) => phase.key).join('|')}`,
+  }];
+}
+
+function stopWatcherAlert(kind, title, snapshot, reason, keyReason = reason) {
+  const step = [snapshot.currentStepId, snapshot.currentStepName].filter(Boolean).join(' - ');
+  const messageParts = [`${snapshot.title}: ${reason}.`];
+  if (step) messageParts.push(`Current step: ${step}.`);
+  const eventKey = `${kind}:${snapshot.id}:${snapshot.status}:${keyReason}:${snapshot.currentStepId ?? ''}:${snapshot.fingerprint}`;
+  return { type: 'stop', kind, title, message: messageParts.join(' '), eventKey };
+}
+
+function stopWatcherStatusLabel(status) {
+  if (status === 'stalled') return 'stalled';
+  if (status === 'blocked') return 'blocked';
+  if (status === 'failed') return 'failed';
+  if (status === 'halted') return 'halted';
+  if (status === 'abandoned') return 'abandoned';
+  if (status === 'cancelled' || status === 'canceled') return 'cancelled';
+  return status;
+}
+
+function nextStopWatcherRecord(previous, snapshot, now, alerts) {
+  const fingerprintChanged = previous?.fingerprint !== snapshot.fingerprint;
+  const expectedActive = !snapshot.parked && EXPECTED_AUTOMATE_STATUSES.has(snapshot.status);
+  const lastMovementAt = fingerprintChanged || !previous?.lastMovementAt
+    ? now
+    : previous.lastMovementAt;
+  const stopAlert = alerts.find((alert) => alert.type === 'stop');
+  let notifiedEventKey = stopAlert?.eventKey ?? previous?.notifiedEventKey ?? null;
+
+  if (!alert && fingerprintChanged && expectedActive) {
+    notifiedEventKey = null;
+  }
+  if (!alert && !expectedActive && !FINISHED_AUTOMATE_STATUSES.has(snapshot.status) && !STOPPED_AUTOMATE_STATUSES.has(snapshot.status)) {
+    notifiedEventKey = null;
+  }
+
+  return {
+    status: snapshot.status,
+    fingerprint: snapshot.fingerprint,
+    expectedActive,
+    hasActiveRun: snapshot.hasActiveRun,
+    currentStepId: snapshot.currentStepId,
+    completedPhaseKeys: snapshot.completedPhaseKeys,
+    phaseTrackingReady: true,
+    lastMovementAt,
+    lastSeenAt: new Date(now).toISOString(),
+    notifiedEventKey,
+  };
 }
 
 function notificationText(value, fallback, maxLength) {
@@ -1212,6 +1703,77 @@ function countProgress(markdown) {
   return { done, total };
 }
 
+function extractProgressPhases(markdown) {
+  const phases = [];
+  const lines = markdown.split('\n');
+  const hasProgressChecklist = lines.some((line) => isProgressChecklistHeadingLine(line));
+  let inProgressChecklist = !hasProgressChecklist;
+  let inCodeFence = false;
+  let currentPhase = null;
+
+  const finishPhase = () => {
+    if (currentPhase) phases.push(currentPhase);
+    currentPhase = null;
+  };
+
+  for (const line of lines) {
+    if (/^\s*```/.test(line)) {
+      inCodeFence = !inCodeFence;
+      continue;
+    }
+    if (inCodeFence) continue;
+
+    if (isH2HeadingLine(line)) {
+      finishPhase();
+      inProgressChecklist = !hasProgressChecklist || isProgressChecklistHeadingLine(line);
+      continue;
+    }
+
+    if (!inProgressChecklist) continue;
+
+    const h3Match = line.match(/^\s*###\s+(.+?)\s*#*\s*$/);
+    if (h3Match) {
+      finishPhase();
+      const title = h3Match[1].trim();
+      currentPhase = {
+        key: phaseKey(title),
+        title,
+        done: 0,
+        total: 0,
+      };
+      continue;
+    }
+
+    if (!currentPhase) continue;
+
+    const checkMatch = line.match(/^\s*[-*]\s+\[([ xX])\]/);
+    if (checkMatch) {
+      currentPhase.total += 1;
+      if (checkMatch[1].toLowerCase() === 'x') currentPhase.done += 1;
+      continue;
+    }
+
+    if (!/^\s*\|.+\|\s*$/.test(line)) continue;
+    for (const cell of line.split('|').slice(1, -1)) {
+      const content = cell.trim();
+      if (content === '☐') currentPhase.total += 1;
+      else if (content === '☑') {
+        currentPhase.total += 1;
+        currentPhase.done += 1;
+      }
+    }
+  }
+
+  finishPhase();
+  return phases;
+}
+
+function phaseKey(title) {
+  const phaseNumber = title.match(/\bphase\s+(\d+(?:\.\d+)*)\b/i)?.[1];
+  const stableTitle = title.toLowerCase().replace(/\s+/g, ' ').trim();
+  return phaseNumber ? `phase-${phaseNumber}` : hashString(stableTitle);
+}
+
 function isH2HeadingLine(line) {
   return /^\s*##(?!#)\s+/.test(line);
 }
@@ -1277,8 +1839,9 @@ async function buildCompanionCampaign(entry, now) {
   let title;
   let progress;
   let missing;
+  let markdown = '';
   try {
-    const markdown = await readFile(entry.filePath, 'utf8');
+    markdown = await readFile(entry.filePath, 'utf8');
     title = extractTitle(markdown) ?? path.basename(entry.filePath, path.extname(entry.filePath));
     progress = countProgress(markdown);
     missing = false;
@@ -1299,14 +1862,24 @@ async function buildCompanionCampaign(entry, now) {
 
   const backend = summary?.backend ?? null;
   const status = deriveCompanionStatus({ summary, parked, lastActivityAt, now });
-  const currentStep =
+  const currentStepBase =
     summary?.current_step_id || summary?.current_step_name
       ? { id: summary.current_step_id ?? null, name: summary.current_step_name ?? null }
       : null;
+  const currentStepLine = currentStepBase ? findStepHeadingLine(markdown, currentStepBase) : null;
+  const currentStep = currentStepBase
+    ? {
+        ...currentStepBase,
+        line: currentStepLine,
+        path: currentStepLine ? `${entry.filePath}:${currentStepLine}` : entry.filePath,
+      }
+    : null;
 
   return {
     id: entry.id,
     title,
+    filePath: entry.filePath,
+    referencePath: currentStep?.path ?? entry.filePath,
     backend,
     status,
     label: COMPANION_STATUS_LABELS[status] ?? COMPANION_STATUS_LABELS.idle,
@@ -1317,6 +1890,31 @@ async function buildCompanionCampaign(entry, now) {
     parked,
     missing,
   };
+}
+
+function findStepHeadingLine(markdown, step) {
+  if (!markdown || (!step?.id && !step?.name)) return null;
+
+  const needles = [step.id, step.name].filter(Boolean).map(normalizeStepNeedle);
+  const lines = markdown.split(/\r?\n/);
+  for (let index = 0; index < lines.length; index += 1) {
+    const match = /^#{2,}\s+(.+?)\s*$/.exec(lines[index]);
+    if (!match) continue;
+    const heading = normalizeStepNeedle(match[1]);
+    if (needles.some((needle) => needle && heading.includes(needle))) {
+      return index + 1;
+    }
+  }
+  return null;
+}
+
+function normalizeStepNeedle(value) {
+  return String(value)
+    .toLowerCase()
+    .replace(/[_-]+/g, ' ')
+    .replace(/[^\p{L}\p{N}.]+/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 // Collapses provider + registry signals into one companion status. Mirrors the

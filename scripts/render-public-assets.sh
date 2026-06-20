@@ -6,6 +6,7 @@ PORT="${CAMPAIGNS_ASSET_PORT:-4182}"
 URL="http://localhost:$PORT"
 DEMO_FILE="$ROOT_DIR/design/demo-data/publication-campaign.md"
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/campaigns-assets.XXXXXX")"
+LESSONS_HELPER="$TMP_DIR/public-lessons.py"
 SERVER_PID=""
 
 cleanup() {
@@ -56,6 +57,8 @@ capture() {
   output="$1"
   size="$2"
   path="$3"
+  wait_ms="${4:-1500}"
+  min_bytes="${5:-1}"
   profile="$TMP_DIR/profile-$(basename "$output" .png)"
 
   "$CHROME_BIN" \
@@ -63,6 +66,7 @@ capture() {
     --no-sandbox \
     --disable-gpu \
     --hide-scrollbars \
+    "--virtual-time-budget=$wait_ms" \
     "--user-data-dir=$profile" \
     "--window-size=$size" \
     "--screenshot=$output" \
@@ -84,6 +88,65 @@ capture() {
     printf 'Failed to capture screenshot: %s\n' "$output" >&2
     exit 1
   fi
+
+  actual_bytes="$(wc -c < "$output" | tr -d ' ')"
+  if [ "$actual_bytes" -lt "$min_bytes" ]; then
+    printf 'Screenshot too small: %s (%s bytes, expected at least %s)\n' "$output" "$actual_bytes" "$min_bytes" >&2
+    exit 1
+  fi
+}
+
+write_lessons_fixture() {
+  cat > "$LESSONS_HELPER" <<'PY'
+#!/usr/bin/env python3
+import json
+
+print(json.dumps({
+    "scanned": {"claude": 24, "codex": 18, "total": 42},
+    "backends": {
+        "claude": {
+            "n_total": 24,
+            "n_with_verdict": 19,
+            "approval_rate": 0.84,
+            "first_try_rate": 0.63,
+            "rework_rate": 0.21,
+            "needs_work_attempt_n": 4,
+            "data_quality_warning_n": 1,
+            "median_step_count": 5,
+        },
+        "codex": {
+            "n_total": 18,
+            "n_with_verdict": 14,
+            "approval_rate": 0.79,
+            "first_try_rate": 0.43,
+            "rework_rate": 0.36,
+            "needs_work_attempt_n": 5,
+            "data_quality_warning_n": 2,
+            "median_step_count": 6,
+        },
+    },
+    "sizing": {
+        "median_steps": 6,
+        "p90_steps": 10,
+        "max_first_try": 7,
+        "avoid_above": 10,
+        "sample": 42,
+    },
+    "halt_signals": {
+        "high_step_count_correlates_with_halt": True,
+        "halt_rate_overall": 0.10,
+        "halt_rate_high_step_count": 0.28,
+        "examples": ["atlas-import", "workflow-refresh"],
+    },
+    "raw": [
+        {"recover_count": 1, "data_quality_warnings": [], "reasons": ["verification-gap"]},
+        {"recover_count": 0, "data_quality_warnings": ["missing-receipt"], "reasons": ["visual-regression"]},
+        {"recover_count": 0, "data_quality_warnings": ["legacy-timeline"], "reasons": ["scheduler-failure"]},
+        {"recover_count": 1, "data_quality_warnings": [], "legacy_reasons": ["manual-review"]},
+    ],
+}))
+PY
+  chmod +x "$LESSONS_HELPER"
 }
 
 render_social_preview() {
@@ -133,15 +196,16 @@ if [ -z "$CHROME_BIN" ]; then
 fi
 
 mkdir -p "$ROOT_DIR/design/screenshots" "$ROOT_DIR/design/social" "$ROOT_DIR/design/trailer"
+write_lessons_fixture
 
 cd "$ROOT_DIR"
-CAMPAIGNS_PORT_FILE="$TMP_DIR/server.port" PORT="$PORT" node server.mjs --file "$DEMO_FILE" > "$TMP_DIR/server.log" 2>&1 &
+CAMPAIGNS_REGISTRY_DIR="$TMP_DIR/registry" CAMPAIGNS_LESSONS_HELPER="$LESSONS_HELPER" CAMPAIGNS_PORT_FILE="$TMP_DIR/server.port" PORT="$PORT" node server.mjs --file "$DEMO_FILE" > "$TMP_DIR/server.log" 2>&1 &
 SERVER_PID="$!"
 wait_for_server
 
-capture "$ROOT_DIR/design/screenshots/01-campaign-board.png" "1440,1100" "/"
-capture "$ROOT_DIR/design/screenshots/02-mobile-step-flow.png" "390,900" "/"
-capture "$ROOT_DIR/design/screenshots/03-library.png" "1440,900" "?library"
+capture "$ROOT_DIR/design/screenshots/01-campaign-board.png" "1440,1100" "/" 2500
+capture "$ROOT_DIR/design/screenshots/02-mobile-step-flow.png" "390,900" "/" 2500
+capture "$ROOT_DIR/design/screenshots/03-library.png" "1440,900" "?library" 6000 20000
 render_social_preview
 render_trailer
 

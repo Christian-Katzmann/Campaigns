@@ -30,6 +30,8 @@
 #                      so Cmd+Q / desktop:quit tear it down with the main app.
 #                      Empty disables the bridge (generic app-it apps are
 #                      unaffected).
+#   --menu-bar         optional runtime arg. Starts the wrapper hidden with only
+#                      the macOS menu-bar item visible.
 #
 # PROJECT_ROOT is baked at build time. Honors APP_IT_PROJECT_ROOT env override
 # at build time (for worktree workflows). Re-run desktop:build if the repo moves.
@@ -42,6 +44,14 @@ PROJECT_ROOT="__PROJECT_ROOT__"
 PREFERRED_PORT=__PORT__
 POLYFILL_PATH="__POLYFILL_PATH__"
 COMPANION_PATH="__COMPANION_PATH__"
+LAUNCH_MODE=""
+
+case "${1:-}" in
+    --menu-bar)
+        LAUNCH_MODE="menu-bar"
+        shift
+        ;;
+esac
 
 # Keep `$PORT` and other shell syntax literal until the daemon spawns below.
 # A plain double-quoted assignment here would expand `$PORT` before the
@@ -282,4 +292,4 @@ if [ ! -x "$WRAPPER" ]; then
     exit 1
 fi
 
-exec "$WRAPPER" "$URL" "$APP_NAME" "$CHOSEN_PORT" "$PID_FILE" "$POLYFILL_PATH" "$COMPANION_PATH"
+exec "$WRAPPER" "$URL" "$APP_NAME" "$CHOSEN_PORT" "$PID_FILE" "$POLYFILL_PATH" "$COMPANION_PATH" "$LAUNCH_MODE"

@@ -39,10 +39,24 @@
   box-sizing: border-box;
 }
 
+[hidden] {
+  display: none !important;
+}
+
 html,
 body {
   margin: 0;
   height: 100%;
+}
+
+html.is-collapsed {
+  background: transparent;
+}
+
+html.is-collapsed,
+html.is-collapsed body {
+  width: 82px;
+  height: 92px;
 }
 
 body.companion {
@@ -50,7 +64,9 @@ body.companion {
      does the clamping, the page just fills it without horizontal scroll. */
   display: flex;
   flex-direction: column;
-  min-width: 300px;
+  min-width: 96px;
+  width: 100vw;
+  overflow-x: hidden;
   background: var(--page);
   color: var(--ink);
   font-family: var(--sans);
@@ -62,6 +78,7 @@ body.companion {
 /* ------------------------------ Header -------------------------------------- */
 
 .companion-head {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 12px;
@@ -70,12 +87,58 @@ body.companion {
   flex: 0 0 auto;
 }
 
-.companion-pet {
+.companion-pet-shell {
+  position: relative;
   flex: 0 0 auto;
+  width: 56px;
+  min-height: 60px;
+  display: grid;
+  place-items: center;
+}
+
+.companion-pet {
   width: 56px;
   height: 60px;
   display: grid;
   place-items: center;
+}
+
+.companion-pet-fallback {
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--paper);
+  color: var(--ink-soft);
+  font-family: var(--mono);
+  font-weight: 700;
+}
+
+.companion-signal {
+  position: absolute;
+  top: 4px;
+  right: 2px;
+  width: 10px;
+  height: 10px;
+  border: 2px solid var(--page);
+  border-radius: 999px;
+  background: var(--idle);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 16px;
+  text-align: center;
+}
+
+.companion-signal.is-attention {
+  top: -2px;
+  right: -4px;
+  width: auto;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  background: var(--stalled);
 }
 
 /* Sprite size + position are driven from the API grid in companion.js; this
@@ -87,6 +150,7 @@ body.companion {
 
 .companion-head-text {
   min-width: 0; /* let the title ellipsize instead of pushing width */
+  flex: 1 1 auto;
 }
 
 .companion-eyebrow {
@@ -131,6 +195,99 @@ body.companion {
   flex: 0 0 auto;
 }
 
+.companion-icon-button {
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--page);
+  color: var(--ink-faint);
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+}
+
+.companion-icon-button:hover {
+  color: var(--ink);
+  border-color: var(--ink-faint);
+}
+
+.companion-icon-button svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+
+.companion-collapsed-button {
+  display: none;
+}
+
+/* ------------------------------ Toolbar ------------------------------------- */
+
+.companion-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--line-soft);
+  flex: 0 0 auto;
+  min-width: 0;
+}
+
+.companion-button,
+.companion-mode-toggle button,
+.companion-copy-button {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--page);
+  color: var(--ink-soft);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 1;
+}
+
+.companion-button {
+  min-height: 28px;
+  padding: 0 10px;
+  flex: 0 0 auto;
+}
+
+.companion-mode-toggle {
+  display: inline-flex;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--paper);
+  flex: 0 0 auto;
+}
+
+.companion-mode-toggle button {
+  min-height: 24px;
+  padding: 0 9px;
+  border-color: transparent;
+  background: transparent;
+}
+
+.companion-mode-toggle button[aria-pressed="true"] {
+  background: var(--page);
+  border-color: var(--line);
+  color: var(--ink);
+}
+
+.companion-button:hover,
+.companion-mode-toggle button:hover,
+.companion-copy-button:hover {
+  color: var(--ink);
+  border-color: var(--ink-faint);
+}
+
 /* ------------------------------ List ---------------------------------------- */
 
 .companion-list {
@@ -150,11 +307,12 @@ body.companion {
 
 .companion-row {
   display: grid;
-  grid-template-columns: auto 1fr auto;
+  grid-template-columns: auto minmax(0, 1fr);
   align-items: baseline;
   gap: 4px 10px;
   padding: 9px 16px;
   border-bottom: 1px solid var(--line-soft);
+  min-width: 0;
 }
 
 .companion-row:last-child {
@@ -189,7 +347,9 @@ body.companion {
 }
 
 .companion-row-title {
+  grid-column: 2;
   min-width: 0;
+  padding-right: 92px;
   font-size: 13px;
   font-weight: 550;
   white-space: nowrap;
@@ -211,27 +371,71 @@ body.companion {
   white-space: nowrap;
 }
 
-.companion-row-meta {
-  grid-column: 2 / span 2;
+.companion-row-actions {
+  grid-column: 2;
+  grid-row: 1;
   display: flex;
-  flex-wrap: wrap;
+  align-items: center;
+  justify-content: end;
+  gap: 8px;
+  justify-self: end;
+  max-width: 92px;
+}
+
+.companion-copy-button {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+}
+
+.companion-copy-button svg {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+}
+
+.companion-copy-button.is-copied {
+  border-color: color-mix(in srgb, var(--running) 55%, var(--line));
+  color: var(--running);
+}
+
+.companion-row-meta {
+  grid-column: 2;
+  display: flex;
+  flex-wrap: nowrap;
   gap: 2px 8px;
   font-size: 11px;
   color: var(--ink-soft);
   min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.companion-row-meta span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .companion-row-meta .sep {
   color: var(--line);
+  flex: 0 0 auto;
 }
 
 .companion-row-meta .backend {
   font-family: var(--mono);
   text-transform: lowercase;
   color: var(--ink-faint);
+  flex: 0 0 auto;
 }
 
 .companion-row-meta .step {
+  flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -266,6 +470,54 @@ body.companion {
 
 .companion-foot-dot.is-error {
   background: var(--failed);
+}
+
+/* ------------------------------ Collapsed ----------------------------------- */
+
+body.companion.is-collapsed {
+  background: transparent;
+  overflow: hidden;
+}
+
+body.companion.is-collapsed .companion-head {
+  flex: 1 1 auto;
+  justify-content: center;
+  padding: 0;
+  border-bottom: 0;
+  background: transparent;
+}
+
+body.companion.is-collapsed .companion-pet-shell {
+  width: 82px;
+  min-height: 92px;
+}
+
+body.companion.is-collapsed .companion-pet {
+  width: 82px;
+  height: 92px;
+}
+
+body.companion.is-collapsed .companion-head-text,
+body.companion.is-collapsed .companion-icon-button,
+body.companion.is-collapsed .companion-toolbar,
+body.companion.is-collapsed .companion-list,
+body.companion.is-collapsed .companion-foot {
+  display: none;
+}
+
+body.companion.is-collapsed .companion-signal {
+  top: 10px;
+  right: 5px;
+}
+
+body.companion.is-collapsed .companion-collapsed-button {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  display: block;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
 }
 
 /* ------------------------------ Dark mode ----------------------------------- */

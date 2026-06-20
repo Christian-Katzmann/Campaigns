@@ -8,16 +8,34 @@
     <link rel="stylesheet" href="/companion.css" />
   </head>
   <body class="companion">
-    <header class="companion-head">
-      <div class="companion-pet" id="companion-pet" hidden>
-        <div class="companion-pet-sprite" id="companion-pet-sprite" aria-hidden="true"></div>
+    <header class="companion-head" id="companion-head">
+      <button id="collapsed-expand-button" class="companion-collapsed-button" type="button" aria-label="Expand Campaign Companion" hidden></button>
+      <div class="companion-pet-shell">
+        <div class="companion-pet-fallback" id="companion-pet-fallback" aria-hidden="true">C</div>
+        <div class="companion-pet" id="companion-pet" hidden>
+          <div class="companion-pet-sprite" id="companion-pet-sprite" aria-hidden="true"></div>
+        </div>
+        <span class="companion-signal" id="companion-signal" title="No campaigns need attention"></span>
       </div>
       <div class="companion-head-text">
         <p class="companion-eyebrow">Companion</p>
         <h1 class="companion-title" id="companion-title">Campaigns</h1>
         <p class="companion-counts" id="companion-counts" aria-live="polite"></p>
       </div>
+      <button id="collapse-button" class="companion-icon-button" type="button" aria-label="Collapse companion" title="Collapse">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M8 12h8" />
+        </svg>
+      </button>
     </header>
+
+    <section class="companion-toolbar" aria-label="Companion controls">
+      <button id="open-app-button" class="companion-button" type="button">Open App</button>
+      <div class="companion-mode-toggle" role="group" aria-label="Campaign filter">
+        <button id="active-mode-button" type="button" aria-pressed="true">Active</button>
+        <button id="all-mode-button" type="button" aria-pressed="false">All</button>
+      </div>
+    </section>
 
     <main class="companion-list" id="companion-list" aria-live="polite">
       <p class="companion-empty" id="companion-empty">Loading…</p>
