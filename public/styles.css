@@ -1717,9 +1717,101 @@ body.view-workflows #conflict-modal {
   font-size: 28px;
 }
 
-.wf-map-placeholder {
-  margin-top: 16px;
+.wf-map-body {
+  max-width: 760px;
+}
+
+/* The diagram sits in a quiet framed card right where the author put it in the doc.
+   Colours come entirely from the map's own classDef/sidecar — nothing is tinted here. */
+.wf-map-diagram {
+  margin: 20px 0 28px;
+  padding: 20px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--paper-strong);
+  overflow-x: auto;
+}
+
+.wf-map-diagram .workflow-map {
+  display: flex;
+  justify-content: center;
+}
+
+.wf-map-diagram svg {
+  max-width: 100%;
+  height: auto;
+}
+
+.wf-map-diagram-state {
+  margin: 0;
   color: var(--ink-soft);
+  font-size: 14px;
+}
+
+.wf-map-diagram-fallback {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.wf-map-diagram-source {
+  margin: 0;
+  padding: 14px 16px;
+  border-radius: 10px;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  overflow-x: auto;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+/* Per-node copy-ref: an HTML button hosted in an SVG <foreignObject> so it tracks the
+   node's transform. Quiet until you hover the node (or tab to it). */
+.wf-node-copy-host {
+  overflow: visible;
+}
+
+.wf-node-copy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--paper);
+  color: var(--ink-soft);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 120ms ease-out, color 120ms ease-out, background-color 120ms ease-out,
+    border-color 120ms ease-out;
+}
+
+g.node:hover .wf-node-copy,
+.wf-node-copy:focus-visible {
+  opacity: 1;
+}
+
+.wf-node-copy:hover,
+.wf-node-copy:focus-visible {
+  border-color: var(--ink-soft);
+  background: var(--paper-strong);
+  color: var(--ink);
+}
+
+.wf-node-copy svg {
+  width: 13px;
+  height: 13px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .wf-node-copy {
+    transition: none;
+  }
 }
 
 .wf-empty {

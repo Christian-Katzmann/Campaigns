@@ -2315,17 +2315,215 @@ function openWorkflowMap(wf) {
   back.focus();
 }
 
-// Step 3.1 replaces this stub with the mermaid render + evidence ledger (it reads
-// wf.markdown and mounts into `mount`). Until then it shows the sidecar score so the
-// routing is verifiable end-to-end.
+// The map render. `wf.markdown` is the full map doc (carried inline from discovery).
+// We split its two fences out — the ```mermaid diagram and the ```json sidecar — and
+// render the diagram in-place where the author put it, with the rest of the markdown
+// body (intro, plain-language guide, evidence ledger) rendered through the app's own
+// block renderer so it reads as a native document. The json sidecar drives colours,
+// tooltips and copy-refs; it is never shown raw and a colour is NEVER computed here.
+const SVG_NS = 'http://www.w3.org/2000/svg';
+
 function renderWorkflowMapBody(wf, mount) {
-  mount.replaceChildren(
-    buildWorkflowScore(wf.score),
-    element('p', {
-      className: 'wf-map-placeholder',
-      text: 'The coloured map renders here in Step 3.1.',
-    }),
-  );
+  const markdown = typeof wf.markdown === 'string' ? wf.markdown : '';
+  // Strip HTML comments (e.g. the sidecar's machine-readable note) so they don't
+  // surface as stray paragraphs, then parse the doc into the app's own blocks.
+  const blocks = parseMarkdown(markdown.replace(/<!--[\s\S]*?-->/g, ''));
+
+  // Parse the sidecar ONCE (the first ```…``` fence that is JSON with a nodes[]).
+  // It carries the earned colours + plain glosses + stable refs — hand it in below.
+  let sidecar = null;
+  let sidecarBlock = null;
+  for (const block of blocks) {
+    if (block.type !== 'code' || sidecar) continue;
+    const parsed = tryParseWorkflowSidecar(block.content);
+    if (parsed) {
+      sidecar = parsed;
+      sidecarBlock = block;
+    }
+  }
+
+  const mapSlug = `${wf.domain}/${wf.slug}.md`;
+  const frag = document.createDocumentFragment();
+  let diagramContainer = null;
+  let mermaidSource = null;
+
+  for (const block of blocks) {
+    // The diagram replaces the ```mermaid fence in place — exactly where the map
+    // author put it under "## The map".
+    if (block.type === 'code' && block.lang === 'mermaid') {
+      mermaidSource = block.content;
+      diagramContainer = element('div', { className: 'wf-map-diagram' });
+      diagramContainer.append(
+        element('p', { className: 'wf-map-diagram-state', text: 'Drawing map…' }),
+      );
+      frag.append(diagramContainer);
+      continue;
+    }
+    // The sidecar is machine-readable — consumed, never shown raw.
+    if (block === sidecarBlock) continue;
+    // The shell already shows the title; drop the doc's own H1 to avoid a double title.
+    if (block.type === 'heading' && block.level === 1) continue;
+    frag.append(renderBlock(block));
+  }
+
+  mount.replaceChildren(frag);
+
+  if (diagramContainer && mermaidSource) {
+    // Fire-and-forget: the DOM is already in place; the diagram fills in when mermaid
+    // resolves (or falls back to source if it can't load/parse).
+    renderWorkflowMapDiagram(diagramContainer, mermaidSource, sidecar, mapSlug);
+  }
+}
+
+// First fence whose content is JSON with a nodes[] — the map's sidecar shape.
+function tryParseWorkflowSidecar(content) {
+  try {
+    const parsed = JSON.parse(content);
+    if (parsed && typeof parsed === 'object' && Array.isArray(parsed.nodes)) return parsed;
+  } catch {
+    /* not the sidecar — ignore */
+  }
+  return null;
+}
+
+// Mermaid is vendored into public/vendor (offline-first; the static server only
+// serves files under public/). Load it lazily and initialise ONCE for the app's
+// lifetime — re-initialising per render is the classic double-init bug (flicker,
+// duplicated ids, dead tooltips). `run()` is called explicitly per diagram.
+let _mermaidPromise = null;
+function loadMermaid() {
+  if (!_mermaidPromise) {
+    _mermaidPromise = import('/vendor/mermaid/mermaid.esm.min.mjs').then((module) => {
+      const mermaid = module.default;
+      mermaid.initialize({
+        startOnLoad: false, // views mount imperatively; we run() ourselves
+        theme: 'default',
+        securityLevel: 'loose', // so our injected <title> tooltips survive sanitisation
+        flowchart: { curve: 'basis', nodeSpacing: 40, rankSpacing: 46 },
+      });
+      return mermaid;
+    });
+  }
+  return _mermaidPromise;
+}
+
+async function renderWorkflowMapDiagram(container, mermaidSource, sidecar, mapSlug) {
+  let mermaid;
+  try {
+    mermaid = await loadMermaid();
+  } catch (error) {
+    console.warn('workflows: mermaid failed to load', error);
+    container.replaceChildren(buildWorkflowDiagramFallback(mermaidSource));
+    return;
+  }
+
+  const host = element('div', { className: 'workflow-map' });
+  host.textContent = mermaidSource; // mermaid.run reads textContent
+  container.replaceChildren(host);
+
+  try {
+    await mermaid.run({ nodes: [host] }); // scope to THIS node — don't touch other maps
+  } catch (error) {
+    console.warn('workflows: mermaid render failed', error);
+    container.replaceChildren(buildWorkflowDiagramFallback(mermaidSource));
+    return;
+  }
+
+  decorateWorkflowNodes(host, sidecar, mapSlug);
+}
+
+// Post-render pass: match each rendered node to its sidecar entry and graft on the
+// plain-language tooltip + copy-reference. Longest label first — otherwise a short
+// label ("Approve") hijacks a longer node's text ("Approve packet").
+function decorateWorkflowNodes(host, sidecar, mapSlug) {
+  const nodes = Array.isArray(sidecar?.nodes) ? sidecar.nodes : [];
+  if (nodes.length === 0) return;
+  const byLabel = nodes
+    .filter((node) => node && node.label)
+    .slice()
+    .sort((a, b) => String(b.label).length - String(a.label).length);
+
+  host.querySelectorAll('g.node').forEach((group) => {
+    const text = (group.textContent || '').replace(/\s+/g, ' ').trim();
+    const node = byLabel.find((candidate) => text.includes(candidate.label));
+    if (!node) return;
+
+    // Plain-language hover tooltip — native SVG <title>. From the sidecar, never computed.
+    if (node.plain) {
+      const title = document.createElementNS(SVG_NS, 'title');
+      title.textContent = node.plain;
+      group.insertBefore(title, group.firstChild);
+      group.style.cursor = 'help';
+    }
+
+    // Per-node copy-reference: the token Christian pastes to point Claude at one node.
+    if (node.ref) attachWorkflowNodeCopy(group, `${mapSlug}#${node.ref}`);
+  });
+}
+
+// A copy button placed over the node's top-right corner via an SVG <foreignObject>
+// (so it rides along with the node's own transform). Reveals on hover/focus; click
+// drops the reference token on the clipboard using the app's clipboard path.
+function attachWorkflowNodeCopy(nodeGroup, token) {
+  let bbox;
+  try {
+    bbox = nodeGroup.getBBox();
+  } catch {
+    return; // node not measurable (shouldn't happen once rendered) — skip its button
+  }
+
+  const size = 20;
+  const inset = 4;
+  const fo = document.createElementNS(SVG_NS, 'foreignObject');
+  fo.setAttribute('class', 'wf-node-copy-host');
+  fo.setAttribute('width', String(size));
+  fo.setAttribute('height', String(size));
+  fo.setAttribute('x', String(bbox.x + bbox.width - size + inset));
+  fo.setAttribute('y', String(bbox.y - inset));
+
+  const button = element('button', {
+    className: 'wf-node-copy',
+    type: 'button',
+    title: `Copy reference · ${token}`,
+    ariaLabel: `Copy reference ${token}`,
+  });
+  if (copyIconTemplate?.content?.firstElementChild) {
+    button.append(copyIconTemplate.content.firstElementChild.cloneNode(true));
+  } else {
+    button.textContent = 'Copy';
+  }
+  button.addEventListener('click', (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    copyWorkflowRef(token);
+  });
+
+  fo.append(button);
+  nodeGroup.append(fo);
+}
+
+// Mirrors copyCampaignPath's clipboard path, with a node-appropriate toast.
+async function copyWorkflowRef(token) {
+  try {
+    await navigator.clipboard.writeText(token);
+    showToast('Node reference copied.');
+  } catch {
+    showToast('Copy failed. Select the reference manually.');
+  }
+}
+
+// Mermaid couldn't load or parse — keep the information by showing the raw source
+// rather than an empty box. Offline-first means this is a real (if rare) path.
+function buildWorkflowDiagramFallback(mermaidSource) {
+  const wrap = element('div', { className: 'wf-map-diagram-fallback' });
+  wrap.append(element('p', {
+    className: 'wf-map-diagram-state',
+    text: 'The diagram couldn’t be drawn here — showing the map’s source instead.',
+  }));
+  const pre = element('pre', { className: 'wf-map-diagram-source' });
+  pre.append(element('code', { text: mermaidSource }));
+  wrap.append(pre);
+  return wrap;
 }
 
 function buildWorkflowEmptyState() {
