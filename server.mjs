@@ -765,8 +765,9 @@ async function sendCampaignIcon(url, response) {
 // Workflow maps are discovered ON DEMAND and never written into the campaign
 // registry — campaign enrichment (progress, stacks, parking) must never be able
 // to touch a workflow record. We derive the repo roots to scan from the repos
-// that already host a registered campaign, find each repo's
-// docs/workflows/<domain>/<slug>.md maps, and read the embedded JSON sidecar.
+// that already host a registered campaign, walk each repo's docs/workflows/**
+// to ANY depth, and read the embedded JSON machine record (drawn maps carry
+// nodes[]+score; undrawn stubs carry neither and render grey).
 async function sendWorkflows(response) {
   const workflows = await discoverWorkflows();
   sendJson(response, 200, { workflows });
@@ -796,29 +797,35 @@ async function discoverWorkflows() {
         console.warn(`workflows: skipping ${map.filePath} — could not read (${error.message})`);
         continue;
       }
-      const sidecar = parseWorkflowSidecar(markdown);
-      if (!sidecar) {
-        // One malformed/absent sidecar must never crash discovery — skip it loudly.
-        console.warn(`workflows: skipping ${map.filePath} — no parseable JSON sidecar with nodes[]`);
+      const record = parseWorkflowRecord(markdown);
+      if (!record) {
+        // One malformed/absent record must never crash discovery — skip it loudly.
+        console.warn(`workflows: skipping ${map.filePath} — no parseable JSON machine record`);
         continue;
       }
+      // Render what's earned: a DRAWN map carries nodes[] → its declared score tints
+      // the tree; an UNDRAWN stub carries none → score:null → the tree renders it grey.
+      // A colour is NEVER inferred here — undrawn means undrawn.
       workflows.push({
         repoRoot,
         repoName,
-        domain: map.domain,
+        categories: map.categories, // ['data','sync'] — the folder hierarchy, any depth
         slug: map.slug,
+        ref: map.ref, // 'data/sync/full-sync.md' — full relative path, the copy-ref base
         title: extractWorkflowTitle(markdown) ?? map.slug,
         filePath: map.filePath,
-        score: deriveWorkflowScore(sidecar),
+        status: record.drawn ? 'drawn' : 'undrawn',
+        score: record.drawn ? deriveWorkflowScore(record.data) : null,
         markdown, // carried inline so the Step 3.1 leaf renders without a second fetch
       });
     }
   }
 
-  // Stable order — repo, then domain, then slug — so the tree renders the same every load.
+  // Stable order — repo, then full category path, then slug — so discovery returns
+  // the same list every load (the client re-sorts by fragility for display).
   workflows.sort((a, b) =>
     a.repoName.localeCompare(b.repoName) ||
-    a.domain.localeCompare(b.domain) ||
+    a.categories.join('/').localeCompare(b.categories.join('/')) ||
     a.slug.localeCompare(b.slug));
   return workflows;
 }
@@ -840,57 +847,64 @@ async function findRepoRoot(startDir) {
   }
 }
 
-// List docs/workflows/<domain>/<slug>.md maps under a repo root.
+// Walk docs/workflows/** to ANY depth, one record per .md map. `categories` is the
+// full chain of folders between docs/workflows/ and the file (['data','sync']), so a
+// map nested three deep is no longer silently dropped. `ref` is the full relative
+// path — the copy-ref base the viewer hangs node anchors off (NOT <domain>/<slug>).
 async function findWorkflowMaps(repoRoot) {
   const base = path.join(repoRoot, 'docs', 'workflows');
-  let domainEntries;
-  try {
-    domainEntries = await readdir(base, { withFileTypes: true });
-  } catch (error) {
-    if (error.code !== 'ENOENT') {
-      console.warn(`workflows: cannot read ${base} — ${error.message}`);
-    }
-    return []; // most repos have no maps — that's normal, not an error
-  }
-
   const maps = [];
-  for (const domainEntry of domainEntries) {
-    if (!domainEntry.isDirectory()) continue;
-    const domain = domainEntry.name;
-    const domainDir = path.join(base, domain);
-    let fileEntries;
+  async function walk(dir, categories) {
+    let entries;
     try {
-      fileEntries = await readdir(domainDir, { withFileTypes: true });
+      entries = await readdir(dir, { withFileTypes: true });
     } catch (error) {
-      console.warn(`workflows: cannot read ${domainDir} — ${error.message}`);
-      continue;
+      // ENOENT at the root just means this repo has no maps — normal, not an error.
+      if (error.code !== 'ENOENT') {
+        console.warn(`workflows: cannot read ${dir} — ${error.message}`);
+      }
+      return;
     }
-    for (const fileEntry of fileEntries) {
-      if (!fileEntry.isFile() || !fileEntry.name.endsWith('.md')) continue;
-      maps.push({
-        domain,
-        slug: fileEntry.name.slice(0, -'.md'.length),
-        filePath: path.join(domainDir, fileEntry.name),
-      });
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        await walk(path.join(dir, entry.name), [...categories, entry.name]); // descend, any depth
+      } else if (entry.isFile() && entry.name.endsWith('.md')) {
+        maps.push({
+          categories, // ['data','sync'] — the hierarchy, however deep
+          slug: entry.name.slice(0, -'.md'.length),
+          filePath: path.join(dir, entry.name),
+          ref: [...categories, entry.name].join('/'), // 'data/sync/full-sync.md'
+        });
+      }
     }
   }
+  await walk(base, []);
   return maps;
 }
 
-// Pull the embedded ```json sidecar out of a map. A map can in principle hold
-// more than one ```json fence, so take the first that parses to an object with a
-// nodes[] array. Returns null if none qualifies — caller skips the map.
-function parseWorkflowSidecar(markdown) {
+// Pull the embedded ```json machine record out of a map. A map can in principle
+// hold more than one ```json fence, so take the first that parses to a record-shaped
+// object. Two shapes qualify, both "the same file at two maturity levels":
+//   • DRAWN  — has nodes[]; its declared score{} tints the tree. { drawn: true }
+//   • UNDRAWN stub — no nodes[], but an authored record (name/what/status). It earns
+//     no colour, so the tree renders it grey. { drawn: false }
+// Returns { data, drawn } or null if no fence qualifies — caller skips the map loudly.
+function parseWorkflowRecord(markdown) {
   const fence = /```json\s+([\s\S]*?)```/g;
   let match;
   while ((match = fence.exec(markdown)) !== null) {
+    let data;
     try {
-      const data = JSON.parse(match[1]);
-      if (data && typeof data === 'object' && Array.isArray(data.nodes)) {
-        return data;
-      }
+      data = JSON.parse(match[1]);
     } catch {
-      /* not this fence — try the next one */
+      continue; // not JSON — try the next fence
+    }
+    if (!data || typeof data !== 'object' || Array.isArray(data)) continue;
+    if (Array.isArray(data.nodes)) return { data, drawn: true };
+    // A stub is identified by the authored fields the template mandates — never by a
+    // colour, which it must not carry. (`name`/`what`/`status` — any one is enough.)
+    if (typeof data.status === 'string' || typeof data.name === 'string' || typeof data.what === 'string') {
+      return { data, drawn: false };
     }
   }
   return null;

@@ -1502,7 +1502,7 @@ body.view-workflows #conflict-modal {
   display: none;
 }
 
-/* ---------- Workflows tree (Repo → Domain → Workflow) ---------- */
+/* ---------- Workflows tree (Repo → Category… → Workflow, any depth) ---------- */
 
 .wf-tree,
 .wf-children {
@@ -1566,6 +1566,18 @@ body.view-workflows #conflict-modal {
 
 .wf-row-repo > .wf-toggle .wf-label {
   font-weight: 640;
+}
+
+/* Category rows sit between repo (bold) and leaf (medium). A breadcrumb row is a
+   folded single-child chain ("data › sync") — softened so it reads as a path, not
+   a name. Indentation comes from .wf-children nesting, so depth needs no extra rule. */
+.wf-row-category > .wf-toggle .wf-label {
+  font-weight: 580;
+}
+
+.wf-row-breadcrumb > .wf-toggle .wf-label {
+  color: var(--ink-soft);
+  font-weight: 540;
 }
 
 .wf-chevron {

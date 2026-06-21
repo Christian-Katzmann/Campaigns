@@ -2034,11 +2034,12 @@ function renderWorkflowTree() {
 }
 
 /* ------------------------------ Workflows tree IA ---------------------------------- */
-// Repo → Domain → Workflow. Fragility is surfaced at EVERY level: a parent row
-// tints to its worst descendant (red > amber > green), so one shaky flow turns its
-// domain AND its repo red and the eye lands on fragility without opening anything —
-// the tree is a heat map, not a file list. Colours are read from each map's sidecar
-// score; nothing here recomputes or invents a colour.
+// Repo → Category… → Workflow, nesting to ANY folder depth. Fragility is surfaced at
+// EVERY level: a parent row tints to its worst descendant anywhere below it (red >
+// amber > green), so one shaky flow nested three folders deep still turns its whole
+// branch red and the eye lands on fragility without opening anything — the tree is a
+// heat map, not a file list. Colours are read from each drawn map's sidecar score;
+// undrawn stubs carry none and stay grey. Nothing here recomputes or invents a colour.
 
 const WF_RANK = { neutral: 0, green: 1, amber: 2, red: 3 };
 const WF_TINT_NAME = ['neutral', 'green', 'amber', 'red'];
@@ -2099,32 +2100,18 @@ function buildWorkflowTree(items) {
 
   repoGroups.forEach((repoItems, repoIndex) => {
     const open = repoIndex === 0;
+    const root = buildCategoryTree(repoItems); // recursive segment tree for THIS repo
     const repoRow = buildWorkflowGroupRow({
       label: repoItems[0].repoName,
       level: 'repo',
-      tint: workflowWorstTint(repoItems.map((i) => i.score)),
+      tint: nodeWorstTint(root),
       count: repoItems.length,
       open,
     });
-
-    const domainGroups = sortWorkflowGroups(
-      groupWorkflows(repoItems, (i) => i.domain).values(),
-      (i) => i.domain,
-    );
-    domainGroups.forEach((domainItems) => {
-      const domainRow = buildWorkflowGroupRow({
-        label: domainItems[0].domain,
-        level: 'domain',
-        tint: workflowWorstTint(domainItems.map((i) => i.score)),
-        count: domainItems.length,
-        open, // a domain is open iff its repo is open (mirrors the reference)
-      });
-      for (const wf of sortWorkflowLeaves(domainItems)) {
-        domainRow.children.append(buildWorkflowLeaf(wf));
-      }
-      repoRow.children.append(domainRow.el);
-    });
-
+    // Default-expand: within the open (reddest) repo, every category level is open
+    // too — the cap is Repo + 2 category levels, so the whole branch fits on screen
+    // and the heat map reads top-down without a click. Other repos stay collapsed.
+    appendCategoryChildren(repoRow.children, root, open);
     tree.append(repoRow.el);
   });
 
@@ -2132,10 +2119,94 @@ function buildWorkflowTree(items) {
   return tree;
 }
 
+// The folder path IS the hierarchy. Group items by their successive category
+// segments into a tree the renderer walks — depth is data, not hardcoded. A Map
+// keeps insertion order so the tree is stable across renders before we sort.
+function buildCategoryTree(items) {
+  const root = { name: null, children: new Map(), leaves: [] };
+  for (const it of items) {
+    let node = root;
+    for (const seg of Array.isArray(it.categories) ? it.categories : []) {
+      if (!node.children.has(seg)) {
+        node.children.set(seg, { name: seg, children: new Map(), leaves: [] });
+      }
+      node = node.children.get(seg);
+    }
+    node.leaves.push(it);
+  }
+  return root;
+}
+
+// Worst-descendant tint — recurses the WHOLE subtree so fragility surfaces at every
+// level. A red flow three folders deep still tints its top bucket; peeking only one
+// level (the pre-upgrade bug) would let the heat map lie. Undrawn leaves (score:null)
+// rank neutral, so a bucket of nothing-but-stubs stays grey.
+function nodeWorstTint(node) {
+  let rank = WF_RANK[workflowWorstTint(node.leaves.map((l) => l.score))];
+  for (const child of node.children.values()) {
+    rank = Math.max(rank, WF_RANK[nodeWorstTint(child)]);
+  }
+  return WF_TINT_NAME[rank];
+}
+
+// Total leaf count anywhere in a subtree — the "N maps" a bucket stands for.
+function countNodeLeaves(node) {
+  let total = node.leaves.length;
+  for (const child of node.children.values()) total += countNodeLeaves(child);
+  return total;
+}
+
+// Fold a single-child chain into one breadcrumb. A category with exactly one child
+// and no leaves of its own earns no level of its own — its label joins its child's
+// ("data" → only "sync" reads as "data › sync"). This is a RENDER decision; discovery
+// returns the raw path untouched. Returns the breadcrumb labels + the deepest node.
+function collapseSingleChildChain(name, node) {
+  const labels = [name];
+  let current = node;
+  while (current.leaves.length === 0 && current.children.size === 1) {
+    const [childName, childNode] = current.children.entries().next().value;
+    labels.push(childName);
+    current = childNode;
+  }
+  return { labels, node: current };
+}
+
+// reddest category first, then alphabetical — the heat map reads worst-to-best.
+function sortCategoryNodes(entries) {
+  return [...entries].sort((a, b) => {
+    const rankA = WF_RANK[nodeWorstTint(a[1])];
+    const rankB = WF_RANK[nodeWorstTint(b[1])];
+    if (rankB !== rankA) return rankB - rankA;
+    return a[0].localeCompare(b[0]);
+  });
+}
+
+// Render a category node's children: a group row per sub-category (collapsing any
+// single-child chain to a breadcrumb), then the node's own leaves. Recurses to any
+// depth — the same function draws level 2 and level 5.
+function appendCategoryChildren(container, parent, open) {
+  for (const [name, node] of sortCategoryNodes(parent.children)) {
+    const { labels, node: deepest } = collapseSingleChildChain(name, node);
+    const row = buildWorkflowGroupRow({
+      label: labels.join(' › '), // breadcrumb for a collapsed single-child chain
+      level: 'category',
+      tint: nodeWorstTint(deepest),
+      count: countNodeLeaves(deepest),
+      open,
+      breadcrumb: labels.length > 1,
+    });
+    appendCategoryChildren(row.children, deepest, open);
+    container.append(row.el);
+  }
+  for (const leaf of sortWorkflowLeaves(parent.leaves)) {
+    container.append(buildWorkflowLeaf(leaf));
+  }
+}
+
 // A collapsible group row (repo or domain). Returns { el, children } so callers
 // append child rows into `children`. The tint shows as a small coloured dot.
-function buildWorkflowGroupRow({ label, level, tint, count, open }) {
-  const li = element('li', { className: `wf-row wf-row-${level}` });
+function buildWorkflowGroupRow({ label, level, tint, count, open, breadcrumb = false }) {
+  const li = element('li', { className: `wf-row wf-row-${level}${breadcrumb ? ' wf-row-breadcrumb' : ''}` });
   li.setAttribute('role', 'treeitem');
   li.setAttribute('aria-expanded', String(open));
   if (!open) li.classList.add('is-collapsed');
@@ -2298,10 +2369,15 @@ function openWorkflowMap(wf) {
     renderWorkflowTree();
   });
 
+  // Breadcrumb: repo › each category segment › slug.md — the full nested path, so a
+  // map three folders deep reads its real location (not a lossy <domain>/<slug>).
   const crumb = element('p', { className: 'wf-map-crumb' });
   crumb.append(element('span', { text: wf.repoName }));
-  crumb.append(element('span', { className: 'wf-map-crumb-sep', text: '›', ariaHidden: 'true' }));
-  crumb.append(element('span', { text: `${wf.domain}/${wf.slug}.md` }));
+  const trail = [...(Array.isArray(wf.categories) ? wf.categories : []), `${wf.slug}.md`];
+  for (const segment of trail) {
+    crumb.append(element('span', { className: 'wf-map-crumb-sep', text: '›', ariaHidden: 'true' }));
+    crumb.append(element('span', { text: segment }));
+  }
 
   const header = element('div', { className: 'wf-map-header' });
   header.append(back, crumb, element('h2', { className: 'wf-map-title', text: wf.title }));
@@ -2342,7 +2418,12 @@ function renderWorkflowMapBody(wf, mount) {
     }
   }
 
-  const mapSlug = `${wf.domain}/${wf.slug}.md`;
+  // The copy-ref base: the full relative path under docs/workflows. Per-node anchors
+  // hang off it (e.g. data/sync/full-sync.md#vector-search) — never a lossy
+  // <domain>/<slug> that drops the middle folders of a deeply-nested map.
+  const mapSlug = typeof wf.ref === 'string' && wf.ref
+    ? wf.ref
+    : [...(Array.isArray(wf.categories) ? wf.categories : []), `${wf.slug}.md`].join('/');
   const frag = document.createDocumentFragment();
   let diagramContainer = null;
   let mermaidSource = null;
@@ -2532,8 +2613,8 @@ function buildWorkflowEmptyState() {
   wrap.append(element('p', {
     className: 'library-empty-body',
     html:
-      'Run <code>/workflow-map</code> in a repo to chart its first flow. Each map lands at '
-      + '<code>docs/workflows/&lt;domain&gt;/&lt;slug&gt;.md</code> and shows up here, grouped by repo.',
+      'Run <code>/workflow-map</code> in a repo to chart its first flow. Each map lands under '
+      + '<code>docs/workflows/…/&lt;slug&gt;.md</code> (nested to any depth) and shows up here, grouped by repo.',
   }));
   return wrap;
 }
