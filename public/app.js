@@ -52,6 +52,8 @@ const state = {
   libraryDragCampaignId: '',
   id: '',
   homeDir: '',
+  workflows: null,
+  currentWorkflow: null,
 };
 
 const elements = {
@@ -1990,9 +1992,9 @@ function hideResumeCard() {
 
 // Workflows landing — a top-level view parallel to the Campaigns library,
 // reached via ?view=workflows. Mirrors renderLibrary's view signal: the route
-// AND a body.view-workflows class drive which screen shows. Step 1.2 fills the
-// content from GET /api/workflows; Step 2.1 replaces it with the Repo → Domain
-// → Workflow tree.
+// AND a body.view-workflows class drive which screen shows. The content is the
+// Repo → Domain → Workflow tree built from GET /api/workflows; a leaf opens its
+// map view (Step 3.1 renders the coloured diagram into renderWorkflowMapBody).
 async function renderWorkflows() {
   document.body.classList.add('view-workflows');
   applyCampaignLogo(null, false);
@@ -2000,54 +2002,364 @@ async function renderWorkflows() {
   elements.workflows.hidden = false;
   if (!elements.workflowsContent) return;
 
-  let workflows = [];
-  try {
-    const response = await fetch('/api/workflows');
-    if (!response.ok) throw new Error('Could not load workflow maps.');
-    const payload = await response.json();
-    workflows = Array.isArray(payload.workflows) ? payload.workflows : [];
-  } catch (error) {
-    elements.workflowsContent.replaceChildren(
-      element('p', { className: 'library-empty-body', text: error.message }),
-    );
-    return;
+  // Fetch once and cache inline. Each item carries its map's raw markdown, so the
+  // map view (Step 3.1) renders without a second fetch and the back-to-tree
+  // affordance restores the tree without re-hitting the server.
+  if (!state.workflows) {
+    try {
+      const response = await fetch('/api/workflows');
+      if (!response.ok) throw new Error('Could not load workflow maps.');
+      const payload = await response.json();
+      state.workflows = Array.isArray(payload.workflows) ? payload.workflows : [];
+    } catch (error) {
+      elements.workflowsContent.replaceChildren(
+        element('p', { className: 'library-empty-body', text: error.message }),
+      );
+      return;
+    }
   }
 
-  if (workflows.length === 0) {
-    elements.workflowsContent.replaceChildren(
-      element('p', {
-        className: 'library-empty-body',
-        text: 'No workflow maps found. Run /workflow-map in a repo to add one.',
-      }),
-    );
+  renderWorkflowTree();
+}
+
+// Render the tree (or empty state) from the cached discovery list. Split from the
+// fetch so the back button can re-show the tree with no network round-trip.
+function renderWorkflowTree() {
+  const items = state.workflows || [];
+  if (items.length === 0) {
+    elements.workflowsContent.replaceChildren(buildWorkflowEmptyState());
     return;
   }
+  elements.workflowsContent.replaceChildren(buildWorkflowTree(items));
+}
 
-  // Minimal flat list — purely to verify discovery end-to-end. Step 2.1 replaces
-  // this with the Repo → Domain → Workflow tree.
-  const list = element('ul', { className: 'workflows-list' });
-  for (const wf of workflows) {
-    const item = element('li', { className: 'workflows-list-item' });
-    item.append(element('span', { className: 'workflows-list-title', text: wf.title }));
-    item.append(element('span', {
-      className: 'workflows-list-meta',
-      text: `${wf.repoName} · ${wf.domain}`,
-    }));
-    item.append(buildWorkflowScore(wf.score));
-    list.append(item);
+/* ------------------------------ Workflows tree IA ---------------------------------- */
+// Repo → Domain → Workflow. Fragility is surfaced at EVERY level: a parent row
+// tints to its worst descendant (red > amber > green), so one shaky flow turns its
+// domain AND its repo red and the eye lands on fragility without opening anything —
+// the tree is a heat map, not a file list. Colours are read from each map's sidecar
+// score; nothing here recomputes or invents a colour.
+
+const WF_RANK = { neutral: 0, green: 1, amber: 2, red: 3 };
+const WF_TINT_NAME = ['neutral', 'green', 'amber', 'red'];
+
+// worst colour present across a set of sidecar scores → the tint for a parent row.
+function workflowWorstTint(scores) {
+  let rank = 0;
+  for (const score of scores) {
+    const safe = score && typeof score === 'object' ? score : {};
+    for (const colour in WF_RANK) {
+      if ((Number(safe[colour]) || 0) > 0) rank = Math.max(rank, WF_RANK[colour]);
+    }
   }
-  elements.workflowsContent.replaceChildren(list);
+  return WF_TINT_NAME[rank];
+}
+
+// insertion-ordered grouping — stable tree order across renders before we sort.
+function groupWorkflows(items, keyFn) {
+  const map = new Map();
+  for (const item of items) {
+    const key = keyFn(item);
+    if (!map.has(key)) map.set(key, []);
+    map.get(key).push(item);
+  }
+  return map;
+}
+
+// reddest group first, then alphabetical — the heat map reads worst-to-best top-down.
+function sortWorkflowGroups(groups, labelFn) {
+  return [...groups].sort((a, b) => {
+    const rankA = WF_RANK[workflowWorstTint(a.map((i) => i.score))];
+    const rankB = WF_RANK[workflowWorstTint(b.map((i) => i.score))];
+    if (rankB !== rankA) return rankB - rankA;
+    return labelFn(a[0]).localeCompare(labelFn(b[0]));
+  });
+}
+
+function sortWorkflowLeaves(items) {
+  return [...items].sort((a, b) => {
+    const rankA = WF_RANK[workflowWorstTint([a.score])];
+    const rankB = WF_RANK[workflowWorstTint([b.score])];
+    if (rankB !== rankA) return rankB - rankA;
+    return String(a.title).localeCompare(String(b.title));
+  });
+}
+
+function buildWorkflowTree(items) {
+  const tree = element('ul', { className: 'wf-tree' });
+  tree.setAttribute('role', 'tree');
+  tree.setAttribute('aria-label', 'Workflow maps');
+
+  // Group by repo FIRST — different repos never mix. Expand the reddest repo,
+  // collapse the rest: the common case is "show me the shaky one".
+  const repoGroups = sortWorkflowGroups(
+    groupWorkflows(items, (i) => i.repoRoot).values(),
+    (i) => i.repoName,
+  );
+
+  repoGroups.forEach((repoItems, repoIndex) => {
+    const open = repoIndex === 0;
+    const repoRow = buildWorkflowGroupRow({
+      label: repoItems[0].repoName,
+      level: 'repo',
+      tint: workflowWorstTint(repoItems.map((i) => i.score)),
+      count: repoItems.length,
+      open,
+    });
+
+    const domainGroups = sortWorkflowGroups(
+      groupWorkflows(repoItems, (i) => i.domain).values(),
+      (i) => i.domain,
+    );
+    domainGroups.forEach((domainItems) => {
+      const domainRow = buildWorkflowGroupRow({
+        label: domainItems[0].domain,
+        level: 'domain',
+        tint: workflowWorstTint(domainItems.map((i) => i.score)),
+        count: domainItems.length,
+        open, // a domain is open iff its repo is open (mirrors the reference)
+      });
+      for (const wf of sortWorkflowLeaves(domainItems)) {
+        domainRow.children.append(buildWorkflowLeaf(wf));
+      }
+      repoRow.children.append(domainRow.el);
+    });
+
+    tree.append(repoRow.el);
+  });
+
+  bindWorkflowTreeKeys(tree);
+  return tree;
+}
+
+// A collapsible group row (repo or domain). Returns { el, children } so callers
+// append child rows into `children`. The tint shows as a small coloured dot.
+function buildWorkflowGroupRow({ label, level, tint, count, open }) {
+  const li = element('li', { className: `wf-row wf-row-${level}` });
+  li.setAttribute('role', 'treeitem');
+  li.setAttribute('aria-expanded', String(open));
+  if (!open) li.classList.add('is-collapsed');
+
+  const mapWord = count === 1 ? 'map' : 'maps';
+  const toggle = element('button', {
+    className: 'wf-toggle',
+    type: 'button',
+    ariaLabel: `${label}, ${count} ${mapWord}`,
+  });
+  toggle.tabIndex = 0;
+  toggle.append(element('span', { className: 'wf-chevron', ariaHidden: 'true' }));
+  toggle.append(buildWorkflowTintDot(tint));
+  toggle.append(element('span', { className: 'wf-label', text: label }));
+  toggle.append(element('span', { className: 'wf-count', text: String(count), ariaHidden: 'true' }));
+  toggle.addEventListener('click', () => {
+    setWorkflowRowOpen(li, li.getAttribute('aria-expanded') !== 'true');
+  });
+
+  const children = element('ul', { className: 'wf-children' });
+  children.setAttribute('role', 'group');
+  const wrap = element('div', { className: 'wf-children-wrap' });
+  wrap.append(children);
+
+  li.append(toggle, wrap);
+  return { el: li, children };
+}
+
+function setWorkflowRowOpen(li, open) {
+  li.setAttribute('aria-expanded', String(open));
+  li.classList.toggle('is-collapsed', !open);
+}
+
+function buildWorkflowTintDot(tint) {
+  const safe = WF_TINT_NAME.includes(tint) ? tint : 'neutral';
+  return element('span', {
+    className: `wf-dot wf-dot-${safe}`,
+    ariaHidden: 'true',
+    title: `worst flow: ${safe}`,
+  });
+}
+
+// A workflow leaf: a colour-summary of the map's sidecar score, the title, and a
+// copy-reference button. Activating the row opens the map view.
+function buildWorkflowLeaf(wf) {
+  const li = element('li', { className: 'wf-row wf-leaf' });
+  li.setAttribute('role', 'treeitem');
+
+  const open = element('button', {
+    className: 'wf-leaf-open',
+    type: 'button',
+    ariaLabel: `Open ${wf.title} map`,
+  });
+  open.tabIndex = 0;
+  open.append(buildWorkflowScore(wf.score, { omitZero: true }));
+  open.append(element('span', { className: 'wf-label wf-leaf-title', text: wf.title }));
+  open.addEventListener('click', () => openWorkflowMap(wf));
+
+  li.append(open, buildWorkflowCopyButton(wf));
+  return li;
+}
+
+// Per-flow copy-ref — reuses copyCampaignPath so a click drops the map's absolute
+// path on the clipboard, ready to paste to Claude. Stops propagation so it never
+// opens the map.
+function buildWorkflowCopyButton(wf) {
+  const button = element('button', {
+    className: 'wf-copy-button',
+    type: 'button',
+    title: 'Copy map path',
+    ariaLabel: `Copy path for ${wf.title}`,
+  });
+  if (copyIconTemplate?.content?.firstElementChild) {
+    button.append(copyIconTemplate.content.firstElementChild.cloneNode(true));
+  } else {
+    button.textContent = 'Copy';
+  }
+  button.addEventListener('click', async (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    await copyCampaignPath(wf.filePath);
+  });
+  return button;
+}
+
+// Tree keyboard nav layered over native button focus: native Tab/Enter/Space still
+// work; arrows give the WAI-ARIA tree feel. Up/Down walk visible rows, Right
+// expands then dives in, Left collapses then climbs out, Home/End jump to ends.
+function bindWorkflowTreeKeys(tree) {
+  tree.addEventListener('keydown', (event) => {
+    if (!['ArrowDown', 'ArrowUp', 'ArrowRight', 'ArrowLeft', 'Home', 'End'].includes(event.key)) {
+      return;
+    }
+    const current = event.target.closest('.wf-toggle, .wf-leaf-open');
+    if (!current || !tree.contains(current)) return;
+    const visible = workflowVisibleControls(tree);
+    const index = visible.indexOf(current);
+    if (index === -1) return;
+    event.preventDefault();
+
+    if (event.key === 'Home') return focusWorkflowControl(visible[0]);
+    if (event.key === 'End') return focusWorkflowControl(visible[visible.length - 1]);
+    if (event.key === 'ArrowDown') return focusWorkflowControl(visible[index + 1]);
+    if (event.key === 'ArrowUp') return focusWorkflowControl(visible[index - 1]);
+
+    const li = current.closest('.wf-row');
+    const isGroup = current.classList.contains('wf-toggle');
+    if (event.key === 'ArrowRight' && isGroup) {
+      if (li.getAttribute('aria-expanded') !== 'true') {
+        setWorkflowRowOpen(li, true);
+      } else {
+        focusWorkflowControl(li.querySelector('.wf-children .wf-toggle, .wf-children .wf-leaf-open'));
+      }
+      return;
+    }
+    if (event.key === 'ArrowLeft') {
+      if (isGroup && li.getAttribute('aria-expanded') === 'true') {
+        setWorkflowRowOpen(li, false);
+        return;
+      }
+      const parentRow = li.parentElement?.closest('.wf-row');
+      if (parentRow) focusWorkflowControl(parentRow.querySelector(':scope > .wf-toggle'));
+    }
+  });
+}
+
+// A control is hidden if it sits inside the children of any collapsed ancestor row.
+function isWorkflowControlVisible(control) {
+  let node = control.parentElement;
+  while (node) {
+    if (node.classList?.contains('wf-children-wrap')) {
+      const ownerRow = node.closest('.wf-row');
+      if (ownerRow?.classList.contains('is-collapsed')) return false;
+    }
+    node = node.parentElement;
+  }
+  return true;
+}
+
+function workflowVisibleControls(tree) {
+  return [...tree.querySelectorAll('.wf-toggle, .wf-leaf-open')].filter(isWorkflowControlVisible);
+}
+
+function focusWorkflowControl(control) {
+  if (control) control.focus();
+}
+
+// Leaf → map handoff. Step 2.1 owns the routing (this shell + back-to-tree). Step
+// 3.1 owns the rendering: it fills renderWorkflowMapBody with the coloured mermaid
+// diagram, plain-language tooltips, and per-node copy-refs. The map's markdown is
+// already on `wf` (carried inline from discovery) — no second fetch needed.
+function openWorkflowMap(wf) {
+  if (!wf) return;
+  state.currentWorkflow = wf;
+
+  const back = element('button', { className: 'button button-quiet wf-map-back', type: 'button' });
+  back.textContent = '← Workflows';
+  back.addEventListener('click', () => {
+    state.currentWorkflow = null;
+    renderWorkflowTree();
+  });
+
+  const crumb = element('p', { className: 'wf-map-crumb' });
+  crumb.append(element('span', { text: wf.repoName }));
+  crumb.append(element('span', { className: 'wf-map-crumb-sep', text: '›', ariaHidden: 'true' }));
+  crumb.append(element('span', { text: `${wf.domain}/${wf.slug}.md` }));
+
+  const header = element('div', { className: 'wf-map-header' });
+  header.append(back, crumb, element('h2', { className: 'wf-map-title', text: wf.title }));
+
+  const body = element('div', { className: 'wf-map-body' });
+  renderWorkflowMapBody(wf, body);
+
+  const view = element('div', { className: 'wf-map-view' });
+  view.append(header, body);
+  elements.workflowsContent.replaceChildren(view);
+  back.focus();
+}
+
+// Step 3.1 replaces this stub with the mermaid render + evidence ledger (it reads
+// wf.markdown and mounts into `mount`). Until then it shows the sidecar score so the
+// routing is verifiable end-to-end.
+function renderWorkflowMapBody(wf, mount) {
+  mount.replaceChildren(
+    buildWorkflowScore(wf.score),
+    element('p', {
+      className: 'wf-map-placeholder',
+      text: 'The coloured map renders here in Step 3.1.',
+    }),
+  );
+}
+
+function buildWorkflowEmptyState() {
+  const wrap = element('div', { className: 'wf-empty' });
+  wrap.append(element('p', { className: 'library-empty-title', text: 'No workflow maps yet.' }));
+  wrap.append(element('p', {
+    className: 'library-empty-body',
+    html:
+      'Run <code>/workflow-map</code> in a repo to chart its first flow. Each map lands at '
+      + '<code>docs/workflows/&lt;domain&gt;/&lt;slug&gt;.md</code> and shows up here, grouped by repo.',
+  }));
+  return wrap;
 }
 
 // Colour-count chips straight from the map's sidecar score — render what each map
-// earned, never compute a colour here.
-function buildWorkflowScore(score) {
+// earned, never compute a colour here. Reddest first so a chip row reads worst-to-best;
+// omitZero drops empty colours to keep a leaf quiet.
+function buildWorkflowScore(score, { omitZero = false } = {}) {
   const safe = score && typeof score === 'object' ? score : {};
   const wrap = element('span', { className: 'workflows-score' });
-  for (const colour of ['green', 'amber', 'red', 'neutral']) {
+  let shown = 0;
+  for (const colour of ['red', 'amber', 'green', 'neutral']) {
+    const count = Number(safe[colour]) || 0;
+    if (omitZero && count === 0) continue;
     wrap.append(element('span', {
       className: `workflows-score-chip workflows-score-${colour}`,
-      text: String(Number(safe[colour]) || 0),
+      text: String(count),
+    }));
+    shown += 1;
+  }
+  if (shown === 0) {
+    wrap.append(element('span', {
+      className: 'workflows-score-chip workflows-score-neutral',
+      text: '—',
     }));
   }
   return wrap;
