@@ -1474,17 +1474,31 @@ tr:last-child td:last-child {
 body.view-library .app-shell,
 body.view-library #mobile-bottombar,
 body.view-library #phase-banner,
-body.view-library #conflict-modal {
+body.view-library #conflict-modal,
+body.view-workflows .app-shell,
+body.view-workflows #mobile-bottombar,
+body.view-workflows #phase-banner,
+body.view-workflows #conflict-modal {
   display: none;
 }
 
-.library {
+/* Quiet top-level tab pair (Campaigns | Workflows) shared by the two landing
+   screens. Reuses .button-quiet so it reads as one control, not a second nav. */
+.topbar-tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 28px;
+}
+
+.library,
+.workflows {
   width: min(1200px, 100%);
   margin: 0 auto;
   padding: 64px clamp(20px, 4vw, 56px) 96px;
 }
 
-.library[hidden] {
+.library[hidden],
+.workflows[hidden] {
   display: none;
 }
 

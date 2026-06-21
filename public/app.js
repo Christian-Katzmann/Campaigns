@@ -82,6 +82,8 @@ const elements = {
   libraryLessons: document.querySelector('#library-lessons'),
   libraryGrid: document.querySelector('#library-grid'),
   libraryEmpty: document.querySelector('#library-empty'),
+  workflows: document.querySelector('#workflows'),
+  workflowsContent: document.querySelector('#workflows-content'),
   toast: document.querySelector('#toast'),
 };
 
@@ -95,6 +97,11 @@ async function initialize() {
   bindGlobalActions();
 
   const params = new URLSearchParams(window.location.search);
+  if (params.get('view') === 'workflows') {
+    await renderWorkflows();
+    startAutomatePolling();
+    return;
+  }
   if (params.has('library')) {
     await renderLibrary();
     startAutomatePolling();
@@ -1980,6 +1987,18 @@ function hideResumeCard() {
 }
 
 /* ------------------------------ Library + switcher --------------------------------- */
+
+// Workflows landing — a top-level view parallel to the Campaigns library,
+// reached via ?view=workflows. Mirrors renderLibrary's view signal: the route
+// AND a body.view-workflows class drive which screen shows. Step 1.2 fills the
+// content from GET /api/workflows; Step 2.1 replaces it with the Repo → Domain
+// → Workflow tree.
+async function renderWorkflows() {
+  document.body.classList.add('view-workflows');
+  applyCampaignLogo(null, false);
+  if (!elements.workflows) return;
+  elements.workflows.hidden = false;
+}
 
 async function renderLibrary() {
   document.body.classList.add('view-library');

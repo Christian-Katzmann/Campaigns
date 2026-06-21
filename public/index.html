@@ -80,6 +80,10 @@
     </div>
 
     <div id="library" class="library" hidden>
+      <nav class="topbar-tabs" aria-label="Views">
+        <a class="button button-quiet" href="?library" aria-pressed="true">Campaigns</a>
+        <a class="button button-quiet" href="?view=workflows" aria-pressed="false">Workflows</a>
+      </nav>
       <header class="library-header">
         <div class="library-header-text">
           <p class="library-eyebrow">All campaigns</p>
@@ -97,6 +101,21 @@
           Already have a plan file? Start the server with <code>--file &lt;path&gt;</code>.
         </p>
       </div>
+    </div>
+
+    <div id="workflows" class="workflows" hidden>
+      <nav class="topbar-tabs" aria-label="Views">
+        <a class="button button-quiet" href="?library" aria-pressed="false">Campaigns</a>
+        <a class="button button-quiet" href="?view=workflows" aria-pressed="true">Workflows</a>
+      </nav>
+      <header class="library-header">
+        <div class="library-header-text">
+          <p class="library-eyebrow">Fragility maps</p>
+          <h1 class="library-title">Workflows</h1>
+        </div>
+      </header>
+      <!-- Step 1.2 fills this from GET /api/workflows; Step 2.1 builds the Repo → Domain → Workflow tree. -->
+      <div id="workflows-content" class="workflows-content"></div>
     </div>
 
     <div id="phase-banner" class="phase-banner" role="status" aria-live="polite"></div>
