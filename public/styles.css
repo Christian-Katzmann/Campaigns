@@ -1502,6 +1502,74 @@ body.view-workflows #conflict-modal {
   display: none;
 }
 
+/* Minimal discovery list (Step 1.2). Step 2.1 replaces it with the tree. */
+.workflows-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.workflows-list-item {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.workflows-list-title {
+  font-weight: 620;
+  color: var(--ink);
+}
+
+.workflows-list-meta {
+  color: var(--ink-soft);
+  font-size: 13px;
+}
+
+.workflows-score {
+  display: inline-flex;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.workflows-score-chip {
+  min-width: 22px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+.workflows-score-green {
+  background: #dcfce7;
+  border-color: #16a34a;
+  color: #14532d;
+}
+
+.workflows-score-amber {
+  background: #fef9c3;
+  border-color: #ca8a04;
+  color: #713f12;
+}
+
+.workflows-score-red {
+  background: #fee2e2;
+  border-color: #dc2626;
+  color: #7f1d1d;
+}
+
+.workflows-score-neutral {
+  background: #f1f5f9;
+  border-color: #94a3b8;
+  color: #334155;
+}
+
 .library-header {
   margin-bottom: 36px;
 }

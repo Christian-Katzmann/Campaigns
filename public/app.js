@@ -1998,6 +1998,59 @@ async function renderWorkflows() {
   applyCampaignLogo(null, false);
   if (!elements.workflows) return;
   elements.workflows.hidden = false;
+  if (!elements.workflowsContent) return;
+
+  let workflows = [];
+  try {
+    const response = await fetch('/api/workflows');
+    if (!response.ok) throw new Error('Could not load workflow maps.');
+    const payload = await response.json();
+    workflows = Array.isArray(payload.workflows) ? payload.workflows : [];
+  } catch (error) {
+    elements.workflowsContent.replaceChildren(
+      element('p', { className: 'library-empty-body', text: error.message }),
+    );
+    return;
+  }
+
+  if (workflows.length === 0) {
+    elements.workflowsContent.replaceChildren(
+      element('p', {
+        className: 'library-empty-body',
+        text: 'No workflow maps found. Run /workflow-map in a repo to add one.',
+      }),
+    );
+    return;
+  }
+
+  // Minimal flat list — purely to verify discovery end-to-end. Step 2.1 replaces
+  // this with the Repo → Domain → Workflow tree.
+  const list = element('ul', { className: 'workflows-list' });
+  for (const wf of workflows) {
+    const item = element('li', { className: 'workflows-list-item' });
+    item.append(element('span', { className: 'workflows-list-title', text: wf.title }));
+    item.append(element('span', {
+      className: 'workflows-list-meta',
+      text: `${wf.repoName} · ${wf.domain}`,
+    }));
+    item.append(buildWorkflowScore(wf.score));
+    list.append(item);
+  }
+  elements.workflowsContent.replaceChildren(list);
+}
+
+// Colour-count chips straight from the map's sidecar score — render what each map
+// earned, never compute a colour here.
+function buildWorkflowScore(score) {
+  const safe = score && typeof score === 'object' ? score : {};
+  const wrap = element('span', { className: 'workflows-score' });
+  for (const colour of ['green', 'amber', 'red', 'neutral']) {
+    wrap.append(element('span', {
+      className: `workflows-score-chip workflows-score-${colour}`,
+      text: String(Number(safe[colour]) || 0),
+    }));
+  }
+  return wrap;
 }
 
 async function renderLibrary() {
