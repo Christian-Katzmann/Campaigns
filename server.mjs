@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream } from 'node:fs';
-import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { homedir } from 'node:os';
 import path from 'node:path';
@@ -124,6 +124,7 @@ const mimeTypes = new Map([
   ['.html', 'text/html; charset=utf-8'],
   ['.css', 'text/css; charset=utf-8'],
   ['.js', 'text/javascript; charset=utf-8'],
+  ['.mjs', 'text/javascript; charset=utf-8'],
   ['.json', 'application/json; charset=utf-8'],
   ['.svg', 'image/svg+xml'],
   ['.webp', 'image/webp'],
@@ -150,6 +151,11 @@ const server = createServer(async (request, response) => {
 
     if (url.pathname === '/api/registry' && request.method === 'POST') {
       await registerEndpoint(request, response);
+      return;
+    }
+
+    if (url.pathname === '/api/workflows' && request.method === 'GET') {
+      await sendWorkflows(response);
       return;
     }
 
@@ -752,6 +758,172 @@ async function sendCampaignIcon(url, response) {
   } catch {
     sendJson(response, 404, { error: 'Logo file is no longer present.' });
   }
+}
+
+/* ------------------------------ API: workflows ------------------------------ */
+
+// Workflow maps are discovered ON DEMAND and never written into the campaign
+// registry — campaign enrichment (progress, stacks, parking) must never be able
+// to touch a workflow record. We derive the repo roots to scan from the repos
+// that already host a registered campaign, find each repo's
+// docs/workflows/<domain>/<slug>.md maps, and read the embedded JSON sidecar.
+async function sendWorkflows(response) {
+  const workflows = await discoverWorkflows();
+  sendJson(response, 200, { workflows });
+}
+
+async function discoverWorkflows() {
+  const registry = await readRegistry();
+
+  // Derive distinct repo roots from registered campaign file paths. Several
+  // campaigns can live in one repo, so dedupe by the resolved repo root.
+  const repoRoots = new Map(); // repoRoot -> repoName
+  for (const entry of registry.campaigns) {
+    if (typeof entry.filePath !== 'string') continue;
+    const repoRoot = await findRepoRoot(path.dirname(entry.filePath));
+    if (repoRoot && !repoRoots.has(repoRoot)) {
+      repoRoots.set(repoRoot, path.basename(repoRoot));
+    }
+  }
+
+  const workflows = [];
+  for (const [repoRoot, repoName] of repoRoots) {
+    for (const map of await findWorkflowMaps(repoRoot)) {
+      let markdown;
+      try {
+        markdown = await readFile(map.filePath, 'utf8');
+      } catch (error) {
+        console.warn(`workflows: skipping ${map.filePath} — could not read (${error.message})`);
+        continue;
+      }
+      const sidecar = parseWorkflowSidecar(markdown);
+      if (!sidecar) {
+        // One malformed/absent sidecar must never crash discovery — skip it loudly.
+        console.warn(`workflows: skipping ${map.filePath} — no parseable JSON sidecar with nodes[]`);
+        continue;
+      }
+      workflows.push({
+        repoRoot,
+        repoName,
+        domain: map.domain,
+        slug: map.slug,
+        title: extractWorkflowTitle(markdown) ?? map.slug,
+        filePath: map.filePath,
+        score: deriveWorkflowScore(sidecar),
+        markdown, // carried inline so the Step 3.1 leaf renders without a second fetch
+      });
+    }
+  }
+
+  // Stable order — repo, then domain, then slug — so the tree renders the same every load.
+  workflows.sort((a, b) =>
+    a.repoName.localeCompare(b.repoName) ||
+    a.domain.localeCompare(b.domain) ||
+    a.slug.localeCompare(b.slug));
+  return workflows;
+}
+
+// Walk up from a starting directory to the nearest ancestor containing `.git`
+// (a directory for a normal clone, a file for a worktree — stat() accepts both).
+async function findRepoRoot(startDir) {
+  let dir = path.resolve(startDir);
+  for (;;) {
+    try {
+      await stat(path.join(dir, '.git'));
+      return dir;
+    } catch {
+      /* not a repo root — keep walking up */
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir) return null; // reached the filesystem root
+    dir = parent;
+  }
+}
+
+// List docs/workflows/<domain>/<slug>.md maps under a repo root.
+async function findWorkflowMaps(repoRoot) {
+  const base = path.join(repoRoot, 'docs', 'workflows');
+  let domainEntries;
+  try {
+    domainEntries = await readdir(base, { withFileTypes: true });
+  } catch (error) {
+    if (error.code !== 'ENOENT') {
+      console.warn(`workflows: cannot read ${base} — ${error.message}`);
+    }
+    return []; // most repos have no maps — that's normal, not an error
+  }
+
+  const maps = [];
+  for (const domainEntry of domainEntries) {
+    if (!domainEntry.isDirectory()) continue;
+    const domain = domainEntry.name;
+    const domainDir = path.join(base, domain);
+    let fileEntries;
+    try {
+      fileEntries = await readdir(domainDir, { withFileTypes: true });
+    } catch (error) {
+      console.warn(`workflows: cannot read ${domainDir} — ${error.message}`);
+      continue;
+    }
+    for (const fileEntry of fileEntries) {
+      if (!fileEntry.isFile() || !fileEntry.name.endsWith('.md')) continue;
+      maps.push({
+        domain,
+        slug: fileEntry.name.slice(0, -'.md'.length),
+        filePath: path.join(domainDir, fileEntry.name),
+      });
+    }
+  }
+  return maps;
+}
+
+// Pull the embedded ```json sidecar out of a map. A map can in principle hold
+// more than one ```json fence, so take the first that parses to an object with a
+// nodes[] array. Returns null if none qualifies — caller skips the map.
+function parseWorkflowSidecar(markdown) {
+  const fence = /```json\s+([\s\S]*?)```/g;
+  let match;
+  while ((match = fence.exec(markdown)) !== null) {
+    try {
+      const data = JSON.parse(match[1]);
+      if (data && typeof data === 'object' && Array.isArray(data.nodes)) {
+        return data;
+      }
+    } catch {
+      /* not this fence — try the next one */
+    }
+  }
+  return null;
+}
+
+// The viewer renders what each map EARNED — never a computed colour. So prefer
+// the sidecar's own score; only if it's missing/unusable do we tally the node
+// colours (still the map's declared colours, not an inference).
+function deriveWorkflowScore(sidecar) {
+  const tally = { green: 0, amber: 0, red: 0, neutral: 0 };
+  const declared = sidecar.score;
+  if (declared && typeof declared === 'object') {
+    let any = false;
+    for (const colour of Object.keys(tally)) {
+      const value = Number(declared[colour]);
+      if (Number.isFinite(value) && value >= 0) {
+        tally[colour] = value;
+        any = true;
+      }
+    }
+    if (any) return tally;
+  }
+  for (const node of sidecar.nodes) {
+    if (node && tally[node.color] !== undefined) tally[node.color] += 1;
+  }
+  return tally;
+}
+
+function extractWorkflowTitle(markdown) {
+  const heading = extractTitle(markdown);
+  if (!heading) return null;
+  // Map H1s are "Workflow Map — <Human Title>"; strip the prefix for a clean label.
+  return heading.replace(/^Workflow Map\s*[—–-]\s*/i, '').trim() || heading;
 }
 
 /* ------------------------------ API: lessons -------------------------------- */

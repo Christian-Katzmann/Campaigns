@@ -12,3 +12,8 @@ assets/icons/campaigns/
 # Local dogfood campaigns and implementation plans belong to each user's workspace.
 campaigns/
 plans/
+
+# Real-data screenshots staged for the Claude Design hand-off — keep them out of the
+# public repo (they show real project names and local paths). The committed README
+# screenshots are the sanitized 01-/02-/03- demo renders.
+design/screenshots/image-*.webp
