@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream } from 'node:fs';
-import { mkdir, readdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, realpath, rename, stat, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { homedir } from 'node:os';
 import path from 'node:path';
@@ -778,17 +778,24 @@ async function discoverWorkflows() {
 
   // Derive distinct repo roots from registered campaign file paths. Several
   // campaigns can live in one repo, so dedupe by the resolved repo root.
-  const repoRoots = new Map(); // repoRoot -> repoName
+  const repoRoots = new Map(); // canonical key -> { root, name }
   for (const entry of registry.campaigns) {
     if (typeof entry.filePath !== 'string') continue;
     const repoRoot = await findRepoRoot(path.dirname(entry.filePath));
-    if (repoRoot && !repoRoots.has(repoRoot)) {
-      repoRoots.set(repoRoot, path.basename(repoRoot));
+    if (repoRoot) {
+      const canonicalRoot = await canonicalPath(repoRoot);
+      const key = canonicalRoot.normalize('NFC');
+      if (!repoRoots.has(key)) {
+        repoRoots.set(key, {
+          root: canonicalRoot,
+          name: path.basename(canonicalRoot).normalize('NFC'),
+        });
+      }
     }
   }
 
   const workflows = [];
-  for (const [repoRoot, repoName] of repoRoots) {
+  for (const { root: repoRoot, name: repoName } of repoRoots.values()) {
     for (const map of await findWorkflowMaps(repoRoot)) {
       let markdown;
       try {
@@ -828,6 +835,15 @@ async function discoverWorkflows() {
     a.categories.join('/').localeCompare(b.categories.join('/')) ||
     a.slug.localeCompare(b.slug));
   return workflows;
+}
+
+async function canonicalPath(value) {
+  const absolute = path.resolve(value);
+  try {
+    return await realpath(absolute);
+  } catch {
+    return absolute;
+  }
 }
 
 // Walk up from a starting directory to the nearest ancestor containing `.git`
@@ -914,7 +930,7 @@ function parseWorkflowRecord(markdown) {
 // the sidecar's own score; only if it's missing/unusable do we tally the node
 // colours (still the map's declared colours, not an inference).
 function deriveWorkflowScore(sidecar) {
-  const tally = { green: 0, amber: 0, red: 0, neutral: 0 };
+  const tally = { green: 0, amber: 0, red: 0, accepted: 0, neutral: 0 };
   const declared = sidecar.score;
   if (declared && typeof declared === 'object') {
     let any = false;

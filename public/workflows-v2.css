@@ -1,0 +1,60 @@
+/* ============================================================================
+   Workflows v2 — design-system foundations for the DëvSec handoff recreation.
+   Everything is scoped under #workflows-v2 so it never touches the Campaigns app
+   or the v1 Workflows tab. Theme colours are set as inline CSS vars by the JS;
+   this file only carries fonts, the full-bleed shell, and the prototype's
+   scrollbar + fade keyframe. Fonts match the design's colors_and_type.css.
+   ============================================================================ */
+
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:ital,wght@0,200..800;1,200..800&family=JetBrains+Mono:ital,wght@0,100..800;1,100..800&display=swap');
+
+/* Full-bleed shell. Sits above the app and owns the whole viewport. */
+.workflows-v2 {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  --font-sans: "Plus Jakarta Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Plus Jakarta Sans", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", monospace;
+}
+
+.workflows-v2[hidden] {
+  display: none;
+}
+
+/* When the v2 view is active, take the screen — hide the campaign editor, the
+   landing screens, and the mobile/phase chrome (mirrors body.view-workflows). */
+body.view-workflows-v2 .app-shell,
+body.view-workflows-v2 #library,
+body.view-workflows-v2 #workflows,
+body.view-workflows-v2 #mobile-bottombar,
+body.view-workflows-v2 #phase-banner,
+body.view-workflows-v2 #conflict-modal {
+  display: none;
+}
+
+/* Box model + the design's slim scrollbar + node/tooltip fade — scoped in. */
+.workflows-v2 *,
+.workflows-v2 *::before,
+.workflows-v2 *::after {
+  box-sizing: border-box;
+}
+
+.workflows-v2 ::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+
+.workflows-v2 ::-webkit-scrollbar-thumb {
+  background: var(--rule2, rgba(40, 33, 22, 0.18));
+  border-radius: 9999px;
+}
+
+.workflows-v2 ::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+@keyframes wffade {
+  from { opacity: 0; transform: translateY(3px); }
+  to { opacity: 1; transform: none; }
+}

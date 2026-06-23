@@ -6,6 +6,7 @@
     <title>Campaigns</title>
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="/styles.css" />
+    <link rel="stylesheet" href="/workflows-v2.css" />
   </head>
   <body>
     <div class="app-shell">
@@ -103,20 +104,10 @@
       </div>
     </div>
 
-    <div id="workflows" class="workflows" hidden>
-      <nav class="topbar-tabs" aria-label="Views">
-        <a class="button button-quiet" href="?library" aria-pressed="false">Campaigns</a>
-        <a class="button button-quiet" href="?view=workflows" aria-pressed="true">Workflows</a>
-      </nav>
-      <header class="library-header">
-        <div class="library-header-text">
-          <p class="library-eyebrow">Fragility maps</p>
-          <h1 class="library-title">Workflows</h1>
-        </div>
-      </header>
-      <!-- Repo → Domain → Workflow tree (Step 2.1), built from GET /api/workflows; a leaf opens its map view (Step 3.1 renders the diagram). -->
-      <div id="workflows-content" class="workflows-content"></div>
-    </div>
+    <!-- Workflows: a full-bleed, self-contained DëvSec-style fragility-map browser,
+         wired to GET /api/workflows. Filled imperatively by /workflows-v2.js when
+         ?view=workflows (or the ?view=workflows-v2 alias). -->
+    <div id="workflows-v2" class="workflows-v2" hidden></div>
 
     <div id="phase-banner" class="phase-banner" role="status" aria-live="polite"></div>
 
