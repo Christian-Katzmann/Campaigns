@@ -139,6 +139,7 @@ const LOGO_MIME = new Map([
   ['.gif', 'image/gif'],
   ['.ico', 'image/x-icon'],
 ]);
+const LOGO_EXTENSIONS = [...LOGO_MIME.keys()];
 
 const server = createServer(async (request, response) => {
   try {
@@ -409,10 +410,15 @@ async function ensureRegistered(absolutePath) {
 
   if (existing) {
     existing.lastOpenedAt = now;
+    if (!existing.logoPath) {
+      const inferredLogo = await inferCampaignLogo(absolutePath);
+      if (inferredLogo) existing.logoPath = inferredLogo;
+    }
     await writeRegistry(registry);
     return existing.id;
   }
 
+  const inferredLogo = await inferCampaignLogo(absolutePath);
   const entry = {
     id: randomUUID(),
     filePath: absolutePath,
@@ -420,6 +426,7 @@ async function ensureRegistered(absolutePath) {
     lastOpenedAt: now,
     lastActivityAt: now,
   };
+  if (inferredLogo) entry.logoPath = inferredLogo;
   registry.campaigns.push(entry);
   await writeRegistry(registry);
   return entry.id;
@@ -607,6 +614,61 @@ async function validateLogoPath(input) {
     return null;
   }
   return absolute;
+}
+
+async function inferCampaignLogo(campaignPath) {
+  const startDir = path.dirname(campaignPath);
+  const repoRoot = await findRepoRoot(startDir);
+  const dirs = ancestorDirs(startDir, repoRoot);
+  const repoName = repoRoot ? path.basename(repoRoot) : '';
+  const candidates = [];
+
+  for (const dir of dirs) {
+    const names = [...new Set([path.basename(dir), repoName].filter(Boolean))];
+    for (const ext of LOGO_EXTENSIONS) {
+      candidates.push(path.join(dir, 'assets', `app-icon${ext}`));
+      candidates.push(path.join(dir, 'assets', `logo${ext}`));
+      candidates.push(path.join(dir, 'public', `favicon${ext}`));
+      candidates.push(path.join(dir, 'public', `logo-brand${ext}`));
+      candidates.push(path.join(dir, 'dist', `favicon${ext}`));
+      candidates.push(path.join(dir, 'dist', `logo-brand${ext}`));
+      for (const name of names) {
+        candidates.push(path.join(dir, 'assets', `${name}-icon${ext}`));
+        candidates.push(path.join(dir, 'assets', 'icons', name, `icon_512${ext}`));
+      }
+    }
+  }
+
+  return firstExistingLogo(candidates);
+}
+
+function ancestorDirs(startDir, stopDir) {
+  const dirs = [];
+  let dir = path.resolve(startDir);
+  const stop = stopDir ? path.resolve(stopDir) : null;
+  for (;;) {
+    dirs.push(dir);
+    if (stop && dir === stop) return dirs;
+    const parent = path.dirname(dir);
+    if (parent === dir) return dirs;
+    dir = parent;
+  }
+}
+
+async function firstExistingLogo(candidates) {
+  const seen = new Set();
+  for (const candidate of candidates) {
+    if (seen.has(candidate)) continue;
+    seen.add(candidate);
+    if (!LOGO_MIME.has(path.extname(candidate).toLowerCase())) continue;
+    try {
+      const details = await stat(candidate);
+      if (details.isFile()) return candidate;
+    } catch {
+      /* try the next common logo path */
+    }
+  }
+  return null;
 }
 
 async function resolveCampaign(url) {

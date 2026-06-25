@@ -2011,9 +2011,21 @@ async function renderLibrary() {
 
   let registry;
   try {
-    const response = await fetch('/api/registry');
-    if (!response.ok) throw new Error('Could not load campaign registry.');
-    registry = await response.json();
+    const [registryResponse, automateResponse] = await Promise.all([
+      fetch('/api/registry'),
+      fetch('/api/automate-state').catch(() => null),
+    ]);
+    if (!registryResponse.ok) throw new Error('Could not load campaign registry.');
+    registry = await registryResponse.json();
+    if (automateResponse?.ok) {
+      try {
+        automateState.bulk = await automateResponse.json();
+      } catch {
+        automateState.bulk = {};
+      }
+    } else {
+      automateState.bulk = {};
+    }
   } catch (error) {
     if (elements.libraryEmpty) {
       const errorPara = document.createElement('p');
@@ -2216,6 +2228,20 @@ function campaignActivityMs(campaign) {
 
 function isComplete(campaign) {
   return normalizeProgress(campaign.progress).complete;
+}
+
+function campaignDisplayState(campaign, data = automateState.bulk?.[campaign.id]) {
+  const automation = libraryAutomationCardStatus(data);
+  if (automation) {
+    const kind = automation.status === 'active' || AUTOMATE_SCHEDULED_STATUSES.has(automation.status)
+      ? 'running'
+      : 'needs-attention';
+    return { kind, automation };
+  }
+  if (campaign.missing) return { kind: 'missing', automation: null };
+  if (isComplete(campaign)) return { kind: 'finished', automation: null };
+  if (campaign.parkedAt) return { kind: 'sleeping', automation: null };
+  return { kind: 'idle', automation: null };
 }
 
 function normalizeProgress(progress) {
@@ -2649,6 +2675,8 @@ function buildLibraryCard(campaign, options = {}) {
   const complete = isComplete(campaign);
   const progressStats = normalizeProgress(campaign.progress);
   const parked = Boolean(campaign.parkedAt) && !complete;
+  const displayState = campaignDisplayState(campaign);
+  const showLogo = campaign.hasLogo || shouldShowFallbackLogo(campaign, displayState);
   const modifiers = [
     complete ? 'complete' : '',
     parked ? 'parked' : '',
@@ -2658,8 +2686,8 @@ function buildLibraryCard(campaign, options = {}) {
     .join(' ');
 
   const card = element('article', {
-    className: `library-card${modifiers ? ` ${modifiers}` : ''}${campaign.hasLogo ? ' has-logo' : ''}`,
-    dataset: { campaignId: campaign.id },
+    className: `library-card${modifiers ? ` ${modifiers}` : ''}${showLogo ? ' has-logo' : ''}`,
+    dataset: { campaignId: campaign.id, displayState: displayState.kind },
   });
   bindLibraryDragSource(card, campaign);
   bindLibraryDropTarget(card, { targetId: campaign.id });
@@ -2690,6 +2718,9 @@ function buildLibraryCard(campaign, options = {}) {
     link.append(progress);
   }
 
+  const status = buildLibraryCardStatus(displayState.automation, campaign.id, campaign.title);
+  if (status) link.append(status);
+
   const time = campaign.missing
     ? 'File missing'
     : `Active ${relativeTime(campaign.lastActivityAt || campaign.lastOpenedAt)}`;
@@ -2697,31 +2728,42 @@ function buildLibraryCard(campaign, options = {}) {
 
   card.append(link);
 
+  const chrome = element('div', { className: 'library-card-chrome' });
+
   if (campaign.hasLogo) {
     const logo = element('img', { className: 'library-card-logo', alt: '' });
     logo.src = `/api/registry/icon?id=${encodeURIComponent(campaign.id)}`;
     logo.loading = 'lazy';
     logo.decoding = 'async';
     logo.addEventListener('error', () => {
+      if (shouldShowFallbackLogo(campaign, displayState)) {
+        logo.replaceWith(buildFallbackLogo(campaign));
+        return;
+      }
       logo.remove();
       card.classList.remove('has-logo');
     }, { once: true });
-    card.append(logo);
+    chrome.append(logo);
+  } else if (showLogo) {
+    chrome.append(buildFallbackLogo(campaign));
   }
 
   if (!complete && !campaign.missing) {
-    card.append(buildParkButton(campaign, parked));
+    chrome.append(buildParkButton(campaign, parked));
   } else if (campaign.missing) {
-    card.append(buildDeleteMissingButton(campaign));
+    chrome.append(buildDeleteMissingButton(campaign));
+  }
+
+  if (!campaign.missing) {
+    chrome.append(buildDeleteButton(campaign));
+  }
+
+  if (chrome.childNodes.length > 0) {
+    card.append(chrome);
   }
 
   if (campaign.filePath) {
     card.append(buildCampaignCopyButton(campaign));
-  }
-
-  // Delete button — always available alongside park. Moves the .md to Trash.
-  if (!campaign.missing) {
-    card.append(buildDeleteButton(campaign));
   }
 
   if (options.collectionMember && campaignCollectionId(campaign) && !campaign.missing) {
@@ -2729,6 +2771,54 @@ function buildLibraryCard(campaign, options = {}) {
   }
 
   return card;
+}
+
+function buildLibraryCardStatus(summary, id, title) {
+  if (!summary) return null;
+  const node = buildLibraryAutomationStatus(summary);
+  if (summary.status === 'active') {
+    node.append(
+      awayEntryButton(
+        '',
+        () => openAwayMode({ mode: 'campaign', ids: [id], title: title || awayHumanizeId(id) }),
+        'library-card-away-button',
+      ),
+    );
+  }
+  return node;
+}
+
+function buildFallbackLogo(campaign) {
+  return element('span', {
+    className: 'library-card-logo library-card-logo-fallback',
+    text: fallbackLogoText(campaign),
+    ariaHidden: 'true',
+  });
+}
+
+function shouldShowFallbackLogo(campaign, displayState = campaignDisplayState(campaign)) {
+  if (campaign.hasLogo || campaign.missing || isComplete(campaign) || campaign.parkedAt) return false;
+  if (displayState.kind === 'running' || displayState.kind === 'needs-attention') return true;
+  return normalizeProgress(campaign.progress).total > 0;
+}
+
+function fallbackLogoText(campaign) {
+  const title = String(campaign.title || pathProjectName(campaign.filePath) || 'Campaign');
+  const normalized = title.normalize('NFKD').replace(/\p{M}/gu, '');
+  const words = normalized
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+  const letters = words.slice(0, 2).map((word) => word[0]).join('');
+  return (letters || normalized.slice(0, 2) || 'C').toUpperCase();
+}
+
+function pathProjectName(filePath) {
+  const parts = String(filePath || '').split('/').filter(Boolean);
+  const campaignsIndex = parts.lastIndexOf('campaigns');
+  if (campaignsIndex > 0) return parts[campaignsIndex - 1];
+  return parts.length > 1 ? parts[parts.length - 2] : '';
 }
 
 function buildCampaignCopyButton(campaign) {
@@ -5516,24 +5606,40 @@ function updateLibraryDots() {
     const entry = automateState.bulk[id];
 
     const cardStatus = libraryAutomationCardStatus(entry);
-    if (!cardStatus) continue;
+    const title = card.querySelector('.library-card-title')?.textContent?.trim() || awayHumanizeId(id);
+    if (!cardStatus) {
+      card.dataset.displayState = card.classList.contains('parked')
+        ? 'sleeping'
+        : card.classList.contains('missing')
+          ? 'missing'
+          : 'idle';
+      continue;
+    }
 
-    const status = buildLibraryAutomationStatus(cardStatus);
+    const status = buildLibraryCardStatus(cardStatus, id, title);
+    card.dataset.displayState = cardStatus.status === 'active'
+      ? 'running'
+      : AUTOMATE_SCHEDULED_STATUSES.has(cardStatus.status)
+        ? 'running'
+        : 'needs-attention';
+    ensureLibraryCardFallbackLogo(card, title);
     const time = link.querySelector('.library-card-time');
     if (time) {
       link.insertBefore(status, time);
     } else {
       link.append(status);
     }
-
-    // Away affordance only while this campaign is actively running.
-    if (cardStatus.status === 'active') {
-      const title = card.querySelector('.library-card-title')?.textContent?.trim() || awayHumanizeId(id);
-      card.append(awayEntryButton('', () => openAwayMode({ mode: 'campaign', ids: [id], title }), 'library-card-away-button'));
-    }
   }
 
   updateAwayAllButton();
+}
+
+function ensureLibraryCardFallbackLogo(card, title) {
+  if (card.classList.contains('has-logo') || card.querySelector('.library-card-logo')) return;
+  const chrome = card.querySelector('.library-card-chrome');
+  if (!chrome) return;
+  chrome.prepend(buildFallbackLogo({ title }));
+  card.classList.add('has-logo');
 }
 
 function updateLibraryCollectionIndicator(node) {
