@@ -96,6 +96,27 @@ const STOPPED_AUTOMATE_STATUSES = new Set(['stalled', 'blocked', 'failed', 'halt
 const MOVING_AUTOMATE_STATUSES = new Set(['active', 'running']);
 const EXPECTED_AUTOMATE_STATUSES = new Set(['active', 'running', 'queued', 'scheduled']);
 
+const mimeTypes = new Map([
+  ['.html', 'text/html; charset=utf-8'],
+  ['.css', 'text/css; charset=utf-8'],
+  ['.js', 'text/javascript; charset=utf-8'],
+  ['.mjs', 'text/javascript; charset=utf-8'],
+  ['.json', 'application/json; charset=utf-8'],
+  ['.svg', 'image/svg+xml'],
+  ['.webp', 'image/webp'],
+]);
+
+const LOGO_MIME = new Map([
+  ['.png', 'image/png'],
+  ['.jpg', 'image/jpeg'],
+  ['.jpeg', 'image/jpeg'],
+  ['.svg', 'image/svg+xml'],
+  ['.webp', 'image/webp'],
+  ['.gif', 'image/gif'],
+  ['.ico', 'image/x-icon'],
+]);
+const LOGO_EXTENSIONS = [...LOGO_MIME.keys()];
+
 const args = process.argv.slice(2);
 const options = parseArgs(args);
 const fileArg = options.file ?? process.env.CAMPAIGN_FILE;
@@ -119,27 +140,6 @@ if (fileArg) {
   }
   defaultCampaignId = await ensureRegistered(absolute);
 }
-
-const mimeTypes = new Map([
-  ['.html', 'text/html; charset=utf-8'],
-  ['.css', 'text/css; charset=utf-8'],
-  ['.js', 'text/javascript; charset=utf-8'],
-  ['.mjs', 'text/javascript; charset=utf-8'],
-  ['.json', 'application/json; charset=utf-8'],
-  ['.svg', 'image/svg+xml'],
-  ['.webp', 'image/webp'],
-]);
-
-const LOGO_MIME = new Map([
-  ['.png', 'image/png'],
-  ['.jpg', 'image/jpeg'],
-  ['.jpeg', 'image/jpeg'],
-  ['.svg', 'image/svg+xml'],
-  ['.webp', 'image/webp'],
-  ['.gif', 'image/gif'],
-  ['.ico', 'image/x-icon'],
-]);
-const LOGO_EXTENSIONS = [...LOGO_MIME.keys()];
 
 const server = createServer(async (request, response) => {
   try {
