@@ -1859,10 +1859,10 @@ function nextStopWatcherRecord(previous, snapshot, now, alerts) {
   const stopAlert = alerts.find((alert) => alert.type === 'stop');
   let notifiedEventKey = stopAlert?.eventKey ?? previous?.notifiedEventKey ?? null;
 
-  if (!alert && fingerprintChanged && expectedActive) {
+  if (!stopAlert && fingerprintChanged && expectedActive) {
     notifiedEventKey = null;
   }
-  if (!alert && !expectedActive && !FINISHED_AUTOMATE_STATUSES.has(snapshot.status) && !STOPPED_AUTOMATE_STATUSES.has(snapshot.status)) {
+  if (!stopAlert && !expectedActive && !FINISHED_AUTOMATE_STATUSES.has(snapshot.status) && !STOPPED_AUTOMATE_STATUSES.has(snapshot.status)) {
     notifiedEventKey = null;
   }
 
