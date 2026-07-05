@@ -266,8 +266,22 @@ const server = createServer(async (request, response) => {
     await sendStatic(url.pathname, response, request.method === 'HEAD');
   } catch (error) {
     console.error(error);
+    if (error?.statusCode) {
+      sendJson(response, error.statusCode, { error: error.message });
+      return;
+    }
     sendJson(response, 500, { error: 'Something went wrong in the Campaigns server.' });
   }
+});
+
+server.on('error', (error) => {
+  if (error.code === 'EADDRINUSE') {
+    console.error(`Port ${port} is already in use — another Campaigns server may be running.`);
+    console.error(`Stop it first, or start this one on a different port: node server.mjs --port <number>`);
+  } else {
+    console.error(error);
+  }
+  process.exit(1);
 });
 
 server.listen(port, host, () => {
@@ -369,7 +383,15 @@ async function readRegistry() {
 
 async function writeRegistry(registry) {
   await mkdir(registryDir, { recursive: true });
-  await writeFile(registryPath, `${JSON.stringify(registry, null, 2)}\n`, 'utf8');
+  await writeFileAtomic(registryPath, `${JSON.stringify(registry, null, 2)}\n`);
+}
+
+// Write via temp file + rename so a crash mid-write can never leave a
+// truncated registry or campaign file behind.
+async function writeFileAtomic(filePath, contents) {
+  const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  await writeFile(tempPath, contents, 'utf8');
+  await rename(tempPath, filePath);
 }
 
 function normalizeRegistryCollections(registry) {
@@ -1184,10 +1206,18 @@ async function saveDocument(url, request, response) {
   }
 
   if (typeof payload.baseHash === 'string') {
-    const currentMarkdown = await readFile(campaign.filePath, 'utf8');
-    const currentHash = hashMarkdown(currentMarkdown);
+    let currentMarkdown = null;
+    try {
+      currentMarkdown = await readFile(campaign.filePath, 'utf8');
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error;
+      // File vanished from disk; the browser copy is the only surviving
+      // version, so skip the conflict check and let the write recreate it.
+    }
 
-    if (currentHash !== payload.baseHash) {
+    const currentHash = currentMarkdown === null ? null : hashMarkdown(currentMarkdown);
+
+    if (currentHash !== null && currentHash !== payload.baseHash) {
       sendJson(response, 409, {
         error:
           'The markdown file changed on disk after this page loaded. Reload before saving so no work is overwritten.',
@@ -1197,7 +1227,7 @@ async function saveDocument(url, request, response) {
     }
   }
 
-  await writeFile(campaign.filePath, payload.markdown, 'utf8');
+  await writeFileAtomic(campaign.filePath, payload.markdown);
   const details = await stat(campaign.filePath);
   await touchActivity(campaign.id);
 
@@ -2068,7 +2098,13 @@ async function sendAutomateState(url, response) {
   const states = {};
   await Promise.all(
     registry.campaigns.map(async (entry) => {
-      states[entry.id] = await getAutomateState(entry.filePath, { summary: true });
+      // One unreadable automation state must not take down the whole
+      // bulk endpoint — every library dot would vanish with it.
+      try {
+        states[entry.id] = await getAutomateState(entry.filePath, { summary: true });
+      } catch {
+        states[entry.id] = null;
+      }
     }),
   );
   sendJson(response, 200, states);
@@ -2085,9 +2121,11 @@ async function sendCompanionState(response) {
   const registry = await readRegistry();
   const now = Date.now();
 
-  const campaigns = await Promise.all(
-    registry.campaigns.map((entry) => buildCompanionCampaign(entry, now)),
-  );
+  const campaigns = (
+    await Promise.all(
+      registry.campaigns.map((entry) => buildCompanionCampaign(entry, now).catch(() => null)),
+    )
+  ).filter(Boolean);
 
   sendJson(response, 200, {
     generatedAt: new Date(now).toISOString(),
@@ -2366,14 +2404,24 @@ async function readJsonBody(request) {
     byteLength += chunk.length;
 
     if (byteLength > 2_000_000) {
-      throw new Error('Request body is too large.');
+      throw httpError(413, 'Request body is too large.');
     }
 
     chunks.push(chunk);
   }
 
   const rawBody = Buffer.concat(chunks).toString('utf8');
-  return rawBody ? JSON.parse(rawBody) : {};
+  try {
+    return rawBody ? JSON.parse(rawBody) : {};
+  } catch {
+    throw httpError(400, 'Request body is not valid JSON.');
+  }
+}
+
+function httpError(statusCode, message) {
+  const error = new Error(message);
+  error.statusCode = statusCode;
+  return error;
 }
 
 async function sendStatic(urlPath, response, headOnly) {
@@ -2393,6 +2441,9 @@ async function sendStatic(urlPath, response, headOnly) {
     response.writeHead(200, {
       'content-length': details.size,
       'content-type': mimeTypes.get(extension) ?? 'application/octet-stream',
+      // Always revalidate so UI updates land on the next reload instead of
+      // being pinned by the browser's heuristic cache.
+      'cache-control': 'no-cache',
     });
 
     if (headOnly) {
@@ -2400,7 +2451,9 @@ async function sendStatic(urlPath, response, headOnly) {
       return;
     }
 
-    createReadStream(staticPath).pipe(response);
+    const stream = createReadStream(staticPath);
+    stream.on('error', () => response.destroy());
+    stream.pipe(response);
   } catch {
     sendJson(response, 404, { error: 'Not found' });
   }
