@@ -27,6 +27,7 @@ import {
   normalizeTheme,
   sanitizePrefs,
 } from './lib/prefs.mjs';
+import { elements, state } from './modules/state.mjs';
 
 const PREFS_KEY = 'campaigns-prefs:v1';
 const LEGACY_PREFS_KEY = 'campaign-guide-prefs:v1';
@@ -42,69 +43,6 @@ const PLACEHOLDER_REGEX = /<([A-Z][A-Z0-9_]+)>/g;
 const RESERVED_TOKENS = new Set(['STEP', 'PHASE']);
 const NTFY_TOPIC_REGEX = /^[A-Za-z0-9_-]{3,64}$/;
 
-const state = {
-  activeStepId: null,
-  baseHash: '',
-  dirty: false,
-  editingCodeKey: null,
-  editingValue: '',
-  expandedCodeKeys: new Set(),
-  filePath: '',
-  lastModified: '',
-  lastPhaseSnapshot: null,
-  lastSaveError: '',
-  markdown: '',
-  phaseBannerTimer: null,
-  prefs: defaultPrefs(),
-  resumeCardTimer: null,
-  reviewTemplates: { step: null, phase: null },
-  saveStatus: 'idle',
-  serverBacked: true,
-  stepCheckMap: new Map(),
-  stepSections: [],
-  libraryParkedExpanded: false,
-  libraryCompleteExpanded: false,
-  libraryExpandedCollections: loadLibraryExpandedCollections(),
-  libraryDragCampaignId: '',
-  libraryCampaigns: [],
-  libraryFilter: '',
-  id: '',
-  homeDir: '',
-};
-
-const elements = {
-  conflictModal: document.querySelector('#conflict-modal'),
-  document: document.querySelector('#document'),
-  documentPath: document.querySelector('#document-path'),
-  documentTitle: document.querySelector('#document-title'),
-  companionButton: document.querySelector('#companion-button'),
-  exportButton: document.querySelector('#export-button'),
-  fileInput: document.querySelector('#file-input'),
-  focusButton: document.querySelector('#focus-button'),
-  homeButton: document.querySelector('#home-button'),
-  mobileBottombar: document.querySelector('#mobile-bottombar'),
-  openFileButton: document.querySelector('#open-file-button'),
-  overviewActiveIndicator: document.querySelector('#overview-active-indicator'),
-  phaseBanner: document.querySelector('#phase-banner'),
-  progressFill: document.querySelector('#progress-fill'),
-  progressLabel: document.querySelector('#progress-label'),
-  resumeButton: document.querySelector('#resume-button'),
-  resumeCard: document.querySelector('#resume-card'),
-  resumePreview: document.querySelector('#resume-preview'),
-  saveButton: document.querySelector('#save-button'),
-  saveStatus: document.querySelector('#save-status'),
-  saveStatusInline: document.querySelector('#save-status-inline'),
-  switchButton: document.querySelector('#switch-button'),
-  switchMenu: document.querySelector('#switch-menu'),
-  library: document.querySelector('#library'),
-  libraryLessons: document.querySelector('#library-lessons'),
-  libraryGrid: document.querySelector('#library-grid'),
-  libraryEmpty: document.querySelector('#library-empty'),
-  libraryFilter: document.querySelector('#library-filter'),
-  libraryFilterCount: document.querySelector('#library-filter-count'),
-  toast: document.querySelector('#toast'),
-};
-
 const copyIconTemplate = document.querySelector('#copy-icon-template');
 
 let autoSaveTimer = null;
@@ -113,6 +51,7 @@ initialize();
 
 async function initialize() {
   bindGlobalActions();
+  state.libraryExpandedCollections = loadLibraryExpandedCollections();
 
   const params = new URLSearchParams(window.location.search);
   const view = params.get('view');
