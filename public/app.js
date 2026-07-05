@@ -28,6 +28,17 @@ import {
   sanitizePrefs,
 } from './lib/prefs.mjs';
 import { elements, state } from './modules/state.mjs';
+import {
+  copyIconTemplate,
+  cssEscape,
+  element,
+  fileNameFromPath,
+  formatTime,
+  inlineMarkdown,
+  showToast,
+  splitParagraphs,
+  trapDialogFocus,
+} from './modules/dom.mjs';
 
 const PREFS_KEY = 'campaigns-prefs:v1';
 const LEGACY_PREFS_KEY = 'campaign-guide-prefs:v1';
@@ -42,8 +53,6 @@ const WORKFLOWS_V2_ASSET_VERSION = '2026-06-22-dedupe';
 const PLACEHOLDER_REGEX = /<([A-Z][A-Z0-9_]+)>/g;
 const RESERVED_TOKENS = new Set(['STEP', 'PHASE']);
 const NTFY_TOPIC_REGEX = /^[A-Za-z0-9_-]{3,64}$/;
-
-const copyIconTemplate = document.querySelector('#copy-icon-template');
 
 let autoSaveTimer = null;
 
@@ -3552,129 +3561,6 @@ function injectDocumentPath(blocks) {
   return result;
 }
 
-function inlineMarkdown(text) {
-  const codeSpans = [];
-  let html = escapeHtml(text).replace(/`([^`]+)`/g, (_, code) => {
-    const token = `@@CODE_${codeSpans.length}@@`;
-    codeSpans.push(`<code>${code}</code>`);
-    return token;
-  });
-
-  html = html
-    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-    .replace(/\*([^*]+)\*/g, '<em>$1</em>')
-    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>');
-
-  for (let index = 0; index < codeSpans.length; index += 1) {
-    html = html.replace(`@@CODE_${index}@@`, codeSpans[index]);
-  }
-
-  return html;
-}
-
-function element(tagName, options = {}) {
-  const node = document.createElement(tagName);
-
-  if (options.className) {
-    node.className = options.className;
-  }
-
-  if (options.id) {
-    node.id = options.id;
-  }
-
-  if (options.type) {
-    node.type = options.type;
-  }
-
-  if (options.text !== undefined) {
-    node.textContent = options.text;
-  }
-
-  if (options.html !== undefined) {
-    node.innerHTML = options.html;
-  }
-
-  if (options.href) {
-    node.href = options.href;
-  }
-
-  if (options.download) {
-    node.download = options.download;
-  }
-
-  if (options.title) {
-    node.title = options.title;
-  }
-
-  if (options.ariaLabel) {
-    node.setAttribute('aria-label', options.ariaLabel);
-  }
-
-  if (options.ariaPressed) {
-    node.setAttribute('aria-pressed', options.ariaPressed);
-  }
-
-  if (options.ariaHidden) {
-    node.setAttribute('aria-hidden', options.ariaHidden);
-  }
-
-  if (options.dataset) {
-    for (const [key, value] of Object.entries(options.dataset)) {
-      node.dataset[key] = String(value);
-    }
-  }
-
-  return node;
-}
-
-function splitParagraphs(text) {
-  return text
-    .split(/\n{2,}/)
-    .map((paragraph) => paragraph.replace(/\n/g, ' ').trim())
-    .filter(Boolean);
-}
-
-function escapeHtml(value) {
-  return value
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
-}
-
-function cssEscape(value) {
-  if (window.CSS?.escape) {
-    return window.CSS.escape(value);
-  }
-
-  return value.replace(/"/g, '\\"');
-}
-
-function fileNameFromPath(filePath) {
-  return filePath.split(/[\\/]/).pop();
-}
-
-function formatTime(isoString) {
-  const date = new Date(isoString);
-  const diffMs = Date.now() - date.getTime();
-  if (diffMs < 60_000) return 'just now';
-  if (diffMs < 3_600_000) return `${Math.round(diffMs / 60_000)}m ago`;
-  return new Intl.DateTimeFormat(undefined, {
-    dateStyle: 'medium',
-    timeStyle: 'short',
-  }).format(date);
-}
-
-function showToast(message, duration = 2600) {
-  elements.toast.textContent = message;
-  elements.toast.classList.add('visible');
-  window.clearTimeout(showToast.timeout);
-  showToast.timeout = window.setTimeout(() => {
-    elements.toast.classList.remove('visible');
-  }, duration);
-}
-
 /* ------------------------------ Prefs ----------------------------------------------- */
 
 function migrateStandardCampaignSettings(allPrefs) {
@@ -4080,29 +3966,6 @@ function initSettings() {
   }
 
   syncNotificationSettingsFromServer(syncSettingsControls);
-}
-
-function trapDialogFocus(event, container) {
-  const focusable = Array.from(
-    container.querySelectorAll(
-      'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
-    ),
-  ).filter((node) => node instanceof HTMLElement && node.offsetParent !== null);
-
-  if (focusable.length === 0) return;
-
-  const first = focusable[0];
-  const last = focusable.at(-1);
-  if (event.shiftKey && document.activeElement === first) {
-    event.preventDefault();
-    last.focus();
-    return;
-  }
-
-  if (!event.shiftKey && document.activeElement === last) {
-    event.preventDefault();
-    first.focus();
-  }
 }
 
 function applyTheme(theme) {
