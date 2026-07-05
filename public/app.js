@@ -51,6 +51,8 @@ const state = {
   libraryCompleteExpanded: false,
   libraryExpandedCollections: loadLibraryExpandedCollections(),
   libraryDragCampaignId: '',
+  libraryCampaigns: [],
+  libraryFilter: '',
   id: '',
   homeDir: '',
 };
@@ -83,6 +85,8 @@ const elements = {
   libraryLessons: document.querySelector('#library-lessons'),
   libraryGrid: document.querySelector('#library-grid'),
   libraryEmpty: document.querySelector('#library-empty'),
+  libraryFilter: document.querySelector('#library-filter'),
+  libraryFilterCount: document.querySelector('#library-filter-count'),
   toast: document.querySelector('#toast'),
 };
 
@@ -118,6 +122,7 @@ async function initialize() {
     return;
   }
   if (params.has('library')) {
+    initLibraryFilter();
     await renderLibrary();
     startAutomatePolling();
     return;
@@ -135,6 +140,7 @@ async function initialize() {
   }
 
   if (!id && response.status === 404) {
+    initLibraryFilter();
     await renderLibrary();
     startAutomatePolling();
     return;
@@ -228,6 +234,7 @@ function bindGlobalActions() {
   elements.document.addEventListener('input', handleDocumentInput);
 
   window.addEventListener('keydown', handleGlobalKeydown);
+  window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', syncThemeColorMeta);
 }
 
 function handleGlobalKeydown(event) {
@@ -262,6 +269,18 @@ function handleGlobalKeydown(event) {
 
   // Don't interfere when modifier keys are held.
   if (event.metaKey || event.ctrlKey || event.altKey) return;
+
+  if (
+    event.key === '/' &&
+    document.body.classList.contains('view-library') &&
+    elements.libraryFilter &&
+    !elements.libraryFilter.hidden
+  ) {
+    event.preventDefault();
+    elements.libraryFilter.focus();
+    elements.libraryFilter.select();
+    return;
+  }
 
   if (event.key === 'Escape' && state.prefs.focusMode) {
     event.preventDefault();
@@ -307,7 +326,10 @@ function render() {
     ? firstHeading.text
     : (fileNameFromPath(state.filePath) || 'Campaigns').replace(/\.md$/i, '');
   elements.documentTitle.textContent = title;
-  document.title = firstHeading ? `${firstHeading.text} · Campaigns` : 'Campaigns';
+  // Lead the tab title with progress so a narrow tab still shows where the
+  // campaign stands at a glance.
+  const progressPrefix = stats.total > 0 ? `${stats.done}/${stats.total} · ` : '';
+  document.title = firstHeading ? `${progressPrefix}${firstHeading.text} · Campaigns` : 'Campaigns';
   elements.documentPath.textContent = state.filePath;
   renderProgressLabel(stats);
   elements.progressFill.style.width =
@@ -844,6 +866,7 @@ function renderPhaseGroup(group, stepSections) {
     dataset: { action: 'toggle-phase', phaseId: group.phase.anchorId },
     type: 'button',
   });
+  summary.setAttribute('aria-expanded', String(!isCollapsed));
 
   summary.append(
     element('span', { className: 'phase-chevron', text: '›', ariaHidden: 'true' }),
@@ -1286,15 +1309,24 @@ function updateSaveStatus() {
     const inline = getSaveStatusInline();
     elements.saveStatusInline.textContent = inline.text;
     elements.saveStatusInline.dataset.state = inline.state;
+    elements.saveStatusInline.title =
+      inline.state === 'saved' && state.lastModified ? formatTime(state.lastModified) : '';
   }
 }
+
+// Keep the relative "Saved Xm ago" label honest while the tab sits open.
+setInterval(() => {
+  if (state.saveStatus === 'idle' && !state.dirty && state.lastModified) {
+    updateSaveStatus();
+  }
+}, 30_000);
 
 function getSaveStatusInline() {
   if (!state.serverBacked) return { text: '', state: 'idle' };
   if (state.saveStatus === 'saving') return { text: 'Saving…', state: 'saving' };
   if (state.saveStatus === 'error') return { text: 'Save failed', state: 'error' };
   if (state.dirty) return { text: 'Unsaved', state: 'dirty' };
-  if (state.lastModified) return { text: `Saved ${formatTime(state.lastModified)}`, state: 'saved' };
+  if (state.lastModified) return { text: `Saved ${relativeTime(state.lastModified)}`, state: 'saved' };
   return { text: '', state: 'idle' };
 }
 
@@ -1504,6 +1536,7 @@ function togglePhase(phaseId) {
   if (node) {
     const currentlyCollapsed = node.dataset.collapsed === 'true';
     node.dataset.collapsed = String(!currentlyCollapsed);
+    node.querySelector('.phase-summary')?.setAttribute('aria-expanded', String(currentlyCollapsed));
   }
 }
 
@@ -1825,9 +1858,12 @@ function nextUncheckedStep(currentStepId) {
 }
 
 function jumpToAnchor(id) {
-  if (state.prefs.focusMode && state.stepSections.some((section) => section.anchorId === id)) {
+  if (state.stepSections.some((section) => section.anchorId === id)) {
+    // Set eagerly (not just via the scroll observer) so rapid arrow-key
+    // navigation always steps from the target, not a stale position.
     state.activeStepId = id;
-    applyFocusMode();
+    if (state.prefs.focusMode) applyFocusMode();
+    renderMobileBottombar();
   }
   document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
@@ -2049,8 +2085,73 @@ async function renderLibrary() {
   elements.libraryEmpty.hidden = true;
   elements.libraryGrid.hidden = false;
 
-  const sorted = sortCampaigns(campaigns);
-  elements.libraryGrid.replaceChildren(...buildLibraryItems(sorted));
+  state.libraryCampaigns = sortCampaigns(campaigns);
+  if (elements.libraryFilter) {
+    // The filter only earns header space once the library is big enough
+    // for scanning to be slower than typing.
+    elements.libraryFilter.hidden = state.libraryCampaigns.length < 8;
+  }
+  applyLibraryFilter();
+}
+
+function applyLibraryFilter() {
+  const all = state.libraryCampaigns;
+  const query = state.libraryFilter.trim().toLowerCase();
+  const filtering = query.length > 0;
+  const matches = filtering
+    ? all.filter((campaign) =>
+        `${campaign.title ?? ''} ${pathProjectName(campaign.filePath ?? '')}`
+          .toLowerCase()
+          .includes(query),
+      )
+    : all;
+
+  if (elements.libraryFilterCount) {
+    elements.libraryFilterCount.hidden = !filtering;
+    elements.libraryFilterCount.textContent = `${matches.length} of ${all.length}`;
+  }
+
+  if (filtering && matches.length === 0) {
+    elements.libraryGrid.replaceChildren(
+      element('p', {
+        className: 'library-filter-empty',
+        text: `No campaigns match “${state.libraryFilter.trim()}”.`,
+      }),
+    );
+    return;
+  }
+
+  elements.libraryGrid.replaceChildren(
+    ...buildLibraryItems(matches, { forceExpanded: filtering }),
+  );
+}
+
+function initLibraryFilter() {
+  const input = elements.libraryFilter;
+  if (!input) return;
+
+  input.addEventListener('input', () => {
+    state.libraryFilter = input.value;
+    applyLibraryFilter();
+  });
+
+  input.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') {
+      event.stopPropagation();
+      if (input.value) {
+        input.value = '';
+        state.libraryFilter = '';
+        applyLibraryFilter();
+      } else {
+        input.blur();
+      }
+      return;
+    }
+    if (event.key === 'Enter') {
+      // Enter opens the first (usually only) match.
+      elements.libraryGrid.querySelector('.library-card-link')?.click();
+    }
+  });
 }
 
 async function fetchCampaignLessons() {
@@ -2261,7 +2362,7 @@ function positiveWholeNumber(value) {
   return Math.floor(number);
 }
 
-function buildLibraryItems(campaigns) {
+function buildLibraryItems(campaigns, { forceExpanded = false } = {}) {
   const entries = groupLibraryCampaigns(campaigns);
   const active = [];
   const parked = [];
@@ -2285,7 +2386,7 @@ function buildLibraryItems(campaigns) {
       0,
     );
     children.push(buildParkedCampaignDivider(parkedCampaignCount));
-    if (state.libraryParkedExpanded) {
+    if (state.libraryParkedExpanded || forceExpanded) {
       children.push(...parked.flatMap((entry) => buildLibraryEntry(entry)));
     }
   }
@@ -2296,7 +2397,7 @@ function buildLibraryItems(campaigns) {
       0,
     );
     children.push(buildCompleteCampaignDivider(completeCampaignCount));
-    if (state.libraryCompleteExpanded) {
+    if (state.libraryCompleteExpanded || forceExpanded) {
       children.push(...complete.flatMap((entry) => buildLibraryEntry(entry)));
     }
   }
@@ -5025,6 +5126,16 @@ function applyTheme(theme) {
   if (selectedTheme !== 'default') {
     document.body.classList.add(`theme-${selectedTheme}`);
   }
+  syncThemeColorMeta();
+}
+
+// Keep the browser/PWA chrome color in step with the resolved page background,
+// so the title bar doesn't stay paper-white over a dark theme.
+function syncThemeColorMeta() {
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (!meta) return;
+  const page = getComputedStyle(document.body).getPropertyValue('--page').trim();
+  if (page) meta.setAttribute('content', page);
 }
 
 let audioCtx = null;

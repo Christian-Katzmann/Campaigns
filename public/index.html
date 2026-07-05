@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="theme-color" content="#f6f5f2" />
+    <meta name="theme-color" content="#ffffff" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-title" content="Campaigns" />
     <meta name="apple-mobile-web-app-status-bar-style" content="default" />
@@ -31,8 +31,8 @@
           </div>
           <button id="open-file-button" class="button button-quiet" type="button">Open .md</button>
           <button id="export-button" class="button button-quiet" type="button">Export</button>
-          <button id="focus-button" class="button button-quiet" type="button" aria-pressed="false">Focus</button>
-          <button id="automate-drawer-toggle" class="button button-quiet button-icon" type="button" aria-label="Automation activity" aria-controls="automate-drawer" aria-expanded="false" title="Automation activity" hidden>
+          <button id="focus-button" class="button button-quiet" type="button" aria-pressed="false" title="One step at a time — ←/→ to move, Esc to exit">Focus</button>
+          <button id="automate-drawer-toggle" class="button button-quiet button-icon" type="button" aria-label="Automation activity" aria-controls="automate-drawer" aria-expanded="false" title="Automation activity (⌘/)" hidden>
             <svg class="icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:18px;height:18px;vertical-align:middle;display:inline-block;">
               <polyline points="2 12 6 12 8 5 12 19 14 12 22 12"/>
             </svg>
@@ -51,7 +51,7 @@
             </svg>
           </button>
           <span id="save-status-inline" class="save-status-inline" aria-live="polite"></span>
-          <button id="save-button" class="button button-primary" type="button">Save file</button>
+          <button id="save-button" class="button button-primary" type="button" title="Save (⌘S)">Save file</button>
           <input id="file-input" class="visually-hidden" type="file" accept=".md,.markdown,text/markdown,text/plain" />
         </div>
       </header>
@@ -96,7 +96,20 @@
           <p class="library-eyebrow">All campaigns</p>
           <h1 class="library-title">Campaigns</h1>
         </div>
-        <button id="away-all-button" class="button button-quiet away-all-button" type="button" hidden>Away</button>
+        <div class="library-header-tools">
+          <span id="library-filter-count" class="library-filter-count" hidden></span>
+          <input
+            id="library-filter"
+            class="library-filter"
+            type="search"
+            placeholder="Filter campaigns…"
+            aria-label="Filter campaigns"
+            autocomplete="off"
+            spellcheck="false"
+            hidden
+          />
+          <button id="away-all-button" class="button button-quiet away-all-button" type="button" hidden>Away</button>
+        </div>
       </header>
       <div id="library-grid" class="library-grid"></div>
       <div id="library-empty" class="library-empty" hidden>
