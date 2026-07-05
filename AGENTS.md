@@ -29,6 +29,7 @@ That script starts a temporary server, captures screenshots, writes the social p
 - `server.mjs` owns CLI flags, local file IO, registry endpoints, conflict checks, notifications, and static serving.
 - `public/app.js` owns markdown parsing/rendering, UI state, localStorage preferences, editor interactions, and save behavior.
 - `public/styles.css` owns all product visual language. Keep the UI quiet and dense; this is an execution board, not a marketing site.
+- Colors resolve through semantic CSS variables (`--danger`, `--status-ok`, `--hover-wash`, …) defined in `:root`, the dark media query, and each `body.theme-*` block. Never hardcode a component color or add per-theme component overrides — define or extend a variable instead, in all five scopes.
 - `examples/` holds public-safe markdown campaigns.
 - `design/` holds publication assets and demo data, not runtime product state.
 
