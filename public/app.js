@@ -27,7 +27,17 @@ import {
   normalizeTheme,
   sanitizePrefs,
 } from './lib/prefs.mjs';
-import { elements, state } from './modules/state.mjs';
+import {
+  AUTOMATE_ATTENTION_STATUSES,
+  AUTOMATE_SCHEDULED_STATUSES,
+  automateDisplayStatus,
+  automateState,
+  elements,
+  isAutomateAttention,
+  isAutomateRunning,
+  isAutomateScheduled,
+  state,
+} from './modules/state.mjs';
 import {
   copyIconTemplate,
   cssEscape,
@@ -4372,37 +4382,7 @@ function initDrawerResize(handle, panel) {
 
 /* ------------------------------ Automate state polling ---------------------- */
 
-const automateState = {
-  bulk: {},
-  current: null,
-  libraryTimer: null,
-  campaignTimer: null,
-  elapsedTimer: null,
-};
-
 let automateVisibilityBound = false;
-const AUTOMATE_ATTENTION_STATUSES = new Set(['stalled', 'halted', 'failed', 'blocked']);
-const AUTOMATE_SCHEDULED_STATUSES = new Set(['queued', 'scheduled']);
-
-function automateDisplayStatus(data) {
-  if (!data?.status) return null;
-  if (data.status === 'active' && data.is_active === false) return 'stalled';
-  return data.status;
-}
-
-function isAutomateRunning(data) {
-  return automateDisplayStatus(data) === 'active';
-}
-
-function isAutomateAttention(data) {
-  const status = automateDisplayStatus(data);
-  return AUTOMATE_ATTENTION_STATUSES.has(status);
-}
-
-function isAutomateScheduled(data) {
-  const status = automateDisplayStatus(data);
-  return AUTOMATE_SCHEDULED_STATUSES.has(status);
-}
 
 function automateIndicator(status, extraClass = '') {
   const indicatorType = status === 'active'

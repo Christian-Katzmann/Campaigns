@@ -77,3 +77,40 @@ export const elements = {
   libraryFilterCount: document.querySelector('#library-filter-count'),
   toast: document.querySelector('#toast'),
 };
+
+/* ------------------------------ Automation runtime state --------------------------- */
+// The live automation snapshot the polling loop writes and the library, drawer,
+// and completion effects all read, plus the pure predicates that classify a
+// per-campaign automation payload. Kept here (below every feature module) so
+// none of those readers has to import from another feature module.
+
+export const automateState = {
+  bulk: {},
+  current: null,
+  libraryTimer: null,
+  campaignTimer: null,
+  elapsedTimer: null,
+};
+
+export const AUTOMATE_ATTENTION_STATUSES = new Set(['stalled', 'halted', 'failed', 'blocked']);
+export const AUTOMATE_SCHEDULED_STATUSES = new Set(['queued', 'scheduled']);
+
+export function automateDisplayStatus(data) {
+  if (!data?.status) return null;
+  if (data.status === 'active' && data.is_active === false) return 'stalled';
+  return data.status;
+}
+
+export function isAutomateRunning(data) {
+  return automateDisplayStatus(data) === 'active';
+}
+
+export function isAutomateAttention(data) {
+  const status = automateDisplayStatus(data);
+  return AUTOMATE_ATTENTION_STATUSES.has(status);
+}
+
+export function isAutomateScheduled(data) {
+  const status = automateDisplayStatus(data);
+  return AUTOMATE_SCHEDULED_STATUSES.has(status);
+}
