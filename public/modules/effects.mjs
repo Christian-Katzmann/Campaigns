@@ -18,15 +18,7 @@ import { normalizeTheme } from '../lib/prefs.mjs';
 export const NTFY_TOPIC_REGEX = /^[A-Za-z0-9_-]{3,64}$/;
 
 export function applyTheme(theme) {
-  const themes = [
-    'theme-blueprint',
-    'theme-cyberpunk',
-    'theme-forest',
-    'theme-graphite',
-    'theme-obsidian',
-    'theme-signal',
-    'theme-sunset',
-  ];
+  const themes = ['theme-blueprint', 'theme-graphite', 'theme-signal'];
   themes.forEach(cls => document.body.classList.remove(cls));
   const selectedTheme = normalizeTheme(theme);
   if (selectedTheme !== 'default') {

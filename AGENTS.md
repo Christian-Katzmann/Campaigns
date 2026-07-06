@@ -26,8 +26,8 @@ That script starts a temporary server, captures screenshots, writes the social p
 
 ## Source Map
 
-- `server.mjs` owns CLI flags, local file IO, registry endpoints, conflict checks, notifications, and static serving.
-- `public/app.js` owns markdown parsing/rendering, UI state, localStorage preferences, editor interactions, and save behavior.
+- `server.mjs` owns CLI flags, route dispatch, and the document/registry/automation/companion handlers. It delegates registry read/write/atomic-write to `lib/registry.mjs`, HTTP helpers to `lib/http.mjs`, and notification delivery + stop-watcher helpers to `lib/notifications.mjs`.
+- `public/app.js` is the entry only (state hydration, view routing, global bindings). The board is split across `public/modules/` (render, board, library, switcher, settings, automate-drawer, away, effects, state, dom, prefs-store) and the pure markdown/prefs logic lives in `public/lib/` (parser, prefs) — the same pure modules the Node tests import. See `docs/architecture.md` for the module map and import direction.
 - `public/styles.css` owns all product visual language. Keep the UI quiet and dense; this is an execution board, not a marketing site.
 - Colors resolve through semantic CSS variables (`--danger`, `--status-ok`, `--hover-wash`, …) defined in `:root`, the dark media query, and each `body.theme-*` block. Never hardcode a component color or add per-theme component overrides — define or extend a variable instead, in all five scopes.
 - `examples/` holds public-safe markdown campaigns.

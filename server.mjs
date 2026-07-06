@@ -1381,7 +1381,11 @@ async function sendRemoteNotification(request, response) {
   }
 
   if (result.failures.length > 0) {
-    sendJson(response, 502, { ok: false, failures: result.failures });
+    sendJson(response, 502, {
+      error: result.failures?.[0]?.error || 'Notification delivery failed.',
+      ok: false,
+      failures: result.failures,
+    });
     return;
   }
 
