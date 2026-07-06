@@ -23,6 +23,13 @@ import {
   statSpritesheet,
 } from './lib/companion-pets.mjs';
 import { httpError, readJsonBody, sendJson, sendStatic } from './lib/http.mjs';
+import {
+  normalizeRegistryCollections,
+  pruneMissingCampaigns,
+  readRegistry as readRegistryFrom,
+  writeFileAtomic,
+  writeRegistry as writeRegistryTo,
+} from './lib/registry.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
@@ -358,62 +365,15 @@ async function writeRuntimePort(actualPort) {
 
 /* ------------------------------ Registry ------------------------------------ */
 
+// Thin wrappers binding the registry store (lib/registry.mjs) to this process's
+// configured paths, so the many call sites can stay `readRegistry()` /
+// `writeRegistry(registry)`.
 async function readRegistry() {
-  try {
-    const raw = await readFile(registryPath, 'utf8');
-    const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.campaigns)) {
-      return { campaigns: [] };
-    }
-    return parsed;
-  } catch (error) {
-    if (error.code === 'ENOENT') return { campaigns: [] };
-    throw error;
-  }
+  return readRegistryFrom(registryPath);
 }
 
 async function writeRegistry(registry) {
-  await mkdir(registryDir, { recursive: true });
-  await writeFileAtomic(registryPath, `${JSON.stringify(registry, null, 2)}\n`);
-}
-
-// Write via temp file + rename so a crash mid-write can never leave a
-// truncated registry or campaign file behind.
-async function writeFileAtomic(filePath, contents) {
-  const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
-  await writeFile(tempPath, contents, 'utf8');
-  await rename(tempPath, filePath);
-}
-
-function normalizeRegistryCollections(registry) {
-  let changed = false;
-  const counts = new Map();
-
-  for (const entry of registry.campaigns) {
-    if (typeof entry.collectionId !== 'string' || entry.collectionId.trim() === '') {
-      if ('collectionId' in entry) {
-        delete entry.collectionId;
-        changed = true;
-      }
-      continue;
-    }
-
-    const normalized = entry.collectionId.trim();
-    if (normalized !== entry.collectionId) {
-      entry.collectionId = normalized;
-      changed = true;
-    }
-    counts.set(normalized, (counts.get(normalized) ?? 0) + 1);
-  }
-
-  for (const entry of registry.campaigns) {
-    if (entry.collectionId && (counts.get(entry.collectionId) ?? 0) < 2) {
-      delete entry.collectionId;
-      changed = true;
-    }
-  }
-
-  return changed;
+  return writeRegistryTo(registryDir, registryPath, registry);
 }
 
 async function ensureRegistered(absolutePath) {
@@ -759,18 +719,11 @@ async function sendRegistry(response) {
     }),
   );
 
-  const visible = enriched.filter((entry) => {
-    if (!entry.missing) return true;
-    const since = Date.parse(entry.missingSince ?? '');
-    if (!Number.isFinite(since)) return true;
-    return now - since < MISSING_PRUNE_AFTER_MS;
-  });
-
-  if (visible.length !== enriched.length) {
-    const keepIds = new Set(visible.map((entry) => entry.id));
-    registry.campaigns = registry.campaigns.filter((entry) => keepIds.has(entry.id));
-    registryChanged = true;
-  }
+  // The enriched pass above cleared missingSince on campaigns whose file is
+  // present, so a still-set missingSince marks a currently-missing campaign.
+  registryChanged = pruneMissingCampaigns(registry, now, MISSING_PRUNE_AFTER_MS) || registryChanged;
+  const keepIds = new Set(registry.campaigns.map((entry) => entry.id));
+  const visible = enriched.filter((entry) => keepIds.has(entry.id));
 
   registryChanged = normalizeRegistryCollections(registry) || registryChanged;
 
