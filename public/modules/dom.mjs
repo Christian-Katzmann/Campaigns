@@ -153,3 +153,49 @@ export function trapDialogFocus(event, container) {
     first.focus();
   }
 }
+
+// Set or clear the board's campaign logo + favicon. Lives here (not in the board
+// renderer) because the library view calls it to reset the logo on entry.
+export function applyCampaignLogo(id, hasLogo) {
+  const logoEl = document.querySelector('#campaign-logo');
+  const favicon = document.querySelector('link[rel="icon"]');
+
+  if (hasLogo && id) {
+    const src = `/api/registry/icon?id=${encodeURIComponent(id)}`;
+    if (logoEl) {
+      logoEl.hidden = false;
+      logoEl.src = src;
+      logoEl.addEventListener(
+        'error',
+        () => {
+          logoEl.hidden = true;
+          logoEl.removeAttribute('src');
+        },
+        { once: true },
+      );
+    }
+    if (favicon) favicon.href = src;
+    return;
+  }
+
+  if (logoEl) {
+    logoEl.hidden = true;
+    logoEl.removeAttribute('src');
+  }
+  if (favicon) favicon.href = '/favicon.svg';
+}
+
+// Copy a campaign's file path to the clipboard with a toast either way. Shared by
+// the board's "copy path" control and the library card copy buttons.
+export async function copyCampaignPath(filePath) {
+  if (!filePath) {
+    showToast('No campaign path to copy yet.');
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(filePath);
+    showToast('Path copied.');
+  } catch {
+    showToast('Copy failed. Select the path manually.');
+  }
+}
