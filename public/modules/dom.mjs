@@ -199,3 +199,17 @@ export async function copyCampaignPath(filePath) {
     showToast('Copy failed. Select the path manually.');
   }
 }
+
+// Relative 'time ago' label for a timestamp — 'just now', 'Nm ago', 'Nh ago',
+// 'Nd ago', then an absolute date. Shared by the library card timestamps and the
+// board's save-status readout.
+export function relativeTime(iso) {
+  if (!iso) return 'never';
+  const ms = Date.now() - new Date(iso).getTime();
+  if (Number.isNaN(ms)) return '';
+  if (ms < 60_000) return 'just now';
+  if (ms < 3_600_000) return `${Math.round(ms / 60_000)}m ago`;
+  if (ms < 86_400_000) return `${Math.round(ms / 3_600_000)}h ago`;
+  if (ms < 7 * 86_400_000) return `${Math.round(ms / 86_400_000)}d ago`;
+  return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' }).format(new Date(iso));
+}

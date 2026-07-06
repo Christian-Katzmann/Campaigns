@@ -15,7 +15,7 @@ import {
   elements,
   state,
 } from './state.mjs';
-import { applyCampaignLogo, copyCampaignPath, copyIconTemplate, element, showToast } from './dom.mjs';
+import { applyCampaignLogo, copyCampaignPath, copyIconTemplate, element, relativeTime, showToast } from './dom.mjs';
 import {
   awayActiveIdsIn,
   awayEntryButton,
@@ -1232,17 +1232,6 @@ export function relativeHomePath(filePath, homeDir) {
     return `~${filePath.slice(homeDir.length)}`;
   }
   return filePath;
-}
-
-export function relativeTime(iso) {
-  if (!iso) return 'never';
-  const ms = Date.now() - new Date(iso).getTime();
-  if (Number.isNaN(ms)) return '';
-  if (ms < 60_000) return 'just now';
-  if (ms < 3_600_000) return `${Math.round(ms / 60_000)}m ago`;
-  if (ms < 86_400_000) return `${Math.round(ms / 3_600_000)}h ago`;
-  if (ms < 7 * 86_400_000) return `${Math.round(ms / 86_400_000)}d ago`;
-  return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' }).format(new Date(iso));
 }
 
 export function automateIndicator(status, extraClass = '') {

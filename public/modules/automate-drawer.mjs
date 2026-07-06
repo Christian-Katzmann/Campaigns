@@ -97,6 +97,11 @@ export function closeAutomateDrawer() {
   automateState.elapsedTimer = null;
 }
 
+export function toggleAutomateDrawer() {
+  if (drawerState.open) closeAutomateDrawer();
+  else openAutomateDrawer();
+}
+
 export function syncDrawerToggleVisibility(status) {
   const toggleBtn = document.querySelector('#automate-drawer-toggle');
   if (!toggleBtn) return;
