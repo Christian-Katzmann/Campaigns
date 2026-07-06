@@ -22,6 +22,7 @@ import {
   selectPet,
   statSpritesheet,
 } from './lib/companion-pets.mjs';
+import { httpError, readJsonBody, sendJson, sendStatic } from './lib/http.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
@@ -95,16 +96,6 @@ const FINISHED_AUTOMATE_STATUSES = new Set(['completed', 'complete']);
 const STOPPED_AUTOMATE_STATUSES = new Set(['stalled', 'blocked', 'failed', 'halted', 'abandoned', 'cancelled', 'canceled']);
 const MOVING_AUTOMATE_STATUSES = new Set(['active', 'running']);
 const EXPECTED_AUTOMATE_STATUSES = new Set(['active', 'running', 'queued', 'scheduled']);
-
-const mimeTypes = new Map([
-  ['.html', 'text/html; charset=utf-8'],
-  ['.css', 'text/css; charset=utf-8'],
-  ['.js', 'text/javascript; charset=utf-8'],
-  ['.mjs', 'text/javascript; charset=utf-8'],
-  ['.json', 'application/json; charset=utf-8'],
-  ['.svg', 'image/svg+xml'],
-  ['.webp', 'image/webp'],
-]);
 
 const LOGO_MIME = new Map([
   ['.png', 'image/png'],
@@ -239,7 +230,7 @@ const server = createServer(async (request, response) => {
     // fallback and the native desktop panel point at `/companion`; serve the
     // real file so neither lands on a 404.
     if (url.pathname === '/companion' && (request.method === 'GET' || request.method === 'HEAD')) {
-      await sendStatic('/companion.html', response, request.method === 'HEAD');
+      await sendStatic(publicDir, '/companion.html', response, request.method === 'HEAD');
       return;
     }
 
@@ -263,7 +254,7 @@ const server = createServer(async (request, response) => {
       return;
     }
 
-    await sendStatic(url.pathname, response, request.method === 'HEAD');
+    await sendStatic(publicDir, url.pathname, response, request.method === 'HEAD');
   } catch (error) {
     console.error(error);
     if (error?.statusCode) {
@@ -2395,74 +2386,6 @@ async function handleAutomateAbandon(request, response) {
 }
 
 /* ------------------------------ Plumbing ------------------------------------ */
-
-async function readJsonBody(request) {
-  const chunks = [];
-  let byteLength = 0;
-
-  for await (const chunk of request) {
-    byteLength += chunk.length;
-
-    if (byteLength > 2_000_000) {
-      throw httpError(413, 'Request body is too large.');
-    }
-
-    chunks.push(chunk);
-  }
-
-  const rawBody = Buffer.concat(chunks).toString('utf8');
-  try {
-    return rawBody ? JSON.parse(rawBody) : {};
-  } catch {
-    throw httpError(400, 'Request body is not valid JSON.');
-  }
-}
-
-function httpError(statusCode, message) {
-  const error = new Error(message);
-  error.statusCode = statusCode;
-  return error;
-}
-
-async function sendStatic(urlPath, response, headOnly) {
-  const normalizedPath = urlPath === '/' ? '/index.html' : decodeURIComponent(urlPath);
-  const requestedPath = path.normalize(normalizedPath).replace(/^(\.\.[/\\])+/, '');
-  const staticPath = path.join(publicDir, requestedPath);
-
-  if (!staticPath.startsWith(publicDir)) {
-    sendJson(response, 403, { error: 'Forbidden' });
-    return;
-  }
-
-  try {
-    const details = await stat(staticPath);
-    const extension = path.extname(staticPath);
-
-    response.writeHead(200, {
-      'content-length': details.size,
-      'content-type': mimeTypes.get(extension) ?? 'application/octet-stream',
-      // Always revalidate so UI updates land on the next reload instead of
-      // being pinned by the browser's heuristic cache.
-      'cache-control': 'no-cache',
-    });
-
-    if (headOnly) {
-      response.end();
-      return;
-    }
-
-    const stream = createReadStream(staticPath);
-    stream.on('error', () => response.destroy());
-    stream.pipe(response);
-  } catch {
-    sendJson(response, 404, { error: 'Not found' });
-  }
-}
-
-function sendJson(response, statusCode, body) {
-  response.writeHead(statusCode, { 'content-type': 'application/json; charset=utf-8' });
-  response.end(JSON.stringify(body));
-}
 
 function hashMarkdown(markdown) {
   return createHash('sha256').update(markdown).digest('hex');
