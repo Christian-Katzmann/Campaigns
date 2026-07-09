@@ -77,9 +77,9 @@ test('sample: step sections carry numbers, anchor ids, and metadata', () => {
       ['1.3', 'step-13---publish-the-note-8'],
     ],
   );
-  // Every step declares `Model: GPT-5.5 - High` / `Parallel: NO`.
+  // Every step declares `Model: GPT-5.6-Sol - High` / `Parallel: NO`.
   for (const s of steps) {
-    assert.deepEqual(s.model, { claudeCode: 'GPT-5.5 - High', codex: '' });
+    assert.deepEqual(s.model, { claudeCode: 'GPT-5.6-Sol - High', codex: '' });
     assert.deepEqual(s.parallel, { isParallel: false, siblingSteps: [] });
   }
 });

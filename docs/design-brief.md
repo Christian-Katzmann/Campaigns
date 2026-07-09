@@ -58,7 +58,7 @@ sound/feedback toggles, notification setup) and a right-side **Automation drawer
 - **Phase** — a numbered circle + eyebrow (`PHASE 1`) + title (`Hiring-now demand
   layer`), with an `X / N` count and a completion control. Phases contain steps.
 - **Step** — a heading (`Step 1.1 — …`) followed by **agent pills** (which agent +
-  thinking effort, e.g. `CC Opus 4.8 · Extra High` / `CX GPT-5.5 · Extra High`) and a
+  thinking effort, e.g. `CC Opus 4.8 · Extra High` / `CX GPT-5.6-Sol · Extra High`) and a
   **SEQUENTIAL / PARALLEL** tag, a short description, and the prompt card.
 - **Prompt card** — a fenced, monospace block holding the agent prompt, with a header
   (`PROMPT`), a one-click **copy**, and **Edit**. Collapsible. This is the hero — the
@@ -129,7 +129,7 @@ Use the real chrome — see the screenshots for live examples. Library: "All cam
 4d ago". Overview: "Progress", "0 of 3 done", "Resume", "Saved …". Topbar: "Switch",
 "Open .md", "Export", "Focus", "Companion", "Save file". Document: "Scope", "Progress
 checklist", legend "Todo · In flight · Done", "Phase 1 — …", "Step 1.2 — …", agent pills
-"CC Opus 4.8 · Extra High" / "CX GPT-5.5 · Extra High", "SEQUENTIAL", "PROMPT", "Edit",
+"CC Opus 4.8 · Extra High" / "CX GPT-5.6-Sol · Extra High", "SEQUENTIAL", "PROMPT", "Edit",
 "Complete & next", "BEGIN EXECUTION", "FINAL REVIEW", "Close out the campaign". Settings:
 "Preferences", "Appearance / Feedback / Notifications / Diagnostics", "Sound", "Completion
 burst", "Mac alerts", themes "Desk · Carbon Ledger · Blueprint Room · Signal Paper".

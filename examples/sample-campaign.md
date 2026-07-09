@@ -27,7 +27,7 @@ Each step has a fenced prompt you can copy into an agent session. The checklist 
 
 ## Step 1.1 - Draft the note
 
-Model: GPT-5.5 - High
+Model: GPT-5.6-Sol - High
 Parallel: NO
 
 Write the first version.
@@ -41,7 +41,7 @@ OPEN QUESTIONS:
 
 ## Step 1.2 - Tighten the note
 
-Model: GPT-5.5 - High
+Model: GPT-5.6-Sol - High
 Parallel: NO
 
 Cut anything that does not help the reader.
@@ -55,7 +55,7 @@ OPEN QUESTIONS:
 
 ## Step 1.3 - Publish the note
 
-Model: GPT-5.5 - High
+Model: GPT-5.6-Sol - High
 Parallel: NO
 
 Put the note where readers can find it.
