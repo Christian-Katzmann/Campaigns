@@ -68,6 +68,41 @@ test('normalizeRegistryCollections trims, drops blanks, and dissolves collection
   assert.equal(normalizeRegistryCollections(registry), false);
 });
 
+test('normalizeRegistryCollections keeps valid stack names and prunes orphaned/blank ones', () => {
+  const registry = {
+    campaigns: [
+      { id: '1', collectionId: 'shared' },
+      { id: '2', collectionId: 'shared' },
+      { id: '3', collectionId: 'lonely' }, // dissolves -> its name must go too
+    ],
+    collections: {
+      shared: { name: '  Auth Overhaul  ' }, // kept, trimmed
+      lonely: { name: 'Orphan' }, // collection dissolves -> dropped
+      ghost: { name: 'No such stack' }, // no members at all -> dropped
+      blank: { name: '   ' }, // blank name -> dropped
+    },
+  };
+  const changed = normalizeRegistryCollections(registry);
+  assert.equal(changed, true);
+  assert.deepEqual(registry.collections, { shared: { name: 'Auth Overhaul' } });
+
+  // A second pass changes nothing.
+  assert.equal(normalizeRegistryCollections(registry), false);
+});
+
+test('normalizeRegistryCollections drops a malformed or emptied collections map', () => {
+  const malformed = { campaigns: [], collections: 'nope' };
+  assert.equal(normalizeRegistryCollections(malformed), true);
+  assert.ok(!('collections' in malformed));
+
+  const emptied = {
+    campaigns: [{ id: '1', collectionId: 'a' }, { id: '2', collectionId: 'a' }],
+    collections: {},
+  };
+  assert.equal(normalizeRegistryCollections(emptied), true);
+  assert.ok(!('collections' in emptied));
+});
+
 test('pruneMissingCampaigns drops long-missing campaigns and keeps the rest', () => {
   const now = Date.parse('2026-07-06T00:00:00.000Z');
   const day = 24 * 60 * 60 * 1000;

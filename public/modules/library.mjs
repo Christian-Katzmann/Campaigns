@@ -59,6 +59,8 @@ export async function renderLibrary() {
   }
 
   state.homeDir = typeof registry.homeDir === 'string' ? registry.homeDir : '';
+  state.libraryCollections =
+    registry.collections && typeof registry.collections === 'object' ? registry.collections : {};
   const campaigns = Array.isArray(registry.campaigns) ? registry.campaigns : [];
   renderLibraryLessons(await fetchCampaignLessons());
 
@@ -505,7 +507,7 @@ export function buildLibraryCollectionCard(group) {
   const stats = collectionStats(group.campaigns);
   const complete = collectionComplete(stats);
   const parked = collectionParked(group, complete);
-  const title = collectionTitle(group.campaigns);
+  const title = collectionDisplayName(group);
   const modifiers = [
     complete ? 'complete' : '',
     parked ? 'parked' : '',
@@ -556,7 +558,7 @@ export function buildLibraryCollectionCard(group) {
   if (!complete) {
     card.append(buildCollectionParkButton(group, parked));
   }
-  card.append(buildCollectionCopyButton(group));
+  card.append(buildCollectionCopyButton(group), buildCollectionRenameButton(group));
 
   return card;
 }
@@ -565,7 +567,7 @@ export function buildLibraryCollectionSection(group) {
   const stats = collectionStats(group.campaigns);
   const complete = collectionComplete(stats);
   const parked = collectionParked(group, complete);
-  const title = collectionTitle(group.campaigns);
+  const title = collectionDisplayName(group);
   const modifiers = [
     complete ? 'complete' : '',
     parked ? 'parked' : '',
@@ -601,7 +603,9 @@ export function buildLibraryCollectionSection(group) {
 
   const grid = element('div', { className: 'library-collection-grid' });
   grid.replaceChildren(
-    ...group.campaigns.map((campaign) => buildLibraryCard(campaign, { collectionMember: true })),
+    ...sortCollectionMembers(group.campaigns).map((campaign) =>
+      buildLibraryCard(campaign, { collectionMember: true }),
+    ),
   );
 
   if (stats.total > 0) {
@@ -611,7 +615,7 @@ export function buildLibraryCollectionSection(group) {
   if (!complete) {
     section.append(buildCollectionParkButton(group, parked));
   }
-  section.append(buildCollectionCopyButton(group), grid);
+  section.append(buildCollectionCopyButton(group), buildCollectionRenameButton(group), grid);
   return section;
 }
 
@@ -652,6 +656,29 @@ export function collectionComplete(stats) {
 
 export function collectionParked(group, complete) {
   return !complete && group.bucket === 1;
+}
+
+// Campaign families are numbered by implementation order ("1. …", "2a. …").
+// When every member carries a numeric prefix, show and copy them in that
+// order instead of activity order; otherwise leave the given order alone.
+export function sortCollectionMembers(campaigns) {
+  const keys = campaigns.map((campaign) => {
+    const match = (campaign.title || '').match(/^(\d+)([a-z])?[.\s]/);
+    return match ? [Number(match[1]), match[2] ?? ''] : null;
+  });
+  if (keys.some((key) => key === null)) return campaigns;
+  return campaigns
+    .map((campaign, index) => ({ campaign, key: keys[index] }))
+    .sort((a, b) => a.key[0] - b.key[0] || a.key[1].localeCompare(b.key[1]))
+    .map((entry) => entry.campaign);
+}
+
+// The stack's headline: the human/planner-set name when one is stored,
+// otherwise the old derived title so unnamed stacks keep working.
+export function collectionDisplayName(group) {
+  const stored = state.libraryCollections?.[group.id]?.name;
+  if (typeof stored === 'string' && stored.trim() !== '') return stored.trim();
+  return collectionTitle(group.campaigns);
 }
 
 export function collectionTitle(campaigns) {
@@ -732,6 +759,43 @@ export function buildCollectionCopyButton(group) {
   return button;
 }
 
+export function buildCollectionRenameButton(group) {
+  const button = element('button', {
+    className: 'library-collection-rename-button',
+    type: 'button',
+    title: 'Rename stack',
+    ariaLabel: 'Rename stack',
+  });
+  button.innerHTML =
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>';
+  button.addEventListener('click', async (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const current = collectionDisplayName(group);
+    const next = window.prompt('Stack name', current);
+    if (next === null || next.trim() === current) return;
+    try {
+      await renameCollection(group.id, next.trim());
+      await renderLibrary();
+    } catch (error) {
+      showToast(error.message || 'Could not rename stack.');
+    }
+  });
+  return button;
+}
+
+export async function renameCollection(collectionId, name) {
+  const response = await fetch('/api/registry/collection', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'rename', collectionId, name }),
+  });
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new Error(body.error || 'Could not rename stack.');
+  }
+}
+
 export async function copyCollectionAutomationLink(group) {
   const text = collectionAutomationText(group);
   try {
@@ -743,14 +807,14 @@ export async function copyCollectionAutomationLink(group) {
 }
 
 export function collectionAutomationText(group) {
-  const title = collectionTitle(group.campaigns);
+  const title = collectionDisplayName(group);
   const lines = [
     `Use $campaign-automate on campaigns-stack://${group.id}`,
     `Stack: ${title}`,
     'Campaign files:',
   ];
 
-  for (const campaign of group.campaigns) {
+  for (const campaign of sortCollectionMembers(group.campaigns)) {
     if (campaign.filePath) lines.push(`- ${campaign.filePath}`);
   }
 

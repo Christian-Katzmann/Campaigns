@@ -484,11 +484,34 @@ async function stackCampaign(sourceId, target) {
 
   const changed = source.collectionId !== collectionId;
   source.collectionId = collectionId;
+  if (target.name) {
+    registry.collections = registry.collections && typeof registry.collections === 'object' ? registry.collections : {};
+    registry.collections[collectionId] = { ...registry.collections[collectionId], name: target.name };
+  }
   const normalized = normalizeRegistryCollections(registry);
   await writeRegistry(registry);
 
   const count = registry.campaigns.filter((entry) => entry.collectionId === collectionId).length;
   return { found: true, changed: changed || normalized, collectionId, count };
+}
+
+// Set or clear a stack's human-editable headline. An empty name clears the
+// stored one, falling the UI back to its derived title.
+async function renameCollection(collectionId, name) {
+  const registry = await readRegistry();
+  normalizeRegistryCollections(registry);
+  const exists = registry.campaigns.some((entry) => entry.collectionId === collectionId);
+  if (!exists) return { found: false };
+
+  if (name) {
+    registry.collections = registry.collections && typeof registry.collections === 'object' ? registry.collections : {};
+    registry.collections[collectionId] = { ...registry.collections[collectionId], name };
+  } else if (registry.collections?.[collectionId]) {
+    delete registry.collections[collectionId];
+  }
+  normalizeRegistryCollections(registry);
+  await writeRegistry(registry);
+  return { found: true, name: registry.collections?.[collectionId]?.name ?? '' };
 }
 
 async function removeCampaignFromCollection(id) {
@@ -738,7 +761,12 @@ async function sendRegistry(response) {
     await writeRegistry(registry);
   }
 
-  sendJson(response, 200, { campaigns: visible, defaultCampaignId, homeDir: homedir() });
+  sendJson(response, 200, {
+    campaigns: visible,
+    collections: registry.collections ?? {},
+    defaultCampaignId,
+    homeDir: homedir(),
+  });
 }
 
 async function registerEndpoint(request, response) {
@@ -1243,7 +1271,8 @@ async function collectionEndpoint(request, response) {
       return;
     }
 
-    const result = await stackCampaign(payload.sourceId, { targetId, targetCollectionId });
+    const name = typeof payload.name === 'string' ? payload.name.trim() : '';
+    const result = await stackCampaign(payload.sourceId, { targetId, targetCollectionId, name });
     if (!result.found) {
       sendJson(response, 404, { error: 'Campaign or collection not found.' });
       return;
@@ -1257,7 +1286,22 @@ async function collectionEndpoint(request, response) {
     return;
   }
 
-  sendJson(response, 400, { error: 'Expected action to be "stack" or "remove".' });
+  if (payload.action === 'rename') {
+    const collectionId = typeof payload.collectionId === 'string' ? payload.collectionId.trim() : '';
+    if (collectionId === '' || typeof payload.name !== 'string') {
+      sendJson(response, 400, { error: 'Expected { action: "rename", collectionId: string, name: string }.' });
+      return;
+    }
+    const result = await renameCollection(collectionId, payload.name.trim());
+    if (!result.found) {
+      sendJson(response, 404, { error: 'Stack not found.' });
+      return;
+    }
+    sendJson(response, 200, { ok: true, name: result.name });
+    return;
+  }
+
+  sendJson(response, 400, { error: 'Expected action to be "stack", "rename" or "remove".' });
 }
 
 async function deleteMissingRegistryEndpoint(request, response) {

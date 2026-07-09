@@ -2022,6 +2022,7 @@ body.view-library #conflict-modal {
 
 .library-collection-copy-button,
 .library-collection-park-button,
+.library-collection-rename-button,
 .library-card-copy-button {
   position: absolute;
   right: 12px;
@@ -2045,6 +2046,7 @@ body.view-library #conflict-modal {
 
 .library-collection-copy-button svg,
 .library-collection-park-button svg,
+.library-collection-rename-button svg,
 .library-card-copy-button svg {
   width: 14px;
   height: 14px;
@@ -2062,18 +2064,26 @@ body.view-library #conflict-modal {
   right: 48px;
 }
 
-.library-collection-section > .library-collection-park-button {
+.library-collection-rename-button {
+  right: 84px;
+}
+
+.library-collection-section > .library-collection-park-button,
+.library-collection-section > .library-collection-rename-button {
   top: 12px;
   bottom: auto;
 }
 
 .library-collection-card:hover .library-collection-copy-button,
 .library-collection-card:hover .library-collection-park-button,
+.library-collection-card:hover .library-collection-rename-button,
 .library-collection-section:hover > .library-collection-copy-button,
 .library-collection-section:hover > .library-collection-park-button,
+.library-collection-section:hover > .library-collection-rename-button,
 .library-card:hover .library-card-copy-button,
 .library-collection-copy-button:focus-visible,
 .library-collection-park-button:focus-visible,
+.library-collection-rename-button:focus-visible,
 .library-card-copy-button:focus-visible {
   opacity: 1;
 }
@@ -2082,6 +2092,8 @@ body.view-library #conflict-modal {
 .library-collection-copy-button:focus-visible,
 .library-collection-park-button:hover,
 .library-collection-park-button:focus-visible,
+.library-collection-rename-button:hover,
+.library-collection-rename-button:focus-visible,
 .library-card-copy-button:hover,
 .library-card-copy-button:focus-visible {
   border-color: var(--line);

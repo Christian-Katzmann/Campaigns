@@ -40,6 +40,8 @@ export const state = {
   libraryExpandedCollections: new Set(),
   libraryDragCampaignId: '',
   libraryCampaigns: [],
+  // Per-stack metadata from the registry: { [collectionId]: { name } }.
+  libraryCollections: {},
   libraryFilter: '',
   id: '',
   homeDir: '',
