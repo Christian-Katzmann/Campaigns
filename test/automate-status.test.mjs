@@ -10,6 +10,7 @@ import {
   chooseAutomateState,
   countAutomationProgress,
   deriveCodexRuntime,
+  findCodexStatePath,
 } from '../lib/automate-providers.mjs';
 
 function runtime(overrides = {}) {
@@ -135,10 +136,98 @@ test('stored worktree mapping identifies a campaign after the worktree is remove
   );
 });
 
+test('registry identity wins while canonical paths survive re-registration', async () => {
+  const filePath = '/tmp/project/campaigns/example.md';
+  const state = {
+    registry_id: 'campaign-a',
+    source_campaign_path: filePath,
+    campaign_path: filePath,
+  };
+
+  assert.equal(
+    await campaignStateMatchesFile(filePath, state, { registryId: 'campaign-a' }),
+    true,
+  );
+  assert.equal(
+    await campaignStateMatchesFile(filePath, state, { registryId: 'campaign-b' }),
+    true,
+  );
+  assert.equal(
+    await campaignStateMatchesFile('/tmp/another-project/campaigns/example.md', state, {
+      registryId: 'campaign-b',
+    }),
+    false,
+  );
+});
+
+test('a newly created Codex state is discovered immediately after an initial miss', async (t) => {
+  const sandbox = await mkdtemp(path.join(tmpdir(), 'campaigns-state-discovery-'));
+  const campaignPath = path.join(sandbox, 'campaigns', 'example.md');
+  const statePath = path.join(
+    sandbox,
+    'reports',
+    'campaign-automation',
+    'example',
+    'state.json',
+  );
+  t.after(async () => rm(sandbox, { recursive: true, force: true }));
+  await mkdir(path.dirname(campaignPath), { recursive: true });
+  await writeFile(campaignPath, '# Example\n', 'utf8');
+
+  assert.equal(await findCodexStatePath(campaignPath, 'campaign-a'), null);
+
+  await mkdir(path.dirname(statePath), { recursive: true });
+  await writeFile(
+    statePath,
+    JSON.stringify({
+      campaign: {
+        registry_id: 'campaign-a',
+        source_campaign_path: campaignPath,
+        campaign_path: campaignPath,
+      },
+    }),
+    'utf8',
+  );
+  assert.equal(await findCodexStatePath(campaignPath, 'campaign-a'), statePath);
+});
+
+test('a registry id finds Codex state stored under an explicit custom slug', async (t) => {
+  const sandbox = await mkdtemp(path.join(tmpdir(), 'campaigns-custom-slug-'));
+  const campaignPath = path.join(sandbox, 'campaigns', 'example.md');
+  const statePath = path.join(
+    sandbox,
+    'reports',
+    'campaign-automation',
+    'custom-automation-name',
+    'state.json',
+  );
+  t.after(async () => rm(sandbox, { recursive: true, force: true }));
+  await mkdir(path.dirname(campaignPath), { recursive: true });
+  await writeFile(campaignPath, '# Example\n', 'utf8');
+
+  assert.equal(await findCodexStatePath(campaignPath, 'campaign-custom'), null);
+
+  await mkdir(path.dirname(statePath), { recursive: true });
+  await writeFile(
+    statePath,
+    JSON.stringify({
+      campaign: {
+        registry_id: 'campaign-custom',
+        source_campaign_path: campaignPath,
+        campaign_path: campaignPath,
+      },
+    }),
+    'utf8',
+  );
+
+  assert.equal(await findCodexStatePath(campaignPath, 'campaign-custom'), statePath);
+});
+
 test('Git worktrees match by shared repository and repo-relative campaign path', async (t) => {
   const sandbox = await mkdtemp(path.join(tmpdir(), 'campaigns-worktree-'));
   const repo = path.join(sandbox, 'repo');
   const worktree = path.join(sandbox, 'worktree');
+  const alternate = path.join(sandbox, 'alternate');
   t.after(async () => rm(sandbox, { recursive: true, force: true }));
 
   await mkdir(path.join(repo, 'campaigns'), { recursive: true });
@@ -155,6 +244,21 @@ test('Git worktrees match by shared repository and repo-relative campaign path',
       campaign_path: path.join(worktree, 'campaigns', 'example.md'),
       repo_path: worktree,
       branch: 'campaign/example',
+    }),
+    true,
+  );
+
+  execFileSync('git', ['-C', repo, 'worktree', 'add', '-qb', 'review/example', alternate]);
+  execFileSync('git', ['-C', repo, 'worktree', 'remove', '--force', worktree]);
+  assert.equal(
+    await campaignStateMatchesFile(path.join(alternate, 'campaigns', 'example.md'), {
+      campaign_path: path.join(worktree, 'campaigns', 'example.md'),
+      repo_path: worktree,
+      worktree: {
+        base_repo_path: repo,
+        path: worktree,
+        branch: 'campaign/example',
+      },
     }),
     true,
   );

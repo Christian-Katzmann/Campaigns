@@ -1573,7 +1573,7 @@ async function buildStopWatcherSnapshot(entry) {
   let automation = null;
   let automationError = null;
   try {
-    automation = await getAutomateState(entry.filePath);
+    automation = await getAutomateState(entry.filePath, { registryId: entry.id });
   } catch (error) {
     automationError = error.message;
   }
@@ -1751,7 +1751,7 @@ async function sendAutomateState(url, response) {
       sendJson(response, 404, { error: 'Campaign not found.' });
       return;
     }
-    const state = await getAutomateState(entry.filePath);
+    const state = await getAutomateState(entry.filePath, { registryId: entry.id });
     sendJson(response, 200, state);
     return;
   }
@@ -1763,7 +1763,10 @@ async function sendAutomateState(url, response) {
       // One unreadable automation state must not take down the whole
       // bulk endpoint — every library dot would vanish with it.
       try {
-        states[entry.id] = await getAutomateState(entry.filePath, { summary: true });
+        states[entry.id] = await getAutomateState(entry.filePath, {
+          summary: true,
+          registryId: entry.id,
+        });
       } catch {
         states[entry.id] = null;
       }
@@ -1818,7 +1821,10 @@ async function buildCompanionCampaign(entry, now) {
 
   let summary = null;
   try {
-    summary = await getAutomateState(entry.filePath, { summary: true });
+    summary = await getAutomateState(entry.filePath, {
+      summary: true,
+      registryId: entry.id,
+    });
   } catch (error) {
     // A single bad provider state must not take down the whole companion feed.
     console.error(`companion-state: automation summary failed for ${entry.id}:`, error.message);
@@ -2016,7 +2022,7 @@ async function handleAutomateNudge(request, response) {
     return;
   }
 
-  const result = await nudgeAutomateState(entry.filePath, payload.mode);
+  const result = await nudgeAutomateState(entry.filePath, payload.mode, { registryId: entry.id });
   sendJson(response, result.ok ? 200 : 502, result);
 }
 
