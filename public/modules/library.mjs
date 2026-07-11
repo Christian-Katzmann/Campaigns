@@ -823,9 +823,10 @@ export function collectionAutomationText(group) {
 
 export function buildLibraryCard(campaign, options = {}) {
   const complete = isComplete(campaign);
-  const progressStats = normalizeProgress(campaign.progress);
   const parked = Boolean(campaign.parkedAt) && !complete;
   const displayState = campaignDisplayState(campaign);
+  const liveProgress = displayState.kind === 'running' ? displayState.automation?.progress : null;
+  const progressStats = normalizeProgress(liveProgress ?? campaign.progress);
   const showLogo = campaign.hasLogo || shouldShowFallbackLogo(campaign, displayState);
   const modifiers = [
     complete ? 'complete' : '',
@@ -862,7 +863,9 @@ export function buildLibraryCard(campaign, options = {}) {
       track,
       element('span', {
         className: 'library-card-progress-label',
-        text: complete ? 'All done' : `${progressStats.done} / ${progressStats.total}`,
+        text: complete
+          ? 'All done'
+          : `${progressStats.done} / ${progressStats.total}${liveProgress ? ' · live' : ''}`,
       }),
     );
     link.append(progress);
@@ -871,9 +874,12 @@ export function buildLibraryCard(campaign, options = {}) {
   const status = buildLibraryCardStatus(displayState.automation, campaign.id, campaign.title);
   if (status) link.append(status);
 
+  const executionLabel = formatExecutionContext(displayState.automation?.execution);
   const time = campaign.missing
     ? 'File missing'
-    : `Active ${relativeTime(campaign.lastActivityAt || campaign.lastOpenedAt)}`;
+    : displayState.kind === 'running'
+      ? ['Working now', executionLabel].filter(Boolean).join(' · ')
+      : `Active ${relativeTime(campaign.lastActivityAt || campaign.lastOpenedAt)}`;
   link.append(element('span', { className: 'library-card-time', text: time }));
 
   card.append(link);
@@ -1344,9 +1350,21 @@ export function libraryAutomationCardStatus(data) {
   return {
     status,
     text,
-    title: [data.current_step_name, data.attention?.title].filter(Boolean).join('\n'),
+    title: [data.current_step_name, formatExecutionContext(data.execution), data.attention?.title]
+      .filter(Boolean)
+      .join('\n'),
     attention: status === 'active' && data.attention?.level === 'history' ? data.attention : null,
+    progress: data.progress ?? null,
+    execution: data.execution ?? null,
   };
+}
+
+export function formatExecutionContext(execution) {
+  if (!execution || typeof execution !== 'object') return '';
+  const branch = String(execution.branch || '').trim();
+  if (execution.kind === 'worktree') return branch ? `Worktree · ${branch}` : 'Worktree';
+  if (execution.kind === 'branch') return branch ? `Branch · ${branch}` : 'Branch';
+  return '';
 }
 
 export function buildLibraryAutomationStatus(summary) {

@@ -1,7 +1,16 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { test } from 'node:test';
 
-import { chooseAutomateState, deriveCodexRuntime } from '../lib/automate-providers.mjs';
+import {
+  campaignStateMatchesFile,
+  chooseAutomateState,
+  countAutomationProgress,
+  deriveCodexRuntime,
+} from '../lib/automate-providers.mjs';
 
 function runtime(overrides = {}) {
   return deriveCodexRuntime({
@@ -103,4 +112,77 @@ test('current unresolved issue still needs attention without active or pending w
   });
 
   assert.deepEqual(result, { status: 'failed', isActive: false });
+});
+
+test('stored worktree mapping identifies a campaign after the worktree is removed', async () => {
+  const registered = '/tmp/project/campaigns/example.md';
+  const state = {
+    campaign: {
+      campaign_path: '/tmp/project-worktrees/example/campaigns/example.md',
+      repo_path: '/tmp/project-worktrees/example',
+      worktree: {
+        base_repo_path: '/tmp/project',
+        path: '/tmp/project-worktrees/example',
+        branch: 'campaign/example',
+      },
+    },
+  };
+
+  assert.equal(await campaignStateMatchesFile(registered, state), true);
+  assert.equal(
+    await campaignStateMatchesFile('/tmp/another-project/campaigns/example.md', state),
+    false,
+  );
+});
+
+test('Git worktrees match by shared repository and repo-relative campaign path', async (t) => {
+  const sandbox = await mkdtemp(path.join(tmpdir(), 'campaigns-worktree-'));
+  const repo = path.join(sandbox, 'repo');
+  const worktree = path.join(sandbox, 'worktree');
+  t.after(async () => rm(sandbox, { recursive: true, force: true }));
+
+  await mkdir(path.join(repo, 'campaigns'), { recursive: true });
+  execFileSync('git', ['init', '-q', repo]);
+  execFileSync('git', ['-C', repo, 'config', 'user.name', 'Campaigns Test']);
+  execFileSync('git', ['-C', repo, 'config', 'user.email', 'campaigns@example.invalid']);
+  await writeFile(path.join(repo, 'campaigns', 'example.md'), '# Example\n', 'utf8');
+  execFileSync('git', ['-C', repo, 'add', 'campaigns/example.md']);
+  execFileSync('git', ['-C', repo, 'commit', '-qm', 'fixture']);
+  execFileSync('git', ['-C', repo, 'worktree', 'add', '-qb', 'campaign/example', worktree]);
+
+  assert.equal(
+    await campaignStateMatchesFile(path.join(repo, 'campaigns', 'example.md'), {
+      campaign_path: path.join(worktree, 'campaigns', 'example.md'),
+      repo_path: worktree,
+      branch: 'campaign/example',
+    }),
+    true,
+  );
+});
+
+test('campaign paths compare Unicode spellings canonically', async () => {
+  const composed = '/tmp/m\u00f6ney/campaigns/example.md';
+  const decomposed = '/tmp/mo\u0308ney/campaigns/example.md';
+  assert.equal(
+    await campaignStateMatchesFile(composed, { source_campaign_path: decomposed }),
+    true,
+  );
+});
+
+test('live progress counts only the authored progress checklist', () => {
+  const markdown = `# Example
+
+## Progress checklist
+
+- [x] Step 1.1 — Done
+- [ ] Step 1.2 — Next
+- [ ] Final review
+
+## Step 1.1 — Done
+
+\`\`\`text
+- [x] This prompt checkbox is not progress
+\`\`\`
+`;
+  assert.deepEqual(countAutomationProgress(markdown), { done: 1, total: 3 });
 });
