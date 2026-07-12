@@ -13,6 +13,12 @@ assets/icons/campaigns/
 campaigns/
 plans/
 
+# Automation run state and receipts contain real project names, paths, and step
+# detail from the owner's machine — never track them.
+reports/
+.playwright-mcp/
+docs/codex-backend-verification.md
+
 # Real-data screenshots staged for the Claude Design hand-off — keep them out of the
 # public repo (they show real project names and local paths). The committed README
 # screenshots are the sanitized 01-/02-/03- demo renders.
