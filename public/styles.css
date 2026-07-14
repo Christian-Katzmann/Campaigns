@@ -3825,6 +3825,12 @@ body.theme-signal {
 }
 .drawer-status-pill--failed .automate-indicator { color: var(--danger); }
 
+.drawer-status-pill--awaiting_human_review {
+  background: var(--danger-wash);
+  color: var(--danger);
+}
+.drawer-status-pill--awaiting_human_review .automate-indicator { color: var(--danger); }
+
 /* Current step block — legacy fallback (drawer-now subsumes this for
    campaigns with parsed live_activity). */
 .drawer-current-step {

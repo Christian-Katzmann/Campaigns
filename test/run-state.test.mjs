@@ -101,7 +101,10 @@ test('runs every normal step and review transition through merge', () => {
     reasons: ['acceptance-miss'],
     review_path: '/state/runs/a/final-review.md',
   });
-  state = move(state, 'final_rework_completed');
+  state = move(state, 'final_rework_completed', {
+    attempt: 1,
+    commit_sha: 'abc123',
+  });
   state = move(state, 'final_review_started');
   state = move(state, 'final_review_approved', {
     review_path: '/state/runs/a/final-review.md',

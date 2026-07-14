@@ -16,6 +16,8 @@ Options:
   --config <path>       Runner config path
   --state-dir <path>    Run-ledger directory
   --registry-id <id>    Campaign registry identity
+  --force-merge-unreviewed
+                         Merge after review failure (explicit escape hatch)
   -h, --help            Show this help
 `;
 
@@ -85,6 +87,10 @@ function parseOptions(args, command) {
     : runNames);
   const options = {};
   for (let index = 0; index < args.length; index += 1) {
+    if (command === 'run' && args[index] === '--force-merge-unreviewed') {
+      options.forceMergeUnreviewed = true;
+      continue;
+    }
     const key = names.get(args[index]);
     if (!key || !args[index + 1]) throw new Error(`Unknown or incomplete option: ${args[index]}`);
     options[key] = args[index + 1];

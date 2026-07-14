@@ -14,7 +14,7 @@ import { validateRunState } from '../lib/run-state.mjs';
 
 const silent = { write() {} };
 
-test('fake success runner ticks every step, runs final review, and completes', async (t) => {
+test('fake success runner ticks every step, runs final review, and merges', async (t) => {
   const fixture = await makeFixture(t, { branch: 'campaign/fixture' });
   const result = await runCampaign(fixture.campaignPath, fixture.options);
   const markdown = await readFile(fixture.campaignPath, 'utf8');
@@ -23,8 +23,8 @@ test('fake success runner ticks every step, runs final review, and completes', a
   assert.match(markdown, /- \[x\] Step 1\.1/);
   assert.match(markdown, /- \[x\] Step 1\.2/);
   assert.deepEqual(validateRunState(state), { valid: true, errors: [] });
-  assert.equal(state.run.status, 'completed');
-  assert.equal(state.history.at(-1).event, 'final_review_approved');
+  assert.equal(state.run.status, 'merged');
+  assert.equal(state.history.at(-1).event, 'campaign_merged');
   assert.equal(await git(fixture.repo, ['branch', '--show-current']), 'campaign/fixture');
   const status = await git(fixture.repo, ['status', '--short']);
   assert.equal(status, '');
@@ -62,7 +62,7 @@ test('an interrupted worker is reset and the next invocation resumes the first u
   await writeConfig(fixture.configPath, { delayMs: 0 });
   const resumed = await runCampaign(fixture.campaignPath, fixture.options);
   const state = JSON.parse(await readFile(resumed.statePath, 'utf8'));
-  assert.equal(state.run.status, 'completed');
+  assert.equal(state.run.status, 'merged');
   assert.equal(state.steps[0].attempt, 2);
   assert.ok(state.history.some((entry) => entry.event === 'step_reset_by_recover'));
 });
@@ -75,7 +75,7 @@ test('a hand-ticked checkbox is source of truth and is not rerun', async (t) => 
   assert.equal(state.steps[0].status, 'skipped');
   assert.equal(state.steps[0].attempt, 0);
   assert.equal(state.steps[1].status, 'completed');
-  assert.equal(state.run.status, 'completed');
+  assert.equal(state.run.status, 'merged');
 });
 
 test('dirty run-start preflight blocks without consuming an attempt and succeeds after cleanup', async (t) => {
@@ -97,7 +97,7 @@ test('dirty run-start preflight blocks without consuming an attempt and succeeds
 
   await rm(dirtyPath);
   const resumed = await runCampaign(fixture.campaignPath, fixture.options);
-  assert.equal(resumed.state.run.status, 'completed');
+  assert.equal(resumed.state.run.status, 'merged');
 });
 
 test('invalid campaign preflight records its taxonomy event and can restart after repair', async (t) => {
@@ -116,7 +116,7 @@ test('invalid campaign preflight records its taxonomy event and can restart afte
 
   await writeFile(fixture.campaignPath, campaignMarkdown(false), 'utf8');
   const resumed = await runCampaign(fixture.campaignPath, fixture.options);
-  assert.equal(resumed.state.run.status, 'completed');
+  assert.equal(resumed.state.run.status, 'merged');
 });
 
 test('unavailable branch preflight records its taxonomy event without starting a step', async (t) => {
@@ -152,7 +152,7 @@ test('watchdog keeps an active runner alive after the runtime floor', async (t) 
   });
 
   const result = await runCampaign(fixture.campaignPath, fixture.options);
-  assert.equal(result.state.run.status, 'completed');
+  assert.equal(result.state.run.status, 'merged');
   assert.equal(result.state.steps[0].status, 'completed');
   assert.equal(result.state.steps[1].status, 'completed');
 });
@@ -197,7 +197,7 @@ test('an unparseable review is re-asked exactly once before awaiting human revie
   assert.equal(state.history.some((entry) => entry.event === 'campaign_merged'), false);
 });
 
-test('a repeated prose reason is preserved whole after the single tag re-ask', async (t) => {
+test('a repeated prose reason is preserved whole through fix-cap exhaustion', async (t) => {
   const fixture = await makeFixture(t, {
     reviewScript: "process.stdout.write('Verdict: NEEDS WORK\\nReasons: Read the cumulative diff before approving')",
   });
@@ -205,19 +205,155 @@ test('a repeated prose reason is preserved whole after the single tag re-ask', a
   const result = await runCampaign(fixture.campaignPath, fixture.options);
   const state = JSON.parse(await readFile(result.statePath, 'utf8'));
 
-  assert.equal(state.run.status, 'reworking');
+  assert.equal(state.run.status, 'awaiting_human_review');
   assert.equal(state.review.attempts, 2);
   assert.deepEqual(state.review.reasons, []);
   assert.deepEqual(state.review.raw_tags, ['Read the cumulative diff before approving']);
+  assert.equal(state.history.filter((entry) => entry.event === 'final_fix_failed').length, 2);
+});
+
+test('a fix worker with no commit consumes the cap and never merges', async (t) => {
+  const fixture = await makeFixture(t, {
+    branch: 'campaign/no-commit',
+    reviewScript: "process.stdout.write('Verdict: NEEDS WORK\\nReasons: acceptance-miss')",
+  });
+  const targetBefore = await git(fixture.repo, ['rev-parse', 'main']);
+
+  const result = await runCampaign(fixture.campaignPath, fixture.options);
+  const state = JSON.parse(await readFile(result.statePath, 'utf8'));
+
+  assert.equal(state.run.status, 'awaiting_human_review');
+  assert.equal(state.history.filter((entry) => entry.event === 'final_fix_failed').length, 2);
+  assert.equal(state.history.at(-1).event, 'review_fix_attempts_exhausted');
+  assert.equal(state.history.some((entry) => entry.event === 'campaign_merged'), false);
+  assert.equal(state.history.some((entry) => entry.event === 'force_merged_unreviewed'), false);
+  assert.equal(await git(fixture.repo, ['rev-parse', 'main']), targetBefore);
+  assert.equal(await git(fixture.repo, ['branch', '--show-current']), 'campaign/no-commit');
+  assert.equal(await git(fixture.repo, ['status', '--short']), '');
+});
+
+test('a committed fix is re-reviewed and merged into a non-main default branch', async (t) => {
+  const fixture = await makeFixture(t, {
+    branch: 'campaign/fixed',
+    defaultBranch: 'trunk',
+    reviewScript: `
+      const fs = require('node:fs');
+      process.stdout.write(fs.existsSync('fixed.txt')
+        ? 'Verdict: APPROVED\\nReasons:'
+        : 'Verdict: NEEDS WORK\\nReasons: acceptance-miss');
+    `,
+    fixScript: `
+      const fs = require('node:fs');
+      const { execFileSync } = require('node:child_process');
+      fs.writeFileSync('fixed.txt', 'fixed\\n');
+      execFileSync('git', ['add', 'fixed.txt']);
+      execFileSync('git', ['-c', 'commit.gpgSign=false', 'commit', '-m', 'Fix review gap']);
+      process.stdout.write('Committed the review fix.');
+    `,
+  });
+
+  const result = await runCampaign(fixture.campaignPath, fixture.options);
+  const state = JSON.parse(await readFile(result.statePath, 'utf8'));
+
+  assert.equal(state.run.status, 'merged');
+  assert.equal(state.run.identity.execution.branch, 'campaign/fixed');
+  assert.equal(state.run.identity.execution.merge_target_branch, 'trunk');
+  assert.equal(state.history.filter((entry) => entry.event === 'final_rework_completed').length, 1);
+  assert.equal(state.history.at(-1).event, 'campaign_merged');
+  assert.equal(await git(fixture.repo, ['show', 'trunk:fixed.txt']), 'fixed');
+});
+
+test('a diverged merge target awaits human review without a partial merge', async (t) => {
+  const fixture = await makeFixture(t, {
+    branch: 'campaign/diverged',
+    divergeTarget: true,
+  });
+  const targetBefore = await git(fixture.repo, ['rev-parse', 'main']);
+
+  const result = await runCampaign(fixture.campaignPath, fixture.options);
+  const state = JSON.parse(await readFile(result.statePath, 'utf8'));
+
+  assert.equal(state.run.status, 'awaiting_human_review');
+  assert.equal(state.history.at(-1).event, 'review_merge_failed');
+  assert.match(state.history.at(-1).details.error, /diverged/);
+  assert.equal(await git(fixture.repo, ['rev-parse', 'main']), targetBefore);
+  assert.equal(state.history.some((entry) => entry.event === 'campaign_merged'), false);
+});
+
+test('a dirty default-branch worktree blocks merge without touching the target', async (t) => {
+  const fixture = await makeFixture(t, { branch: 'campaign/dirty-target' });
+  await git(fixture.repo, ['branch', 'campaign/dirty-target']);
+  await git(fixture.repo, ['switch', 'campaign/dirty-target']);
+  const targetWorktree = path.join(fixture.root, 'target-worktree');
+  await git(fixture.repo, ['worktree', 'add', targetWorktree, 'main']);
+  const targetBefore = await git(targetWorktree, ['rev-parse', 'HEAD']);
+  await writeFile(path.join(targetWorktree, 'unfinished.txt'), 'local target work\n', 'utf8');
+
+  const result = await runCampaign(fixture.campaignPath, fixture.options);
+  const state = JSON.parse(await readFile(result.statePath, 'utf8'));
+
+  assert.equal(state.run.status, 'awaiting_human_review');
+  assert.equal(state.history.at(-1).event, 'review_merge_failed');
+  assert.match(state.history.at(-1).details.error, /is dirty/);
+  assert.equal(await git(targetWorktree, ['rev-parse', 'HEAD']), targetBefore);
+  assert.equal(await readFile(path.join(targetWorktree, 'unfinished.txt'), 'utf8'), 'local target work\n');
+});
+
+test('awaiting human review sends the configured push notification', async (t) => {
+  const fixture = await makeFixture(t, {
+    reviewScript: "process.stdout.write('missing verdict')",
+  });
+  const registryDir = path.join(fixture.root, 'registry');
+  await mkdir(registryDir, { recursive: true });
+  await writeFile(path.join(registryDir, 'notification-settings.json'), JSON.stringify({
+    webhookUrl: 'https://hooks.slack.com/services/T/B/mock',
+  }), 'utf8');
+  const requests = [];
+
+  const result = await runCampaign(fixture.campaignPath, {
+    ...fixture.options,
+    env: { ...process.env, CAMPAIGNS_REGISTRY_DIR: registryDir },
+    notificationFetch: async (url, options) => {
+      requests.push({ url, options });
+      return { ok: true, status: 200 };
+    },
+  });
+
+  assert.equal(result.state.run.status, 'awaiting_human_review');
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].url, 'https://hooks.slack.com/services/T/B/mock');
+  assert.match(requests[0].options.body, /awaiting human review/);
+});
+
+test('force_merged_unreviewed occurs only with the explicit config escape hatch', async (t) => {
+  const fixture = await makeFixture(t, {
+    branch: 'campaign/forced',
+    maxFixAttempts: 1,
+    forceMergeUnreviewed: true,
+    reviewScript: "process.stdout.write('Verdict: NEEDS WORK\\nReasons: acceptance-miss')",
+  });
+
+  const result = await runCampaign(fixture.campaignPath, fixture.options);
+  const state = JSON.parse(await readFile(result.statePath, 'utf8'));
+
+  assert.equal(state.run.status, 'force_merged');
+  assert.equal(state.history.at(-1).event, 'force_merged_unreviewed');
+  assert.equal(state.history.at(-1).details.explicit, true);
+  assert.equal(await git(fixture.repo, ['rev-parse', 'main']), await git(fixture.repo, ['rev-parse', 'campaign/forced']));
 });
 
 async function makeFixture(t, {
   branch = null,
+  defaultBranch = 'main',
   delayMs = 0,
   firstChecked = false,
   runnerScript = null,
   reviewScript = null,
+  fixScript = null,
   watchdog = null,
+  maxFixAttempts = 2,
+  forceMergeUnreviewed = false,
+  divergeTarget = false,
 } = {}) {
   const root = await mkdtemp(path.join(tmpdir(), 'campaigns-pump-'));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -226,14 +362,32 @@ async function makeFixture(t, {
   const configPath = path.join(root, 'campaigns.config.json');
   const campaignPath = path.join(repo, 'campaign.md');
   await mkdir(repo, { recursive: true });
-  await git(repo, ['init', '-b', 'main']);
+  await git(repo, ['init', '-b', defaultBranch]);
+  await git(repo, ['config', 'init.defaultBranch', defaultBranch]);
   await git(repo, ['config', 'user.name', 'Campaigns Test']);
   await git(repo, ['config', 'user.email', 'campaigns@example.test']);
   await writeFile(campaignPath, campaignMarkdown(firstChecked), 'utf8');
-  await writeConfig(configPath, { branch, delayMs, runnerScript, reviewScript, watchdog });
+  await writeConfig(configPath, {
+    branch,
+    delayMs,
+    runnerScript,
+    reviewScript,
+    fixScript,
+    watchdog,
+    maxFixAttempts,
+    forceMergeUnreviewed,
+  });
   await git(repo, ['add', 'campaign.md']);
   await git(repo, ['commit', '-m', 'Add fixture campaign']);
+  if (divergeTarget) {
+    if (!branch) throw new Error('divergeTarget requires a campaign branch');
+    await git(repo, ['branch', branch]);
+    await writeFile(path.join(repo, 'target-only.txt'), 'target moved\n', 'utf8');
+    await git(repo, ['add', 'target-only.txt']);
+    await git(repo, ['commit', '-m', 'Advance merge target']);
+  }
   return {
+    root,
     repo,
     runsDir,
     campaignPath,
@@ -278,16 +432,22 @@ async function writeConfig(configPath, {
   delayMs = 0,
   runnerScript = null,
   reviewScript = null,
+  fixScript = null,
   watchdog = null,
+  maxFixAttempts = 2,
+  forceMergeUnreviewed = false,
 } = {}) {
   const stepScript = runnerScript ?? (delayMs > 0
     ? `setTimeout(() => process.stdout.write(process.argv[1]), ${delayMs})`
     : 'process.stdout.write(process.argv[1])');
   const finalReviewScript = reviewScript
     ?? "process.stdout.write('Verdict: APPROVED\\nReasons:\\n\\nEverything landed.')";
+  const finalFixScript = fixScript ?? "process.stdout.write('No fix commit produced.')";
   const script = `
     if (process.argv[1].includes('campaigns.step_completed')) {
       ${stepScript}
+    } else if (process.argv[1].startsWith('Fix the final-review gaps')) {
+      ${finalFixScript}
     } else {
       ${finalReviewScript}
     }
@@ -297,6 +457,7 @@ async function writeConfig(configPath, {
     defaultRunner: 'fake',
     watchdog: watchdog ?? { minimum_runtime_ms: 0, stall_window_ms: 1_000 },
     run: { repoRoot: null, branch },
+    review: { maxFixAttempts, forceMergeUnreviewed },
     runners: {
       fake: {
         binary: process.execPath,

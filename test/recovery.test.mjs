@@ -95,7 +95,7 @@ test('a dead running worker is failed with salvaged output, reset, and resumes o
   ]);
 
   const resumed = await runCampaign(fixture.campaignPath, fixture.runOptions);
-  assert.equal(resumed.state.run.status, 'completed');
+  assert.equal(resumed.state.run.status, 'merged');
   assert.equal(resumed.state.steps[0].status, 'completed');
   assert.equal(resumed.state.steps[0].attempt, 2);
 });
