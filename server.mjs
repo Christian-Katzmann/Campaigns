@@ -132,29 +132,7 @@ const LOGO_MIME = new Map([
 ]);
 const LOGO_EXTENSIONS = [...LOGO_MIME.keys()];
 
-const args = process.argv.slice(2);
-const options = parseArgs(args);
-const fileArg = options.file ?? process.env.CAMPAIGN_FILE;
-const port = Number(options.port ?? process.env.PORT ?? 4178);
-// Bind loopback by default: Campaigns is a local-first single-user app, so the
-// dev server has no business accepting LAN connections. A non-loopback listener
-// also trips the macOS firewall "accept incoming connections?" dialog, which
-// would stall an unattended launch. CAMPAIGNS_HOST/HOST override it only for the
-// rare setup that genuinely needs a different interface.
-const host = process.env.CAMPAIGNS_HOST || process.env.HOST || '127.0.0.1';
-
 let defaultCampaignId = null;
-
-if (fileArg) {
-  const absolute = path.resolve(fileArg);
-  try {
-    await stat(absolute);
-  } catch {
-    console.error(`File not found: ${absolute}`);
-    process.exit(1);
-  }
-  defaultCampaignId = await ensureRegistered(absolute);
-}
 
 const server = createServer(async (request, response) => {
   try {
@@ -314,28 +292,79 @@ const server = createServer(async (request, response) => {
   }
 });
 
-server.on('error', (error) => {
-  if (error.code === 'EADDRINUSE') {
-    console.error(`Port ${port} is already in use — another Campaigns server may be running.`);
-    console.error(`Stop it first, or start this one on a different port: node server.mjs --port <number>`);
-  } else {
-    console.error(error);
-  }
-  process.exit(1);
-});
+server.on('close', stopStopWatcher);
 
-server.listen(port, host, () => {
+export async function startServer({
+  campaignFile = null,
+  port = 4178,
+  host = '127.0.0.1',
+  watchStops = true,
+  writePortFile = true,
+} = {}) {
+  if (server.listening) throw new Error('Campaigns server is already listening.');
+
+  defaultCampaignId = null;
+  const absoluteCampaignFile = campaignFile ? path.resolve(campaignFile) : null;
+  if (absoluteCampaignFile) {
+    try {
+      await stat(absoluteCampaignFile);
+    } catch {
+      throw new Error(`File not found: ${absoluteCampaignFile}`);
+    }
+    defaultCampaignId = await ensureRegistered(absoluteCampaignFile);
+  }
+
+  await new Promise((resolve, reject) => {
+    const onError = (error) => reject(error);
+    server.once('error', onError);
+    server.listen(Number(port), host, () => {
+      server.removeListener('error', onError);
+      resolve();
+    });
+  });
+
   const address = server.address();
-  const actualPort = typeof address === 'object' && address ? address.port : port;
+  const actualPort = typeof address === 'object' && address ? address.port : Number(port);
   console.log(`Campaigns: http://localhost:${actualPort}`);
   console.log(`Registry: ${registryPath}`);
   console.log(`Port file: ${portFilePath}`);
-  if (fileArg) console.log(`Default file: ${path.resolve(fileArg)}`);
-  writeRuntimePort(actualPort).catch((error) => {
-    console.error(`Could not write port file: ${error.message}`);
-  });
-  startStopWatcher();
-});
+  if (absoluteCampaignFile) console.log(`Default file: ${absoluteCampaignFile}`);
+  if (writePortFile) {
+    writeRuntimePort(actualPort).catch((error) => {
+      console.error(`Could not write port file: ${error.message}`);
+    });
+  }
+  if (watchStops) startStopWatcher();
+  return server;
+}
+
+async function runCli() {
+  const options = parseArgs(process.argv.slice(2));
+  const campaignFile = options.file ?? process.env.CAMPAIGN_FILE ?? null;
+  const port = Number(options.port ?? process.env.PORT ?? 4178);
+  // Bind loopback by default: Campaigns is a local-first single-user app, so the
+  // dev server has no business accepting LAN connections. A non-loopback listener
+  // also trips the macOS firewall "accept incoming connections?" dialog, which
+  // would stall an unattended launch. CAMPAIGNS_HOST/HOST override it only for the
+  // rare setup that genuinely needs a different interface.
+  const host = process.env.CAMPAIGNS_HOST || process.env.HOST || '127.0.0.1';
+
+  try {
+    await startServer({ campaignFile, port, host });
+  } catch (error) {
+    if (error.code === 'EADDRINUSE') {
+      console.error(`Port ${port} is already in use — another Campaigns server may be running.`);
+      console.error('Stop it first, or start this one on a different port: node server.mjs --port <number>');
+    } else {
+      console.error(error.message ?? error);
+    }
+    process.exitCode = 1;
+  }
+}
+
+if (path.resolve(process.argv[1] ?? '') === fileURLToPath(import.meta.url)) {
+  await runCli();
+}
 
 function parseArgs(rawArgs) {
   const parsed = {};
@@ -1561,6 +1590,11 @@ function startStopWatcher() {
       console.error('Stop watcher failed:', error.message);
     });
   }, STOP_WATCH_INTERVAL_MS);
+}
+
+function stopStopWatcher() {
+  if (stopWatcherTimer) clearInterval(stopWatcherTimer);
+  stopWatcherTimer = null;
 }
 
 async function runStopWatcherPass() {
