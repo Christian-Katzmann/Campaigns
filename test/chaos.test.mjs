@@ -152,6 +152,7 @@ test('hello E2E runs the step and final review to terminal completed', async (t)
     runsDir,
     stdout: silent,
     stderr: silent,
+    env: { ...process.env, CAMPAIGNS_CONFIG_DIR: path.join(root, 'user-config') },
   });
   const state = JSON.parse(await readFile(result.statePath, 'utf8'));
 

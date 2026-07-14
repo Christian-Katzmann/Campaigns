@@ -127,7 +127,7 @@ async function initialize() {
   render();
   showResumeCardIfNeeded();
   initSwitcher();
-  initSettings();
+  initSettings(payload.app);
   initAutomateDrawer();
   if (params.get('drawer') === 'activity') {
     await fetchCampaignAutomateState();

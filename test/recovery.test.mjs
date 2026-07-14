@@ -67,7 +67,11 @@ test('a dead running worker is failed with salvaged output, reset, and resumes o
   const fixture = await makeFixture(t);
   const paths = await writeRunningState(fixture, { runningStep: true });
   const logPath = path.join(paths.logsDir, '1.1-1.log');
-  await writeFile(logPath, 'useful worker output before the process disappeared\n', 'utf8');
+  await writeFile(
+    logPath,
+    'useful worker output before the process disappeared AUTH_SECRET=recovery-secret\n',
+    'utf8',
+  );
   const original = JSON.parse(await readFile(paths.statePath, 'utf8'));
   original.worker.log_path = logPath;
   await writeFile(paths.statePath, `${JSON.stringify(original, null, 2)}\n`, 'utf8');
@@ -86,6 +90,8 @@ test('a dead running worker is failed with salvaged output, reset, and resumes o
   assert.equal(repaired.steps[0].status, 'pending');
   assert.equal(repaired.steps[0].attempt, 1);
   assert.match(failedEvent.details.failure.output_tail, /useful worker output/);
+  assert.doesNotMatch(JSON.stringify(repaired), /recovery-secret/);
+  assert.doesNotMatch(await readFile(logPath, 'utf8'), /recovery-secret/);
   assert.deepEqual(repaired.history.slice(-5).map((entry) => entry.event), [
     'step_failed',
     'recovery_started',
@@ -233,7 +239,13 @@ Review the fixture.
     runsDir,
     campaignPath,
     configPath,
-    runOptions: { configPath, runsDir, stdout: silent, stderr: silent },
+    runOptions: {
+      configPath,
+      runsDir,
+      stdout: silent,
+      stderr: silent,
+      env: { ...process.env, CAMPAIGNS_CONFIG_DIR: path.join(root, 'user-config') },
+    },
   };
 }
 

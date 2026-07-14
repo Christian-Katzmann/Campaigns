@@ -23,8 +23,17 @@
   "engines": {
     "node": ">=20"
   },
+  "files": [
+    "bin/",
+    "lib/",
+    "public/",
+    "docs/paste-anywhere-planner.md",
+    "examples/sample-campaign.md",
+    "campaigns.config.json",
+    "server.mjs"
+  ],
   "bin": {
-    "campaigns": "./bin/campaigns.mjs"
+    "campaigns": "bin/campaigns.mjs"
   },
   "scripts": {
     "start": "node server.mjs",

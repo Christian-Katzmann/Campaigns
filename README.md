@@ -10,19 +10,29 @@ Plan work in markdown. Run it with a coding agent. Watch progress, activity, and
 
 You need Node.js 20+ and either Claude Code or Codex installed and signed in.
 
-In your first terminal:
+Open the included sample board with no install:
 
 ```bash
-git clone https://github.com/Christian-Katzmann/Campaigns.git
-cd Campaigns
-npm link --silent
-npm run start:sample
+npx campaigns-app
 ```
 
+The command binds to `127.0.0.1`, opens the board in your browser, and keeps the
+local server in that terminal. Press Ctrl+C when finished. For an unattended
+smoke test, use `npx campaigns-app --no-open --port 0`.
+
+Install the engine command when you are ready to run your own campaign:
+
+```bash
+npm install --global campaigns-app
+campaigns run path/to/your-campaign.md --runner codex
+```
+
+For source development, clone the repository and run `npm link --silent`.
 `./install.sh` is the equivalent Bash helper on macOS and Linux.
 
 Open the URL printed by the server. It defaults to `http://localhost:4178`.
-Keep that terminal running, then start the sample in a second terminal:
+From a source checkout, keep that terminal running and start the bundled sample
+in a second terminal:
 
 ```bash
 cd Campaigns
@@ -94,10 +104,14 @@ The markdown file is the source of truth. Browser edits use a `baseHash`; stale 
 | `campaigns run <campaign.md>` | Run or resume the next unchecked unit |
 | `campaigns stop <campaign.md>` | Stop at a safe boundary, then terminate after the grace period |
 | `campaigns recover <campaign.md>` | Repair a stopped or failed run ledger |
+| `campaigns config doctor [campaign.md]` | Show resolved config, sources, root, and warnings |
+| `npx campaigns-app` | Open the bundled sample board without installing |
 | `npm start -- --file <campaign.md>` | Open one campaign in the local board |
 | `npm run start:sample` | Open the included sample campaign |
 
-Run `campaigns --help` for runner, model, branch, state-directory, and run-cap options.
+Run `campaigns --help` for runner, model, branch, state-directory, config, and
+run-cap options. Configuration precedence and platform paths are documented in
+[Running campaigns](docs/running-campaigns.md#configuration).
 
 ## Server and API reference
 
@@ -135,7 +149,7 @@ Registering a file uses an absolute path:
 ## Platform support
 
 - The board, local server, and execution engine run on macOS and Linux; the full suite runs on both in CI. Windows paths, spawning, and signals received a static audit for v1.
-- `npm link --silent` is the cross-platform install. `./install.sh` is a macOS/Linux convenience wrapper.
+- `npm install --global campaigns-app` is the cross-platform CLI install. `npm link --silent` remains the source-checkout development install; `./install.sh` is a macOS/Linux convenience wrapper.
 - The desktop launcher and native alerts are macOS-only. Remote notifications and the browser UI remain cross-platform.
 - Windows engine limits in v1: Node cannot directly launch `.cmd`/`.bat` agent shims without a shell, and forced stops signal only the direct agent process. Use a native agent executable; descendants started by it may need manual cleanup.
 - The optional public-asset renderer is macOS-only and is not required to plan, run, or watch campaigns.
