@@ -217,6 +217,31 @@ test('a failed step can be reset by recovery and attempted again', () => {
   assert.equal(state.steps[0].failure, null);
 });
 
+test('check_failed is a structured non-terminal event at step and review boundaries', () => {
+  let state = move(stateWithSteps(), 'run_started');
+  state = move(state, 'step_started', { step_id: '1.1', worker: worker() });
+  state = move(state, 'check_failed', {
+    step_id: '1.1',
+    message: 'Executable check failed.',
+    details: { scope: 'step', failures: [{ command: 'npm test', exit_code: 1 }] },
+  });
+  assert.equal(state.run.status, 'running');
+  assert.equal(state.steps[0].status, 'running');
+  assert.equal(state.history.at(-1).details.scope, 'step');
+
+  state = move(state, 'step_completed', {
+    step_id: '1.1',
+    receipt_path: '/state/runs/a/receipts/1.1.md',
+  });
+  state = move(state, 'run_reached_final_review');
+  state = move(state, 'check_failed', {
+    message: 'Campaign check failed.',
+    details: { scope: 'campaign', failures: [{ command: 'npm test', exit_code: 1 }] },
+  });
+  assert.equal(state.run.status, 'awaiting_review');
+  assertValidRunState(state);
+});
+
 test('a user-stopped live step can be continued by recovery', () => {
   let state = move(stateWithSteps(), 'run_started');
   state = move(state, 'step_started', { step_id: '1.1', worker: worker() });
@@ -288,6 +313,7 @@ test('force merge is explicit and becomes an immutable successful terminal state
 
 test('all audit taxonomy events have a first-class schema name', () => {
   for (const event of [
+    'check_failed',
     'step_failed',
     'review_unparseable',
     'final_review_halted',

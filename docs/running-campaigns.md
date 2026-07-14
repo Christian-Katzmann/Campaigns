@@ -34,6 +34,13 @@ Inside the JSON string, escape only as JSON requires: `\"` for a double quote,
 backticks otherwise remain part of the command unchanged. Repeat the line for
 several checks. Campaigns without `CHECK:` lines keep their previous plan shape.
 
+The engine runs a step's checks from the repository root after its worker exits
+successfully and before ticking the step. It matches `expectedOutput` against
+combined stdout and stderr. Failed checks enter the fix loop and rerun after
+each fix; all campaign checks run again before final review. Check output is
+redacted first, then capped at 4096 characters with a visible truncation marker
+before it is written to a receipt/state file or sent to a fix worker.
+
 ## Run limits
 
 The shipped defaults are 50 completed steps and 360 minutes per run:

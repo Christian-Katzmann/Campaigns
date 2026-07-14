@@ -10,6 +10,7 @@ import {
   PumpLockError,
   requestCampaignStop,
   runCampaign,
+  runExecutableChecks,
   runPathsForCampaign,
 } from '../lib/pump.mjs';
 import { validateRunState } from '../lib/run-state.mjs';
@@ -51,6 +52,136 @@ test('parseCampaignPlan attaches one and several executable checks', () => {
     `Create the second fixture result.\n${severalChecks}`,
   );
   assert.equal(parseCampaignPlan(severalChecksMarkdown).steps[1].checks.length, 3);
+});
+
+test('executable checks enforce their own timeout', async () => {
+  const startedAt = Date.now();
+  const [result] = await runExecutableChecks([{
+    command: `${JSON.stringify(process.execPath)} -e "setTimeout(() => {}, 5000)"`,
+    expectedExit: 0,
+    expectedOutput: null,
+    timeoutMs: 50,
+  }], { cwd: process.cwd() });
+
+  assert.equal(result.passed, false);
+  assert.equal(result.timed_out, true);
+  assert.match(result.failure, /timed out after 50ms/);
+  assert.ok(Date.now() - startedAt < 1_000);
+});
+
+test('passing executable checks are captured in the receipt before the step ticks', async (t) => {
+  const checks = [
+    { command: `node -e "process.stdout.write('ready')"`, expectedOutput: 'ready' },
+    { command: `node -e "process.stderr.write('clean')"`, expectedOutput: 'clean' },
+  ].map((check) => `CHECK: ${JSON.stringify(check)}`).join('\n');
+  const fixture = await makeFixture(t, {
+    campaignText: campaignMarkdown(false).replace(
+      'Create the first fixture result.',
+      `Create the first fixture result.\n${checks}`,
+    ),
+  });
+
+  const result = await runCampaign(fixture.campaignPath, fixture.options);
+  const markdown = await readFile(fixture.campaignPath, 'utf8');
+  const receipt = await readFile(path.join(result.receiptsDir, '1.1-1.md'), 'utf8');
+
+  assert.match(markdown, /- \[x\] Step 1\.1/);
+  assert.match(receipt, /## Executable checks/);
+  assert.match(receipt, /process\.stdout\.write\('ready'\)/);
+  assert.match(receipt, /process\.stderr\.write\('clean'\)/);
+  assert.equal((receipt.match(/- Outcome: `pass`/g) ?? []).length, 2);
+  assert.equal(result.state.history.some((entry) => entry.event === 'check_failed'), false);
+});
+
+test('a failing step check stays unticked, feeds redacted capped output to a fix, and reruns', async (t) => {
+  const command = `node -e "const fs=require('node:fs'); if(!fs.existsSync('fixed.txt')){process.stdout.write('x'.repeat(6000)+' AUTH_SECRET=check-secret');process.exit(1)} process.stdout.write('fixed')"`;
+  const fixture = await makeFixture(t, {
+    campaignText: campaignMarkdown(false).replace(
+      'Create the first fixture result.',
+      `Create the first fixture result.\nCHECK: ${JSON.stringify({ command, expectedOutput: 'fixed' })}`,
+    ),
+    checkFixScript: `
+      const fs = require('node:fs');
+      const { execFileSync } = require('node:child_process');
+      const campaign = fs.readFileSync('campaign.md', 'utf8');
+      if (campaign.includes('- [x] Step 1.1')) throw new Error('step ticked before checks passed');
+      fs.writeFileSync('check-fix-prompt.txt', process.argv[1]);
+      fs.writeFileSync('fixed.txt', 'fixed\\n');
+      execFileSync('git', ['add', 'check-fix-prompt.txt', 'fixed.txt']);
+      execFileSync('git', ['-c', 'commit.gpgSign=false', 'commit', '-m', 'Fix executable check']);
+      process.stdout.write('fixed');
+    `,
+  });
+
+  const result = await runCampaign(fixture.campaignPath, fixture.options);
+  const state = JSON.parse(await readFile(result.statePath, 'utf8'));
+  const receipt = await readFile(path.join(result.receiptsDir, '1.1-1.md'), 'utf8');
+  const fixPrompt = await readFile(path.join(fixture.repo, 'check-fix-prompt.txt'), 'utf8');
+  const event = state.history.find((entry) => entry.event === 'check_failed');
+
+  assert.equal(state.run.status, 'completed');
+  assert.equal(event.from_status, 'running');
+  assert.equal(event.to_status, 'running');
+  assert.equal(event.details.failures[0].output.length, 4_096);
+  assert.match(event.details.failures[0].output, /^\[TRUNCATED: output capped at 4096 characters\]/);
+  assert.match(event.details.failures[0].output, /AUTH_SECRET=\[REDACTED\]/);
+  assert.doesNotMatch(JSON.stringify(state), /check-secret/);
+  assert.match(fixPrompt, /^Fix the executable-check failures for Step 1\.1\./);
+  assert.match(fixPrompt, /\[TRUNCATED: output capped at 4096 characters\]/);
+  assert.match(fixPrompt, /AUTH_SECRET=\[REDACTED\]/);
+  assert.doesNotMatch(fixPrompt, /check-secret/);
+  assert.match(receipt, /### Run 1[\s\S]*- Outcome: `fail`/);
+  assert.match(receipt, /### Run 2[\s\S]*- Outcome: `pass`/);
+});
+
+test('campaign-wide checks catch a later step regression before final review', async (t) => {
+  const command = `node -e "const fs=require('node:fs');process.exit(fs.existsSync('contract.txt')?0:1)"`;
+  const fixture = await makeFixture(t, {
+    campaignText: campaignMarkdown(false).replace(
+      'Create the first fixture result.',
+      `Create the first fixture result.\nCHECK: ${JSON.stringify({ command })}`,
+    ),
+    runnerScript: `
+      const fs = require('node:fs');
+      const { execFileSync } = require('node:child_process');
+      const prompt = process.argv[1];
+      if (prompt.includes('Step: 1.1')) {
+        fs.writeFileSync('contract.txt', 'intact\\n');
+        execFileSync('git', ['add', 'contract.txt']);
+        execFileSync('git', ['-c', 'commit.gpgSign=false', 'commit', '-m', 'Create checked contract']);
+      } else if (prompt.includes('Step: 1.2')) {
+        fs.rmSync('contract.txt');
+        execFileSync('git', ['add', '-u', 'contract.txt']);
+        execFileSync('git', ['-c', 'commit.gpgSign=false', 'commit', '-m', 'Regress earlier contract']);
+      }
+      process.stdout.write(prompt);
+    `,
+    checkFixScript: `
+      const fs = require('node:fs');
+      const { execFileSync } = require('node:child_process');
+      fs.writeFileSync('contract.txt', 'restored\\n');
+      execFileSync('git', ['add', 'contract.txt']);
+      execFileSync('git', ['-c', 'commit.gpgSign=false', 'commit', '-m', 'Restore checked contract']);
+      process.stdout.write('restored');
+    `,
+    reviewScript: `
+      const fs = require('node:fs');
+      if (!fs.existsSync('contract.txt')) process.exit(9);
+      process.stdout.write('Verdict: APPROVED\\nReasons:\\n\\nChecks passed before review.');
+    `,
+  });
+
+  const result = await runCampaign(fixture.campaignPath, fixture.options);
+  const campaignFailure = result.state.history.find((entry) => (
+    entry.event === 'check_failed' && entry.details.scope === 'campaign'
+  ));
+
+  assert.equal(result.state.run.status, 'completed');
+  assert.ok(campaignFailure);
+  assert.equal(campaignFailure.from_status, 'awaiting_review');
+  assert.equal(campaignFailure.to_status, 'awaiting_review');
+  assert.equal(await readFile(path.join(fixture.repo, 'contract.txt'), 'utf8'), 'restored\n');
+  assert.equal(result.state.review.verdict, 'APPROVED');
 });
 
 test('fake success runner ticks every step, runs final review, and merges', async (t) => {
@@ -559,6 +690,8 @@ async function makeFixture(t, {
   runnerScript = null,
   reviewScript = null,
   fixScript = null,
+  checkFixScript = null,
+  campaignText = null,
   watchdog = null,
   maxFixAttempts = 2,
   forceMergeUnreviewed = false,
@@ -579,13 +712,14 @@ async function makeFixture(t, {
   await git(repo, ['config', 'init.defaultBranch', defaultBranch]);
   await git(repo, ['config', 'user.name', 'Campaigns Test']);
   await git(repo, ['config', 'user.email', 'campaigns@example.test']);
-  await writeFile(campaignPath, campaignMarkdown(firstChecked), 'utf8');
+  await writeFile(campaignPath, campaignText ?? campaignMarkdown(firstChecked), 'utf8');
   await writeConfig(configPath, {
     branch,
     delayMs,
     runnerScript,
     reviewScript,
     fixScript,
+    checkFixScript,
     watchdog,
     maxFixAttempts,
     forceMergeUnreviewed,
@@ -656,6 +790,7 @@ async function writeConfig(configPath, {
   runnerScript = null,
   reviewScript = null,
   fixScript = null,
+  checkFixScript = null,
   watchdog = null,
   maxFixAttempts = 2,
   forceMergeUnreviewed = false,
@@ -670,9 +805,13 @@ async function writeConfig(configPath, {
   const finalReviewScript = reviewScript
     ?? "process.stdout.write('Verdict: APPROVED\\nReasons:\\n\\nEverything landed.')";
   const finalFixScript = fixScript ?? "process.stdout.write('No fix commit produced.')";
+  const executableCheckFixScript = checkFixScript
+    ?? "process.stdout.write('No executable-check fix commit produced.')";
   const script = `
     if (process.argv[1].includes('campaigns.step_completed')) {
       ${stepScript}
+    } else if (process.argv[1].startsWith('Fix the executable-check failures')) {
+      ${executableCheckFixScript}
     } else if (process.argv[1].startsWith('Fix the final-review gaps')) {
       ${finalFixScript}
     } else {
