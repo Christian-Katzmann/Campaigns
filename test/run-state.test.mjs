@@ -124,6 +124,20 @@ test('campaign_completed is a legal reviewed terminal event', () => {
   assert.equal(state.review.verdict, 'APPROVED');
 });
 
+test('an unparseable review waits for a human without inventing a status name', () => {
+  let state = reviewingState();
+  state = move(state, 'final_review_reasked', { issue: 'missing-verdict' });
+  state = move(state, 'review_unparseable', {
+    review_path: '/state/runs/a/final-review.md',
+  });
+
+  assert.equal(state.run.status, 'awaiting_human_review');
+  assert.equal(state.review.status, 'awaiting_human');
+  assert.equal(state.review.attempts, 2);
+  assert.equal(state.history.at(-1).event, 'review_unparseable');
+  assertValidRunState(state);
+});
+
 test('a pending step may be explicitly skipped before review', () => {
   let state = move(stateWithSteps(), 'run_started');
   state = move(state, 'step_skipped', { step_id: '1.1', message: 'Not needed.' });
@@ -232,6 +246,7 @@ test('force merge is explicit and becomes an immutable successful terminal state
 test('all audit taxonomy events have a first-class schema name', () => {
   for (const event of [
     'step_failed',
+    'review_unparseable',
     'final_review_halted',
     'force_merged_unreviewed',
     'stopped_by_user',

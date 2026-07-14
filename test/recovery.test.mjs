@@ -95,7 +95,7 @@ test('a dead running worker is failed with salvaged output, reset, and resumes o
   ]);
 
   const resumed = await runCampaign(fixture.campaignPath, fixture.runOptions);
-  assert.equal(resumed.state.run.status, 'awaiting_review');
+  assert.equal(resumed.state.run.status, 'completed');
   assert.equal(resumed.state.steps[0].status, 'completed');
   assert.equal(resumed.state.steps[0].attempt, 2);
 });
@@ -246,7 +246,15 @@ function fakeRunnerConfig() {
     runners: {
       fake: {
         binary: process.execPath,
-        args: ['-e', 'process.stdout.write(process.argv[1])', '{prompt}'],
+        args: [
+          '-e',
+          `process.stdout.write(
+            process.argv[1].includes('campaigns.step_completed')
+              ? process.argv[1]
+              : 'Verdict: APPROVED\\nReasons:\\n\\nRecovery is complete.'
+          )`,
+          '{prompt}',
+        ],
         prompt: { delivery: 'arg' },
         defaults: { model: 'fake-model', effort: 'none' },
         effortMap: { none: 'none' },

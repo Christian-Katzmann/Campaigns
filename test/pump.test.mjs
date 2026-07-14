@@ -14,7 +14,7 @@ import { validateRunState } from '../lib/run-state.mjs';
 
 const silent = { write() {} };
 
-test('fake success runner ticks every step, commits on the configured branch, and awaits review', async (t) => {
+test('fake success runner ticks every step, runs final review, and completes', async (t) => {
   const fixture = await makeFixture(t, { branch: 'campaign/fixture' });
   const result = await runCampaign(fixture.campaignPath, fixture.options);
   const markdown = await readFile(fixture.campaignPath, 'utf8');
@@ -23,8 +23,8 @@ test('fake success runner ticks every step, commits on the configured branch, an
   assert.match(markdown, /- \[x\] Step 1\.1/);
   assert.match(markdown, /- \[x\] Step 1\.2/);
   assert.deepEqual(validateRunState(state), { valid: true, errors: [] });
-  assert.equal(state.run.status, 'awaiting_review');
-  assert.equal(state.history.at(-1).event, 'run_reached_final_review');
+  assert.equal(state.run.status, 'completed');
+  assert.equal(state.history.at(-1).event, 'final_review_approved');
   assert.equal(await git(fixture.repo, ['branch', '--show-current']), 'campaign/fixture');
   const status = await git(fixture.repo, ['status', '--short']);
   assert.equal(status, '');
@@ -62,7 +62,7 @@ test('an interrupted worker is reset and the next invocation resumes the first u
   await writeConfig(fixture.configPath, { delayMs: 0 });
   const resumed = await runCampaign(fixture.campaignPath, fixture.options);
   const state = JSON.parse(await readFile(resumed.statePath, 'utf8'));
-  assert.equal(state.run.status, 'awaiting_review');
+  assert.equal(state.run.status, 'completed');
   assert.equal(state.steps[0].attempt, 2);
   assert.ok(state.history.some((entry) => entry.event === 'step_reset_by_recover'));
 });
@@ -75,7 +75,7 @@ test('a hand-ticked checkbox is source of truth and is not rerun', async (t) => 
   assert.equal(state.steps[0].status, 'skipped');
   assert.equal(state.steps[0].attempt, 0);
   assert.equal(state.steps[1].status, 'completed');
-  assert.equal(state.run.status, 'awaiting_review');
+  assert.equal(state.run.status, 'completed');
 });
 
 test('dirty run-start preflight blocks without consuming an attempt and succeeds after cleanup', async (t) => {
@@ -97,7 +97,7 @@ test('dirty run-start preflight blocks without consuming an attempt and succeeds
 
   await rm(dirtyPath);
   const resumed = await runCampaign(fixture.campaignPath, fixture.options);
-  assert.equal(resumed.state.run.status, 'awaiting_review');
+  assert.equal(resumed.state.run.status, 'completed');
 });
 
 test('invalid campaign preflight records its taxonomy event and can restart after repair', async (t) => {
@@ -116,7 +116,7 @@ test('invalid campaign preflight records its taxonomy event and can restart afte
 
   await writeFile(fixture.campaignPath, campaignMarkdown(false), 'utf8');
   const resumed = await runCampaign(fixture.campaignPath, fixture.options);
-  assert.equal(resumed.state.run.status, 'awaiting_review');
+  assert.equal(resumed.state.run.status, 'completed');
 });
 
 test('unavailable branch preflight records its taxonomy event without starting a step', async (t) => {
@@ -136,14 +136,14 @@ test('unavailable branch preflight records its taxonomy event without starting a
 
 test('watchdog keeps an active runner alive after the runtime floor', async (t) => {
   const fixture = await makeFixture(t, {
-    watchdog: { minimum_runtime_ms: 100, stall_window_ms: 60 },
+    watchdog: { minimum_runtime_ms: 250, stall_window_ms: 120 },
     runnerScript: `
       const prompt = process.argv[1];
       let count = 0;
       const timer = setInterval(() => {
         process.stdout.write('activity-' + count + '\\n');
         count += 1;
-        if (count === 7) {
+        if (count === 14) {
           clearInterval(timer);
           process.stdout.write(prompt);
         }
@@ -152,7 +152,7 @@ test('watchdog keeps an active runner alive after the runtime floor', async (t) 
   });
 
   const result = await runCampaign(fixture.campaignPath, fixture.options);
-  assert.equal(result.state.run.status, 'awaiting_review');
+  assert.equal(result.state.run.status, 'completed');
   assert.equal(result.state.steps[0].status, 'completed');
   assert.equal(result.state.steps[1].status, 'completed');
 });
@@ -181,11 +181,42 @@ test('watchdog kills a silent runner and salvages its output tail in the receipt
   assert.match(receipt, /last useful output before silence/);
 });
 
+test('an unparseable review is re-asked exactly once before awaiting human review', async (t) => {
+  const fixture = await makeFixture(t, {
+    reviewScript: "process.stdout.write('I reviewed it, but omitted the required header.')",
+  });
+
+  const result = await runCampaign(fixture.campaignPath, fixture.options);
+  const state = JSON.parse(await readFile(result.statePath, 'utf8'));
+
+  assert.equal(state.run.status, 'awaiting_human_review');
+  assert.equal(state.review.attempts, 2);
+  assert.equal(state.history.filter((entry) => entry.event === 'final_review_reasked').length, 1);
+  assert.equal(state.history.at(-1).event, 'review_unparseable');
+  assert.equal(state.history.some((entry) => entry.event === 'final_review_halted'), false);
+  assert.equal(state.history.some((entry) => entry.event === 'campaign_merged'), false);
+});
+
+test('a repeated prose reason is preserved whole after the single tag re-ask', async (t) => {
+  const fixture = await makeFixture(t, {
+    reviewScript: "process.stdout.write('Verdict: NEEDS WORK\\nReasons: Read the cumulative diff before approving')",
+  });
+
+  const result = await runCampaign(fixture.campaignPath, fixture.options);
+  const state = JSON.parse(await readFile(result.statePath, 'utf8'));
+
+  assert.equal(state.run.status, 'reworking');
+  assert.equal(state.review.attempts, 2);
+  assert.deepEqual(state.review.reasons, []);
+  assert.deepEqual(state.review.raw_tags, ['Read the cumulative diff before approving']);
+});
+
 async function makeFixture(t, {
   branch = null,
   delayMs = 0,
   firstChecked = false,
   runnerScript = null,
+  reviewScript = null,
   watchdog = null,
 } = {}) {
   const root = await mkdtemp(path.join(tmpdir(), 'campaigns-pump-'));
@@ -199,7 +230,7 @@ async function makeFixture(t, {
   await git(repo, ['config', 'user.name', 'Campaigns Test']);
   await git(repo, ['config', 'user.email', 'campaigns@example.test']);
   await writeFile(campaignPath, campaignMarkdown(firstChecked), 'utf8');
-  await writeConfig(configPath, { branch, delayMs, runnerScript, watchdog });
+  await writeConfig(configPath, { branch, delayMs, runnerScript, reviewScript, watchdog });
   await git(repo, ['add', 'campaign.md']);
   await git(repo, ['commit', '-m', 'Add fixture campaign']);
   return {
@@ -246,11 +277,21 @@ async function writeConfig(configPath, {
   branch = null,
   delayMs = 0,
   runnerScript = null,
+  reviewScript = null,
   watchdog = null,
 } = {}) {
-  const script = runnerScript ?? (delayMs > 0
+  const stepScript = runnerScript ?? (delayMs > 0
     ? `setTimeout(() => process.stdout.write(process.argv[1]), ${delayMs})`
     : 'process.stdout.write(process.argv[1])');
+  const finalReviewScript = reviewScript
+    ?? "process.stdout.write('Verdict: APPROVED\\nReasons:\\n\\nEverything landed.')";
+  const script = `
+    if (process.argv[1].includes('campaigns.step_completed')) {
+      ${stepScript}
+    } else {
+      ${finalReviewScript}
+    }
+  `;
   const config = {
     schemaVersion: 1,
     defaultRunner: 'fake',
