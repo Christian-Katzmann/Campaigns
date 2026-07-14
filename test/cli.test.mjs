@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -17,7 +17,84 @@ test('campaigns --help keeps the engine commands and documents sample launch', a
   assert.match(stdout, /campaigns run <campaign\.md>/);
   assert.match(stdout, /campaigns recover <campaign\.md>/);
   assert.match(stdout, /campaigns stop <campaign\.md>/);
+  assert.match(stdout, /campaigns lint <campaign\.md>/);
   assert.match(stdout, /campaigns config doctor \[campaign\.md\]/);
+});
+
+test('campaigns lint is clean on the dogfood campaign', async (t) => {
+  const tempRoot = await mkdtemp(path.join(tmpdir(), 'campaigns-lint-clean-'));
+  t.after(() => rm(tempRoot, { recursive: true, force: true }));
+
+  const { stdout } = await execFileAsync(
+    process.execPath,
+    [cliPath, 'lint', 'examples/hello-run.md'],
+    { env: { ...process.env, CAMPAIGNS_RUNS_DIR: path.join(tempRoot, 'runs') } },
+  );
+
+  assert.match(stdout, /hello-run\.md: clean/);
+});
+
+test('campaigns lint exits zero for info and one for errors', async (t) => {
+  const tempRoot = await mkdtemp(path.join(tmpdir(), 'campaigns-lint-severity-'));
+  t.after(() => rm(tempRoot, { recursive: true, force: true }));
+  const infoPath = path.join(tempRoot, 'info.md');
+  const errorPath = path.join(tempRoot, 'error.md');
+  const env = { ...process.env, CAMPAIGNS_RUNS_DIR: path.join(tempRoot, 'runs') };
+  await writeFile(infoPath, `# Info only
+
+## Progress checklist
+
+### Phase 1 — Work
+
+- [ ] Step 1.1 — Work
+- [ ] Final review
+
+## Step 1.1 — Work
+
+Model: Fable 5 · High / GPT-5.6-Sol · High
+Parallel: NO
+
+\`\`\`text
+ACCEPTANCE:
+- Work is done.
+\`\`\`
+
+## Final review
+
+\`\`\`text
+Review the work.
+\`\`\`
+`, 'utf8');
+  await writeFile(errorPath, `# Errors
+
+## Progress checklist
+
+### Phase 1 — Work
+
+- [ ] Step 1.1 — Work
+
+## Step 1.1 — Work
+
+Parallel: NO
+
+\`\`\`text
+Do the work.
+\`\`\`
+`, 'utf8');
+
+  const info = await execFileAsync(process.execPath, [cliPath, 'lint', infoPath], { env });
+  assert.match(info.stdout, /info \[missing-check\]/);
+
+  let failure;
+  try {
+    await execFileAsync(process.execPath, [cliPath, 'lint', errorPath], { env });
+  } catch (error) {
+    failure = error;
+  }
+  assert.equal(failure?.code, 1);
+  assert.match(failure.stdout, /error \[missing-model\]/);
+  assert.match(failure.stdout, /error \[missing-acceptance\]/);
+  assert.match(failure.stdout, /error \[missing-final-review\]/);
 });
 
 test('campaigns --no-open launches the bundled sample on loopback', async (t) => {

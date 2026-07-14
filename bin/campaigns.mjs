@@ -1,23 +1,31 @@
 #!/usr/bin/env node
 
 import { execFile } from 'node:child_process';
+import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
   CampaignStopError,
+  defaultCampaignsRunsDir,
   PumpLockError,
   requestCampaignStop,
   runCampaign,
 } from '../lib/pump.mjs';
 import { formatConfigDoctor, resolveCampaignConfig } from '../lib/config.mjs';
+import { loadUnifiedLessons } from '../lib/lessons.mjs';
 import { RecoveryError, recoverCampaign } from '../lib/recovery.mjs';
+import {
+  analyzePlanHealth,
+  resolveAvoidAboveSteps,
+} from '../public/lib/plan-health.mjs';
 
 const HELP = `Usage:
   campaigns [--no-open] [--port <number>]
   campaigns run <campaign.md> [options]
   campaigns recover <campaign.md> [options]
   campaigns stop <campaign.md> [options]
+  campaigns lint <campaign.md> [--state-dir <path>]
   campaigns config doctor [campaign.md] [options]
 
 Board options:
@@ -60,6 +68,7 @@ async function main(argv) {
     }
   }
   if (argv[0] === 'config') return runConfigCommand(argv.slice(1));
+  if (argv[0] === 'lint') return runLintCommand(argv.slice(1));
   const [command, campaignFile, ...rest] = argv;
   if (!['run', 'recover', 'stop'].includes(command) || !campaignFile) {
     process.stderr.write(HELP);
@@ -112,6 +121,41 @@ async function main(argv) {
   } finally {
     process.removeListener('SIGINT', stop);
     process.removeListener('SIGTERM', stop);
+  }
+}
+
+async function runLintCommand(argv) {
+  let parsed;
+  try {
+    parsed = parseLintOptions(argv);
+  } catch (error) {
+    process.stderr.write(`campaigns: ${error.message}\n`);
+    return 2;
+  }
+
+  try {
+    const campaignPath = path.resolve(parsed.campaignFile);
+    const [markdown, lessons] = await Promise.all([
+      readFile(campaignPath, 'utf8'),
+      loadUnifiedLessons(parsed.runsDir),
+    ]);
+    const findings = analyzePlanHealth(markdown, resolveAvoidAboveSteps(lessons));
+
+    if (findings.length === 0) {
+      process.stdout.write(`${campaignPath}: clean\n`);
+      return 0;
+    }
+
+    for (const finding of findings) {
+      process.stdout.write(
+        `${campaignPath}:${finding.line}: ${finding.severity} [${finding.ruleId}] ${finding.message}\n`
+        + `  Fix: ${finding.fixHint}\n`,
+      );
+    }
+    return findings.some((finding) => finding.severity === 'error') ? 1 : 0;
+  } catch (error) {
+    process.stderr.write(`campaigns: ${error.message}\n`);
+    return 2;
   }
 }
 
@@ -244,6 +288,23 @@ function parseDoctorOptions(args) {
     index += 1;
   }
   return { campaignFile, options: parseOptions(optionArgs, 'run') };
+}
+
+function parseLintOptions(args) {
+  const [campaignFile, ...rest] = args;
+  if (!campaignFile || campaignFile.startsWith('-')) {
+    throw new Error('Usage: campaigns lint <campaign.md> [--state-dir <path>]');
+  }
+
+  let runsDir = defaultCampaignsRunsDir(process.env);
+  for (let index = 0; index < rest.length; index += 1) {
+    if (rest[index] !== '--state-dir' || !rest[index + 1]) {
+      throw new Error(`Unknown or incomplete lint option: ${rest[index]}`);
+    }
+    runsDir = path.resolve(rest[index + 1]);
+    index += 1;
+  }
+  return { campaignFile, runsDir };
 }
 
 process.exitCode = await main(process.argv.slice(2));

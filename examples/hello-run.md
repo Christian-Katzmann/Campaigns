@@ -16,6 +16,12 @@ Model: Claude Opus · High
 Parallel: NO
 
 ```text
+SCOPE: Write the exact greeting proof file.
+OUTPUT: Create hello-output/greeting.txt with exactly the required text.
+ACCEPTANCE:
+- hello-output/greeting.txt contains exactly "Hello from Campaigns." plus a final newline.
+CHECK: {"command":"node -e \"const fs = require('node:fs'); if (fs.readFileSync('hello-output/greeting.txt', 'utf8') !== 'Hello from Campaigns.\\n') process.exit(1)\"","timeoutMs":10000}
+
 Create hello-output/greeting.txt with exactly this line, including its final newline:
 Hello from Campaigns.
 
@@ -28,6 +34,12 @@ Model: Claude Opus · High
 Parallel: NO
 
 ```text
+SCOPE: Verify the greeting and write the verification proof file.
+OUTPUT: Create hello-output/verified.txt without changing the greeting.
+ACCEPTANCE:
+- Both proof files contain exactly their requested line plus a final newline.
+CHECK: {"command":"node -e \"const fs = require('node:fs'); const ok = fs.readFileSync('hello-output/greeting.txt', 'utf8') === 'Hello from Campaigns.\\n' && fs.readFileSync('hello-output/verified.txt', 'utf8') === 'Greeting verified.\\n'; if (!ok) process.exit(1)\"","timeoutMs":10000}
+
 Read hello-output/greeting.txt and verify it contains exactly "Hello from Campaigns." plus a final newline.
 Create hello-output/verified.txt with exactly this line, including its final newline:
 Greeting verified.

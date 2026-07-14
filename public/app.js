@@ -1,8 +1,10 @@
 import { ensureFinalReviewLines, normalizeNewlines } from './lib/parser.mjs';
+import { resolveAvoidAboveSteps } from './lib/plan-health.mjs';
 import { elements, state } from './modules/state.mjs';
 import { applyCampaignLogo, showToast } from './modules/dom.mjs';
 import { syncThemeColorMeta } from './modules/effects.mjs';
 import {
+  fetchCampaignLessons,
   initLibraryFilter,
   initNewCampaign,
   loadLibraryExpandedCollections,
@@ -103,12 +105,16 @@ async function initialize() {
     return;
   }
 
-  const payload = await response.json();
+  const [payload, lessons] = await Promise.all([
+    response.json(),
+    fetchCampaignLessons(),
+  ]);
   state.id = payload.id ?? '';
   state.baseHash = payload.hash;
   state.filePath = payload.filePath;
   state.lastModified = payload.lastModified;
   state.markdown = normalizeNewlines(payload.markdown);
+  state.planHealthAvoidAboveSteps = resolveAvoidAboveSteps(lessons);
   state.serverBacked = true;
   state.dirty = false;
   state.saveStatus = 'idle';

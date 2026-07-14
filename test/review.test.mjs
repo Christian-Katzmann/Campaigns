@@ -4,6 +4,7 @@ import { test } from 'node:test';
 import {
   REVIEW_REASON_ALIASES,
   REVIEW_REASON_TAGS,
+  buildFixPrompt,
   parseReviewOutput,
 } from '../lib/review.mjs';
 
@@ -98,4 +99,32 @@ test('missing or conflicting verdict headers remain structurally invalid', () =>
     parseReviewOutput('Verdict: APPROVED\nVerdict: NEEDS WORK\nReasons: scope-drift').issue,
     'ambiguous-verdict',
   );
+});
+
+test('fix prompts accept executable-check context without pretending it is a review', () => {
+  const prompt = buildFixPrompt({
+    state: {
+      run: {
+        identity: {
+          execution: {
+            campaign_path: '/repo/campaign.md',
+            branch: 'campaign/checks',
+            merge_target_branch: 'main',
+          },
+        },
+      },
+    },
+    context: {
+      instruction: 'Fix executable checks for Step 1.2.',
+      evidenceHeading: 'Failing checks',
+      evidence: 'Command: npm test\nOutput: failed',
+      acceptanceCriteria: 'Tests pass.',
+    },
+  });
+
+  assert.match(prompt, /^Fix executable checks for Step 1\.2\./);
+  assert.match(prompt, /## Failing checks\n\nCommand: npm test/);
+  assert.match(prompt, /## Acceptance criteria\n\nTests pass\./);
+  assert.match(prompt, /git diff main\.\.\.campaign\/checks/);
+  assert.doesNotMatch(prompt, /## Review/);
 });

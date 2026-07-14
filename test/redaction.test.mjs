@@ -6,6 +6,7 @@ import { test } from 'node:test';
 
 import {
   REDACTION_MASK,
+  redactAndCapText,
   createStreamingRedactor,
   redactText,
   writeRedactedState,
@@ -34,6 +35,19 @@ test('redacts env assignments, connection strings, bearer credentials, and token
   assert.match(redacted, /postgres:\/\/\[REDACTED\]/);
   assert.match(redacted, /Bearer \[REDACTED\]/);
   assert.match(redacted, new RegExp(REDACTION_MASK.replace(/[\[\]]/g, '\\$&')));
+});
+
+test('redacts before capping persisted command output', () => {
+  const collapsedByRedaction = `AUTH_SECRET=${'s'.repeat(100)}`;
+  const collapsed = redactAndCapText(collapsedByRedaction, 80);
+  assert.equal(collapsed, `AUTH_SECRET=${REDACTION_MASK}`);
+  assert.doesNotMatch(collapsed, /TRUNCATED/);
+
+  const capped = redactAndCapText(`${'x'.repeat(100)}\nAUTH_SECRET=tail-secret`, 80);
+  assert.equal(capped.length, 80);
+  assert.match(capped, /^\[TRUNCATED: output capped at 80 characters\]/);
+  assert.match(capped, new RegExp(REDACTION_MASK.replace(/[\[\]]/g, '\\$&')));
+  assert.doesNotMatch(capped, /tail-secret/);
 });
 
 test('streaming redaction holds incomplete lines across mixed output chunks', () => {

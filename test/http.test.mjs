@@ -7,8 +7,9 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import { after, test } from 'node:test';
 
-import { runPathsForCampaign } from '../lib/pump.mjs';
+import { parseCampaignPlan, runPathsForCampaign } from '../lib/pump.mjs';
 import { validateRunState } from '../lib/run-state.mjs';
+import { parseMarkdown, replaceFencedBlockContent } from '../public/lib/parser.mjs';
 
 const execFileAsync = promisify(execFile);
 const projectRoot = path.resolve('.');
@@ -107,7 +108,23 @@ test('document and registry HTTP contracts hold against a real ephemeral server'
     platform: process.platform,
   });
 
-  const savedMarkdown = '# HTTP fixture\n\nSaved through HTTP.\n';
+  const editableMarkdown = fixtureCampaign();
+  const promptBlock = parseMarkdown(editableMarkdown).find((block) => block.type === 'code');
+  const editedPrompt = [
+    'Complete the smoke-test step.',
+    `CHECK: ${JSON.stringify({
+      command: `node -e "console.log('ready|set')"`,
+      expectedOutput: 'ready|set',
+      timeoutMs: 5_000,
+    })}`,
+    `CHECK: ${JSON.stringify({
+      command: "printf '%s\\n' '$HOME'",
+      expectedExit: 0,
+      timeoutMs: 1_000,
+    })}`,
+  ].join('\n');
+  const savedMarkdown = replaceFencedBlockContent(editableMarkdown, promptBlock, editedPrompt);
+  const checksBeforeSave = parseCampaignPlan(savedMarkdown).steps[0].checks;
   const saveResponse = await fetch(`${baseUrl}/api/document`, {
     method: 'PUT',
     headers: { 'content-type': 'application/json' },
@@ -118,6 +135,12 @@ test('document and registry HTTP contracts hold against a real ephemeral server'
   assert.equal(saved.ok, true);
   assert.equal(saved.hash, hash(savedMarkdown));
   assert.equal(await readFile(campaignPath, 'utf8'), savedMarkdown);
+
+  const reloadedResponse = await fetch(`${baseUrl}/api/document`);
+  const reloaded = await reloadedResponse.json();
+  assert.equal(reloadedResponse.status, 200);
+  assert.equal(reloaded.markdown, savedMarkdown);
+  assert.deepEqual(parseCampaignPlan(reloaded.markdown).steps[0].checks, checksBeforeSave);
 
   const onDiskMarkdown = '# HTTP fixture\n\nChanged outside Campaigns.\n';
   await writeFile(campaignPath, onDiskMarkdown, 'utf8');

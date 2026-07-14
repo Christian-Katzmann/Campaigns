@@ -10,8 +10,11 @@ import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 
 import {
+  CHECK_LINE_REGEX,
   classifyPhases,
+  DEFAULT_EXECUTABLE_CHECK_TIMEOUT_MS,
   ensureFinalReviewLines,
+  EXECUTABLE_CHECK_LINE_REGEX,
   extractPhases,
   extractStepSections,
   findCheckLinkTarget,
@@ -20,6 +23,7 @@ import {
   getProgressStats,
   isNewShapeCampaign,
   linkChecksToSteps,
+  parseExecutableChecks,
   parseMarkdown,
   progressChecklistBlocks,
 } from '../public/lib/parser.mjs';
@@ -37,6 +41,61 @@ function countByType(blocks) {
     return acc;
   }, {});
 }
+
+/* ------------------------------ Executable checks ---------------------------------- */
+
+test('executable checks: existing campaign prompts have none', () => {
+  const prompts = parseMarkdown(SAMPLE).filter((block) => block.type === 'code');
+  assert.deepEqual(prompts.flatMap((block) => parseExecutableChecks(block.content)), []);
+});
+
+test('executable checks: one directive receives stable defaults', () => {
+  const prompt = `CHECK: ${JSON.stringify({ command: 'npm test' })}`;
+  assert.deepEqual(parseExecutableChecks(prompt), [{
+    command: 'npm test',
+    expectedExit: 0,
+    expectedOutput: null,
+    timeoutMs: DEFAULT_EXECUTABLE_CHECK_TIMEOUT_MS,
+  }]);
+});
+
+test('executable checks: several directives preserve shell quoting and literal output', () => {
+  const command = `node -e "console.log('a|b', process.env.HOME)"`;
+  const expectedOutput = `a|b "quoted" \\ path`;
+  const prompt = [
+    'SCOPE: Exercise the parser.',
+    `CHECK: ${JSON.stringify({ command, expectedExit: 2, expectedOutput, timeoutMs: 9_000 })}`,
+    `CHECK: ${JSON.stringify({ command: "printf '%s\\n' '$HOME'", timeoutMs: 500 })}`,
+    `CHECK: ${JSON.stringify({ command: 'npm run check', expectedOutput: 'clean' })}`,
+  ].join('\n');
+
+  assert.deepEqual(parseExecutableChecks(prompt), [
+    { command, expectedExit: 2, expectedOutput, timeoutMs: 9_000 },
+    {
+      command: "printf '%s\\n' '$HOME'",
+      expectedExit: 0,
+      expectedOutput: null,
+      timeoutMs: 500,
+    },
+    {
+      command: 'npm run check',
+      expectedExit: 0,
+      expectedOutput: 'clean',
+      timeoutMs: DEFAULT_EXECUTABLE_CHECK_TIMEOUT_MS,
+    },
+  ]);
+});
+
+test('executable CHECK directives stay distinct from progress checkboxes', () => {
+  assert.equal(CHECK_LINE_REGEX.test('- [ ] Step 1.1 — Build it'), true);
+  assert.equal(EXECUTABLE_CHECK_LINE_REGEX.test('- [ ] Step 1.1 — Build it'), false);
+  assert.equal(CHECK_LINE_REGEX.test('CHECK: {"command":"npm test"}'), false);
+  assert.equal(EXECUTABLE_CHECK_LINE_REGEX.test('CHECK: {"command":"npm test"}'), true);
+  assert.throws(
+    () => parseExecutableChecks('CHECK: {"command":"npm test","timeout":10}'),
+    /unknown field timeout/,
+  );
+});
 
 /* --------------------------- examples/sample-campaign.md ---------------------------- */
 

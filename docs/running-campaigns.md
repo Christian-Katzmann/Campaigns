@@ -8,6 +8,58 @@ Install the engine with `npm install --global campaigns-app`. For a zero-install
 look at the bundled sample board, run `npx campaigns-app`; add `--no-open --port
 0` for an unattended smoke test. The installed executable remains `campaigns`.
 
+## Executable checks
+
+A step can declare machine-checkable acceptance criteria inside its fenced
+prompt. Each check is one physical line beginning with `CHECK:` followed by a
+JSON object:
+
+```text
+SCOPE: Ship the parser change.
+CHECK: {"command":"npm test","expectedExit":0,"timeoutMs":120000}
+CHECK: {"command":"node -e \"console.log('ready')\"","expectedOutput":"ready","timeoutMs":10000}
+```
+
+| Field | Rule |
+| --- | --- |
+| `command` | Required non-empty shell command. |
+| `expectedExit` | Non-negative integer; defaults to `0`. |
+| `expectedOutput` | Optional literal substring in captured output. v1 does not interpret regular expressions. |
+| `timeoutMs` | Positive integer in milliseconds; defaults to `120000`. |
+
+The marker must be uppercase and the JSON must stay on one line. Because the
+prompt is already fenced Markdown, Markdown does not interpret the command.
+Inside the JSON string, escape only as JSON requires: `\"` for a double quote,
+`\\` for a backslash, and `\n` for a newline. Shell quotes, pipes, `$`, and
+backticks otherwise remain part of the command unchanged. Repeat the line for
+several checks. Campaigns without `CHECK:` lines keep their previous plan shape.
+
+The engine runs a step's checks from the repository root after its worker exits
+successfully and before ticking the step. It matches `expectedOutput` against
+combined stdout and stderr. Failed checks enter the fix loop and rerun after
+each fix; all campaign checks run again before final review. Check output is
+redacted first, then capped at 4096 characters with a visible truncation marker
+before it is written to a receipt/state file or sent to a fix worker.
+
+## Plan health
+
+Run `campaigns lint <campaign.md>` to check a plan without starting it. The
+shared rules report:
+
+- **Error:** missing Model metadata, ACCEPTANCE criteria, or a campaign-level
+  final-review prompt.
+- **Warning:** step count above learned sizing guidance or more than five
+  REQUIRED READING items in one step.
+- **Info:** a step has no executable CHECK yet.
+
+The CLI exits `1` only when at least one error finding exists. Warning- and
+info-only results exit `0`; invocation or file-loading failures exit `2`. The
+editor will use the same browser-safe rules module to display these findings
+inline. The CLI reads local unified lessons directly and both consumers use
+`sizing.avoidAboveSteps`, falling back to 10 steps when lessons have no sizing
+data. Lint does not block the campaign pump in v1; a future `--strict` mode may
+make that policy explicit.
+
 ## Run limits
 
 The shipped defaults are 50 completed steps and 360 minutes per run:
