@@ -2,7 +2,12 @@ import { ensureFinalReviewLines, normalizeNewlines } from './lib/parser.mjs';
 import { elements, state } from './modules/state.mjs';
 import { applyCampaignLogo, showToast } from './modules/dom.mjs';
 import { syncThemeColorMeta } from './modules/effects.mjs';
-import { initLibraryFilter, loadLibraryExpandedCollections, renderLibrary } from './modules/library.mjs';
+import {
+  initLibraryFilter,
+  initNewCampaign,
+  loadLibraryExpandedCollections,
+  renderLibrary,
+} from './modules/library.mjs';
 import { initSwitcher } from './modules/switcher.mjs';
 import { loadPrefs } from './modules/prefs-store.mjs';
 import { initSettings } from './modules/settings.mjs';
@@ -24,12 +29,23 @@ const WORKFLOWS_V2_ASSET_VERSION = '2026-06-22-dedupe';
 initialize();
 
 async function initialize() {
+  await updatePersonalLayerAvailability();
   bindGlobalActions();
+  initNewCampaign();
   state.libraryExpandedCollections = loadLibraryExpandedCollections();
 
   const params = new URLSearchParams(window.location.search);
   const view = params.get('view');
   if (view === 'workflows' || view === 'workflows-v2') {
+    const hasWorkflows = await updateWorkflowsAvailability();
+    if (!hasWorkflows) {
+      document.body.classList.add('view-workflows-v2');
+      const host = document.querySelector('#workflows-v2');
+      const empty = document.querySelector('#workflows-empty');
+      if (host) host.hidden = false;
+      if (empty) empty.hidden = false;
+      return;
+    }
     // The Workflows view is a full-bleed, self-contained module with its own render;
     // the campaign app renders nothing behind it. Wired to GET /api/workflows and
     // draws each map in the DëvSec flowchart style (Mermaid converted live by
@@ -50,6 +66,7 @@ async function initialize() {
     return;
   }
   if (params.has('library')) {
+    await updateWorkflowsAvailability();
     initLibraryFilter();
     await renderLibrary();
     startAutomatePolling();
@@ -68,6 +85,7 @@ async function initialize() {
   }
 
   if (!id && response.status === 404) {
+    await updateWorkflowsAvailability();
     initLibraryFilter();
     await renderLibrary();
     startAutomatePolling();
@@ -108,6 +126,57 @@ async function initialize() {
   startAutomatePolling();
 }
 
+async function updateWorkflowsAvailability() {
+  let available = false;
+  try {
+    const response = await fetch('/api/workflows');
+    if (response.ok) {
+      const payload = await response.json();
+      available = Array.isArray(payload.workflows) && payload.workflows.length > 0;
+    }
+  } catch {
+    // Discovery unavailable is equivalent to no maps: keep the optional view gated.
+  }
+
+  const tab = document.querySelector('#workflows-tab');
+  if (tab) {
+    if (available) tab.hidden = false;
+    else tab.remove();
+  }
+  return available;
+}
+
+async function updatePersonalLayerAvailability() {
+  let personalLayer = {};
+  try {
+    const response = await fetch('/api/capabilities');
+    if (response.ok) {
+      const payload = await response.json();
+      personalLayer = payload.personalLayer ?? {};
+    }
+  } catch {
+    // Optional integrations stay hidden when capability discovery is unavailable.
+  }
+
+  state.capabilities = {
+    automate: personalLayer.automate === true,
+    away: personalLayer.away === true,
+    companion: personalLayer.companion === true,
+    lessons: personalLayer.lessons === true,
+  };
+
+  if (elements.companionButton) {
+    elements.companionButton.hidden = !state.capabilities.companion;
+  }
+  const automateToggle = document.querySelector('#automate-drawer-toggle');
+  if (automateToggle) automateToggle.hidden = !state.capabilities.automate;
+  const awayAll = document.querySelector('#away-all-button');
+  if (awayAll) awayAll.hidden = !state.capabilities.away;
+  if (elements.libraryLessons && !state.capabilities.lessons) {
+    elements.libraryLessons.hidden = true;
+  }
+}
+
 function showLoadError(message) {
   state.serverBacked = false;
   state.markdown = '# Could not load file\n\nCheck the path and restart with `--file <path>`.';
@@ -139,7 +208,11 @@ function handleGlobalKeydown(event) {
     return;
   }
 
-  if ((event.metaKey || event.ctrlKey) && (event.key === '\\' || event.key === '/')) {
+  if (
+    state.capabilities.automate &&
+    (event.metaKey || event.ctrlKey) &&
+    (event.key === '\\' || event.key === '/')
+  ) {
     const target = event.target;
     const isTyping =
       target instanceof HTMLInputElement ||

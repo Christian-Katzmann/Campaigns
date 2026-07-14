@@ -37,7 +37,7 @@
               <polyline points="2 12 6 12 8 5 12 19 14 12 22 12"/>
             </svg>
           </button>
-          <button id="companion-button" class="button button-quiet" type="button" title="Launch Campaign Companion">
+          <button id="companion-button" class="button button-quiet" type="button" title="Launch Campaign Companion" hidden>
             <svg class="icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:18px;height:18px;vertical-align:middle;display:inline-block;">
               <rect x="3" y="3" width="18" height="18" rx="2"/>
               <line x1="15" y1="3" x2="15" y2="21"/>
@@ -89,7 +89,7 @@
     <div id="library" class="library" hidden>
       <nav class="topbar-tabs" aria-label="Views">
         <a class="button button-quiet" href="?library" aria-pressed="true">Campaigns</a>
-        <a class="button button-quiet" href="?view=workflows" aria-pressed="false">Workflows</a>
+        <a id="workflows-tab" class="button button-quiet" href="?view=workflows" aria-pressed="false" hidden>Workflows</a>
       </nav>
       <header class="library-header">
         <div class="library-header-text">
@@ -109,16 +109,18 @@
             hidden
           />
           <button id="away-all-button" class="button button-quiet away-all-button" type="button" hidden>Away</button>
+          <button id="new-campaign-button" class="button button-primary" type="button">New campaign</button>
         </div>
       </header>
       <div id="library-grid" class="library-grid"></div>
       <div id="library-empty" class="library-empty" hidden>
         <p class="library-empty-title">No campaigns yet.</p>
         <p class="library-empty-body">
-          Campaigns reads a markdown plan as an interactive board — phases, steps, prompts, progress. The simplest way to get one here is to run <code>/campaign-planner</code> in a Claude Code session; it scaffolds the plan and registers it automatically.
+          Campaigns turns a markdown plan into an interactive board — phases, steps, prompts, and progress. Create one here; no coding agent is required.
         </p>
+        <button id="new-campaign-empty-button" class="button button-primary library-empty-action" type="button">New campaign</button>
         <p class="library-empty-aside">
-          Already have a plan file? Start the server with <code>--file &lt;path&gt;</code>.
+          Agent skills can help expand and run a campaign, but they are optional. Already have a plan file? Start the server with <code>--file &lt;path&gt;</code>.
         </p>
       </div>
     </div>
@@ -126,7 +128,17 @@
     <!-- Workflows: a full-bleed, self-contained DëvSec-style fragility-map browser,
          wired to GET /api/workflows. Filled imperatively by /workflows-v2.js when
          ?view=workflows (or the ?view=workflows-v2 alias). -->
-    <div id="workflows-v2" class="workflows-v2" hidden></div>
+    <div id="workflows-v2" class="workflows-v2" hidden>
+      <div id="workflows-empty" class="library" hidden>
+        <nav class="topbar-tabs" aria-label="Views">
+          <a class="button button-quiet" href="?library">Campaigns</a>
+        </nav>
+        <div class="library-empty">
+          <p class="library-empty-title">No workflow maps yet.</p>
+          <p class="library-empty-body">Workflows appears when a registered repository contains a map under <code>docs/workflows/</code>.</p>
+        </div>
+      </div>
+    </div>
 
     <div id="phase-banner" class="phase-banner" role="status" aria-live="polite"></div>
 

@@ -6,8 +6,10 @@ import { homedir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFile } from 'node:child_process';
+import { createCampaignScaffold } from './lib/campaign-scaffold.mjs';
 import {
   abandonAutomateCampaign,
+  getAutomateProviderAvailability,
   getAutomateState,
   nudgeAutomateState,
   rerunAutomateFinalize,
@@ -160,6 +162,11 @@ const server = createServer(async (request, response) => {
       return;
     }
 
+    if (url.pathname === '/api/campaigns/new' && request.method === 'POST') {
+      await newCampaignEndpoint(request, response);
+      return;
+    }
+
     if (url.pathname === '/api/workflows' && request.method === 'GET') {
       await sendWorkflows(response);
       return;
@@ -182,6 +189,11 @@ const server = createServer(async (request, response) => {
 
     if (url.pathname === '/api/registry/icon' && request.method === 'GET') {
       await sendCampaignIcon(url, response);
+      return;
+    }
+
+    if (url.pathname === '/api/capabilities' && request.method === 'GET') {
+      await sendCapabilities(response);
       return;
     }
 
@@ -363,6 +375,22 @@ function defaultPortFilePath() {
 
 function defaultLessonsHelperPath() {
   return path.join(homedir(), '.claude', 'skills', 'campaign-planner', 'bin', 'read-past-campaigns.py');
+}
+
+async function sendCapabilities(response) {
+  const [automation, lessons] = await Promise.all([
+    getAutomateProviderAvailability(),
+    stat(lessonsHelperPath).then((info) => info.isFile()).catch(() => false),
+  ]);
+  sendJson(response, 200, {
+    personalLayer: {
+      automate: automation.available,
+      away: automation.available,
+      companion: automation.available,
+      lessons,
+    },
+    providers: automation.providers,
+  });
 }
 
 async function writeRuntimePort(actualPort) {
@@ -790,6 +818,16 @@ async function registerEndpoint(request, response) {
   }
 
   sendJson(response, 200, { id, filePath: absolute });
+}
+
+async function newCampaignEndpoint(request, response) {
+  const payload = await readJsonBody(request);
+  const created = await createCampaignScaffold({
+    name: payload?.name,
+    projectPath: payload?.projectPath,
+  });
+  const id = await ensureRegistered(created.filePath);
+  sendJson(response, 201, { ...created, id });
 }
 
 async function sendCampaignIcon(url, response) {

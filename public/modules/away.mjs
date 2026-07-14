@@ -951,6 +951,10 @@ export function awayActiveIdsIn(ids) {
 export function updateAwayAllButton() {
   const btn = document.querySelector('#away-all-button');
   if (!btn) return;
+  if (!state.capabilities.away) {
+    btn.hidden = true;
+    return;
+  }
   if (!awayAllButtonBound) {
     awayAllButtonBound = true;
     btn.addEventListener('click', () => {

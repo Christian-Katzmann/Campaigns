@@ -106,6 +106,11 @@ export function syncDrawerToggleVisibility(status) {
   const toggleBtn = document.querySelector('#automate-drawer-toggle');
   if (!toggleBtn) return;
 
+  if (!state.capabilities.automate) {
+    toggleBtn.hidden = true;
+    return;
+  }
+
   toggleBtn.hidden = false;
 
   const existingDot = toggleBtn.querySelector('.drawer-indicator');
@@ -168,6 +173,8 @@ export function startAutomatePolling() {
   clearInterval(automateState.campaignTimer);
   automateState.libraryTimer = null;
   automateState.campaignTimer = null;
+
+  if (!state.capabilities.automate) return;
 
   const isLibrary = document.body.classList.contains('view-library');
 
@@ -1128,4 +1135,3 @@ export function renderSimpleMarkdown(text) {
     .replace(/\n\n/g, '<br><br>')
     .replace(/\n/g, '<br>');
 }
-
