@@ -39,6 +39,8 @@ import {
 } from '../lib/parser.mjs';
 import { recordTodayActivity, savePrefs, todayDelta } from './prefs-store.mjs';
 import { applyTheme, detectPhaseCompletions } from './effects.mjs';
+import { analyzePlanHealth } from '../lib/plan-health.mjs';
+import { renderPlanHealthStrip } from './plan-health-view.mjs';
 
 // Placeholder tokens like <FEATURE> that a campaign fills in per step; STEP and
 // PHASE are reserved for the review-card templates and never rendered as fields.
@@ -53,6 +55,10 @@ export function render() {
   const stats = getProgressStats(blocks);
   const resume = findResumeTarget(blocks, stepSections);
   const stepCheckMap = linkChecksToSteps(blocks, stepSections);
+  const planHealthFindings = analyzePlanHealth(
+    state.markdown,
+    state.planHealthAvoidAboveSteps,
+  );
 
   state.stepSections = stepSections;
   state.stepCheckMap = stepCheckMap;
@@ -105,7 +111,10 @@ export function render() {
   const withPath = injectDocumentPath(sectioned);
   const finalReviewCardBlock = buildFinalReviewCardBlock();
   if (finalReviewCardBlock) withPath.push(finalReviewCardBlock);
-  elements.document.replaceChildren(...withPath.map((block) => renderBlock(block, stepSections)));
+  const planHealthStrip = renderPlanHealthStrip(planHealthFindings);
+  const renderedBlocks = withPath.map((block) => renderBlock(block, stepSections));
+  if (planHealthStrip) renderedBlocks.unshift(planHealthStrip);
+  elements.document.replaceChildren(...renderedBlocks);
 
   applyFocusMode();
   renderMobileBottombar();

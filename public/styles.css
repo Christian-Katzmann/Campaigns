@@ -799,6 +799,127 @@ body.focus-mode .document > [data-step-id]:not(.step-active) {
   padding-bottom: 96px;
 }
 
+/* ---------- Plan health -------------------------------------------------- */
+
+.plan-health-strip {
+  margin: 0 0 24px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--paper);
+  font-size: 13px;
+}
+
+.plan-health-strip--error {
+  border-color: color-mix(in srgb, var(--danger) 55%, var(--line));
+}
+
+.plan-health-strip--warning {
+  border-color: color-mix(in srgb, var(--status-warn) 55%, var(--line));
+}
+
+.plan-health-summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  list-style: none;
+  cursor: pointer;
+  user-select: none;
+}
+
+.plan-health-summary::-webkit-details-marker {
+  display: none;
+}
+
+.plan-health-summary:hover {
+  background: var(--hover-wash);
+}
+
+.plan-health-title {
+  color: var(--ink);
+  font-weight: 760;
+}
+
+.plan-health-count {
+  color: var(--ink-soft);
+}
+
+.plan-health-chevron {
+  margin-left: auto;
+  color: var(--ink-faint);
+  font-size: 18px;
+  line-height: 1;
+  transition: transform 0.15s ease;
+}
+
+.plan-health-strip[open] .plan-health-chevron {
+  transform: rotate(90deg);
+}
+
+.plan-health-list {
+  display: grid;
+  gap: 6px;
+  padding: 0 8px 8px;
+}
+
+.document .plan-health-finding {
+  display: flex;
+  gap: 10px;
+  padding: 9px 10px;
+  border-left: 3px solid var(--accent);
+  border-radius: 4px;
+  background: var(--accent-soft);
+  color: inherit;
+  text-decoration: none;
+}
+
+.document a.plan-health-finding:hover {
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.document .plan-health-finding--error {
+  border-left-color: var(--danger);
+  background: var(--danger-wash);
+}
+
+.document a.plan-health-finding--error:hover {
+  box-shadow: inset 0 0 0 1px var(--danger);
+}
+
+.document .plan-health-finding--warning {
+  border-left-color: var(--status-warn);
+  background: var(--status-warn-wash);
+}
+
+.document a.plan-health-finding--warning:hover {
+  box-shadow: inset 0 0 0 1px var(--status-warn);
+}
+
+.plan-health-severity {
+  min-width: 50px;
+  color: var(--ink-soft);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.plan-health-finding-copy {
+  display: grid;
+  gap: 2px;
+}
+
+.plan-health-message {
+  color: var(--ink);
+  font-weight: 650;
+}
+
+.plan-health-fix {
+  color: var(--ink-soft);
+  line-height: 1.35;
+}
+
 .document > *:first-child {
   margin-top: 0;
 }

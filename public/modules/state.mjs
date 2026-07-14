@@ -12,6 +12,7 @@
 // these queries run.
 
 import { defaultPrefs } from '../lib/prefs.mjs';
+import { DEFAULT_AVOID_ABOVE_STEPS } from '../lib/plan-health.mjs';
 
 export const state = {
   activeStepId: null,
@@ -32,6 +33,7 @@ export const state = {
   lastPhaseSnapshot: null,
   lastSaveError: '',
   markdown: '',
+  planHealthAvoidAboveSteps: DEFAULT_AVOID_ABOVE_STEPS,
   phaseBannerTimer: null,
   prefs: defaultPrefs(),
   resumeCardTimer: null,

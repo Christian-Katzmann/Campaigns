@@ -7,6 +7,10 @@ import {
   analyzePlanHealth,
   resolveAvoidAboveSteps,
 } from '../public/lib/plan-health.mjs';
+import {
+  parseMarkdown,
+  replaceFencedBlockContent,
+} from '../public/lib/parser.mjs';
 
 const RULE_CASES = [
   {
@@ -73,6 +77,30 @@ test('lessons threshold resolver shares the API shape and one fallback', () => {
   assert.equal(resolveAvoidAboveSteps(lessons), 7);
   assert.equal(resolveAvoidAboveSteps({ available: false }), DEFAULT_AVOID_ABOVE_STEPS);
   assert.equal(resolveAvoidAboveSteps({ sizing: { avoidAboveSteps: null } }), DEFAULT_AVOID_ABOVE_STEPS);
+});
+
+test('fenced prompt Save edit adds and clears the inline finding state', () => {
+  const clean = fixtureCampaign();
+  const prompt = parseMarkdown(clean).find((block) => block.type === 'code');
+  const withoutAcceptance = prompt.content.replace(
+    /ACCEPTANCE:\n- The result is observable\.\n/,
+    '',
+  );
+  const edited = replaceFencedBlockContent(clean, prompt, withoutAcceptance);
+
+  assert.deepEqual(analyzePlanHealth(clean), []);
+  assert.deepEqual(
+    analyzePlanHealth(edited).map(({ ruleId, severity, stepId }) => ({ ruleId, severity, stepId })),
+    [{ ruleId: 'missing-acceptance', severity: 'error', stepId: '1.1' }],
+  );
+
+  const editedPrompt = parseMarkdown(edited).find((block) => block.type === 'code');
+  const restored = replaceFencedBlockContent(
+    edited,
+    editedPrompt,
+    `${editedPrompt.content}\nACCEPTANCE:\n- The result is observable.`,
+  );
+  assert.deepEqual(analyzePlanHealth(restored), []);
 });
 
 function fixtureCampaign({
