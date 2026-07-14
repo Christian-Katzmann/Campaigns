@@ -3108,6 +3108,11 @@ details.doc-section[open] .doc-section-chevron {
   padding: 0;
 }
 
+#automate-drawer-toggle[hidden],
+#companion-button[hidden] {
+  display: none;
+}
+
 #companion-button {
   gap: 8px;
 }
