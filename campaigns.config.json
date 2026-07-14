@@ -19,6 +19,7 @@
   },
   "runners": {
     "claude": {
+      "label": "Claude Code",
       "binary": "claude",
       "args": [
         "--effort",
@@ -41,6 +42,26 @@
         "model": "claude-opus-4-8",
         "effort": "high"
       },
+      "models": [
+        {
+          "id": "claude-opus-4-8",
+          "label": "Fable 5"
+        }
+      ],
+      "efforts": [
+        {
+          "id": "high",
+          "label": "High"
+        },
+        {
+          "id": "medium",
+          "label": "Medium"
+        },
+        {
+          "id": "low",
+          "label": "Low"
+        }
+      ],
       "effortMap": {
         "extra-high": "high",
         "xhigh": "high",
@@ -73,6 +94,7 @@
       }
     },
     "codex": {
+      "label": "Codex",
       "binary": "codex",
       "args": [
         "exec",
@@ -99,6 +121,30 @@
         "model": "gpt-5.6-sol",
         "effort": "xhigh"
       },
+      "models": [
+        {
+          "id": "gpt-5.6-sol",
+          "label": "GPT-5.6-Sol"
+        }
+      ],
+      "efforts": [
+        {
+          "id": "xhigh",
+          "label": "Extra High"
+        },
+        {
+          "id": "high",
+          "label": "High"
+        },
+        {
+          "id": "medium",
+          "label": "Medium"
+        },
+        {
+          "id": "low",
+          "label": "Low"
+        }
+      ],
       "effortMap": {
         "extra-high": "xhigh",
         "xhigh": "xhigh",

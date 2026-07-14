@@ -10,6 +10,7 @@ import {
   createRunnerCompletionMarker,
   createRunnerRegistry,
   loadRunnerRegistry,
+  runnerCapabilities,
 } from '../lib/runners.mjs';
 import { createRunState, transitionRunState } from '../lib/run-state.mjs';
 
@@ -87,6 +88,22 @@ test('effort aliases normalize per runner from config', async () => {
 
   assert.equal(claude.effort, shippedConfig.runners.claude.effortMap['extra-high']);
   assert.equal(codex.effort, shippedConfig.runners.codex.effortMap['extra-high']);
+});
+
+test('capabilities keep unavailable runners visible with normalized catalogs', async () => {
+  const config = structuredClone(shippedConfig);
+  config.runners.claude.binary = process.execPath;
+  config.runners.codex.binary = 'campaigns-definitely-missing-runner';
+  const capabilities = await runnerCapabilities(createRunnerRegistry(config), {
+    env: { PATH: '' },
+  });
+  const claude = capabilities.find((runner) => runner.id === 'claude');
+  const codex = capabilities.find((runner) => runner.id === 'codex');
+  assert.equal(claude.available, true);
+  assert.equal(claude.models[0].label, 'Fable 5');
+  assert.deepEqual(claude.defaults, { model: 'claude-opus-4-8', effort: 'high' });
+  assert.equal(codex.available, false);
+  assert.match(codex.availabilityHint, /not found on PATH/);
 });
 
 test('runner invocation preserves Windows paths as literal arguments', async () => {

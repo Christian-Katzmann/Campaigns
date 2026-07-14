@@ -25,9 +25,11 @@ import {
   statSpritesheet,
 } from './lib/companion-pets.mjs';
 import { httpError, readJsonBody, sendJson, sendStatic } from './lib/http.mjs';
+import { resolveCampaignConfig } from './lib/config.mjs';
 import { hasUnifiedRunLedgers, loadUnifiedLessons } from './lib/lessons.mjs';
 import { CampaignStopError, defaultCampaignsRunsDir, requestCampaignStop } from './lib/pump.mjs';
 import { RecoveryError, recoverCampaign } from './lib/recovery.mjs';
+import { createRunnerRegistry, loadRunnerRegistry, runnerCapabilities } from './lib/runners.mjs';
 import {
   normalizeRegistryCollections,
   pruneMissingCampaigns,
@@ -180,7 +182,7 @@ const server = createServer(async (request, response) => {
     }
 
     if (url.pathname === '/api/capabilities' && request.method === 'GET') {
-      await sendCapabilities(response);
+      await sendCapabilities(url, response);
       return;
     }
 
@@ -430,11 +432,26 @@ function defaultLessonsHelperPath() {
   return path.join(homedir(), '.claude', 'skills', 'campaign-planner', 'bin', 'read-past-campaigns.py');
 }
 
-async function sendCapabilities(response) {
-  const [automation, nativeLessons, legacyLessons] = await Promise.all([
+async function sendCapabilities(url, response) {
+  const campaign = await resolveCampaign(url);
+  let runnerRegistry;
+  let runnerCwd = __dirname;
+  try {
+    const resolved = await resolveCampaignConfig({
+      campaignPath: campaign?.filePath ?? null,
+      cwd: __dirname,
+    });
+    runnerRegistry = createRunnerRegistry(resolved.config);
+    runnerCwd = resolved.projectRoot;
+  } catch (error) {
+    if (!/No Git project root found/.test(error.message)) throw error;
+    runnerRegistry = await loadRunnerRegistry();
+  }
+  const [automation, nativeLessons, legacyLessons, runners] = await Promise.all([
     getAutomateProviderAvailability(),
     hasUnifiedRunLedgers(lessonsRunsDir).catch(() => false),
     stat(lessonsHelperPath).then((info) => info.isFile()).catch(() => false),
+    runnerCapabilities(runnerRegistry, { cwd: runnerCwd }),
   ]);
   const fileDeletionMode = campaignFileDeletionMode();
   sendJson(response, 200, {
@@ -449,6 +466,8 @@ async function sendCapabilities(response) {
       lessons: nativeLessons || legacyLessons,
     },
     providers: automation.providers,
+    defaultRunner: runnerRegistry.defaultRunner,
+    runners,
   });
 }
 

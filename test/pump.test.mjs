@@ -6,6 +6,7 @@ import path from 'node:path';
 import { test } from 'node:test';
 
 import {
+  buildStepRunnerInvocation,
   parseCampaignPlan,
   PumpLockError,
   requestCampaignStop,
@@ -14,6 +15,7 @@ import {
   runPathsForCampaign,
 } from '../lib/pump.mjs';
 import { validateRunState } from '../lib/run-state.mjs';
+import { loadRunnerRegistry } from '../lib/runners.mjs';
 
 const silent = { write() {} };
 
@@ -52,6 +54,33 @@ test('parseCampaignPlan attaches one and several executable checks', () => {
     `Create the second fixture result.\n${severalChecks}`,
   );
   assert.equal(parseCampaignPlan(severalChecksMarkdown).steps[1].checks.length, 3);
+});
+
+test('primary chip segment selects the runner, model, and effort at the invocation seam', async () => {
+  const registry = await loadRunnerRegistry();
+  const invocationFor = (modelLine) => {
+    const markdown = campaignMarkdown(false).replace(
+      '## Step 1.1 — First\n\n',
+      `## Step 1.1 — First\n\nModel: ${modelLine}\nParallel: NO\n\n`,
+    );
+    return buildStepRunnerInvocation(registry, parseCampaignPlan(markdown).steps[0], {
+      prompt: 'work',
+      repoRoot: '/repo',
+      outputPath: '/tmp/out',
+      env: {},
+      fallbackRunner: 'claude',
+    });
+  };
+  const codex = invocationFor('GPT-5.6-Sol · High / Fable 5 · High');
+  assert.deepEqual(
+    (({ runner, model, effort }) => ({ runner, model, effort }))(codex),
+    { runner: 'codex', model: 'gpt-5.6-sol', effort: 'high' },
+  );
+  const claude = invocationFor('Fable 5 · High / GPT-5.6-Sol · High');
+  assert.deepEqual(
+    (({ runner, model, effort }) => ({ runner, model, effort }))(claude),
+    { runner: 'claude', model: 'claude-opus-4-8', effort: 'high' },
+  );
 });
 
 test('executable checks enforce their own timeout', async () => {

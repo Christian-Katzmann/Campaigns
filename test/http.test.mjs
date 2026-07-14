@@ -9,7 +9,11 @@ import { after, test } from 'node:test';
 
 import { parseCampaignPlan, runPathsForCampaign } from '../lib/pump.mjs';
 import { validateRunState } from '../lib/run-state.mjs';
-import { parseMarkdown, replaceFencedBlockContent } from '../public/lib/parser.mjs';
+import {
+  parseMarkdown,
+  replaceFencedBlockContent,
+  replaceStepModelValue,
+} from '../public/lib/parser.mjs';
 
 const execFileAsync = promisify(execFile);
 const projectRoot = path.resolve('.');
@@ -96,6 +100,11 @@ test('document and registry HTTP contracts hold against a real ephemeral server'
     mode: deletionMode,
     requiresExplicitConfirmation: deletionMode === 'permanent',
   });
+  assert.equal(typeof capabilities.defaultRunner, 'string');
+  assert.ok(Array.isArray(capabilities.runners));
+  assert.ok(capabilities.runners.every((runner) => typeof runner.available === 'boolean'));
+  assert.ok(Object.hasOwn(capabilities, 'personalLayer'));
+  assert.ok(Object.hasOwn(capabilities, 'providers'));
 
   const documentResponse = await fetch(`${baseUrl}/api/document`);
   const document = await documentResponse.json();
@@ -108,7 +117,11 @@ test('document and registry HTTP contracts hold against a real ephemeral server'
     platform: process.platform,
   });
 
-  const editableMarkdown = fixtureCampaign();
+  const editableMarkdown = replaceStepModelValue(
+    fixtureCampaign(),
+    '1.1',
+    'GPT-5.6-Sol · High / Fable 5 · High',
+  );
   const promptBlock = parseMarkdown(editableMarkdown).find((block) => block.type === 'code');
   const editedPrompt = [
     'Complete the smoke-test step.',
@@ -141,6 +154,7 @@ test('document and registry HTTP contracts hold against a real ephemeral server'
   assert.equal(reloadedResponse.status, 200);
   assert.equal(reloaded.markdown, savedMarkdown);
   assert.deepEqual(parseCampaignPlan(reloaded.markdown).steps[0].checks, checksBeforeSave);
+  assert.equal(parseCampaignPlan(reloaded.markdown).steps[0].model.primary, 'GPT-5.6-Sol · High');
 
   const onDiskMarkdown = '# HTTP fixture\n\nChanged outside Campaigns.\n';
   await writeFile(campaignPath, onDiskMarkdown, 'utf8');
@@ -278,6 +292,10 @@ test('campaigns run completes through the CLI with a fake runner and valid state
   const state = JSON.parse(await readFile(paths.statePath, 'utf8'));
   assert.deepEqual(validateRunState(state), { valid: true, errors: [] });
   assert.equal(state.run.status, 'completed');
+  assert.deepEqual(
+    (({ runner, model, effort }) => ({ runner, model, effort }))(state.steps[0]),
+    { runner: 'fake', model: 'fake-model', effort: 'none' },
+  );
   assert.equal(state.history.at(-1).event, 'final_review_approved');
   assert.match(await readFile(campaignPath, 'utf8'), /- \[x\] Step 1\.1/);
   assert.equal(await git(repo, ['status', '--short']), '');
@@ -312,6 +330,9 @@ function fixtureCampaign() {
 - [ ] Final review
 
 ## Step 1.1 — Exercise the fake runner
+
+Model: fake-model · none
+Parallel: NO
 
 \`\`\`text
 Complete the smoke-test step.

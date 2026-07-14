@@ -25,6 +25,7 @@ import {
   linkChecksToSteps,
   parseExecutableChecks,
   parseMarkdown,
+  replaceStepModelValue,
   progressChecklistBlocks,
 } from '../public/lib/parser.mjs';
 
@@ -138,9 +139,26 @@ test('sample: step sections carry numbers, anchor ids, and metadata', () => {
   );
   // Every step declares `Model: GPT-5.6-Sol - High` / `Parallel: NO`.
   for (const s of steps) {
-    assert.deepEqual(s.model, { claudeCode: 'GPT-5.6-Sol - High', codex: '' });
+    assert.deepEqual(s.model, {
+      primary: 'GPT-5.6-Sol - High',
+      alternate: '',
+      claudeCode: 'GPT-5.6-Sol - High',
+      codex: '',
+    });
     assert.deepEqual(s.parallel, { isParallel: false, siblingSteps: [] });
   }
+});
+
+test('model metadata is primary-first and round-trips a dropdown-written value', () => {
+  const edited = replaceStepModelValue(
+    SAMPLE,
+    '1.1',
+    'GPT-5.6-Sol · Extra High / Fable 5 · High',
+  );
+  const [step] = extractStepSections(parseMarkdown(edited), edited);
+  assert.equal(step.model.primary, 'GPT-5.6-Sol · Extra High');
+  assert.equal(step.model.alternate, 'Fable 5 · High');
+  assert.match(edited, /^Model: GPT-5\.6-Sol · Extra High \/ Fable 5 · High$/m);
 });
 
 test('sample: checks link to their step sections', () => {

@@ -21,10 +21,13 @@ import {
   classifyPhases,
   extractPhases,
   findResumeTarget,
+  formatModelValue,
   getLines,
   getProgressStats,
   parseMarkdown,
+  parseModelSegment,
   replaceFencedBlockContent,
+  replaceStepModelValue,
 } from '../lib/parser.mjs';
 import { extractCheckRef, loadPrefs, recordSessionTick, savePrefs } from './prefs-store.mjs';
 import { handleCompletionEffects, playAudioFeedback } from './effects.mjs';
@@ -61,6 +64,11 @@ export function handleDocumentClick(event) {
       behavior: 'smooth',
       block: 'start',
     });
+    return;
+  }
+
+  if (action === 'edit-step-model') {
+    openStepModelPicker(control.dataset.stepNumber);
     return;
   }
 
@@ -163,6 +171,152 @@ export function handleDocumentInput(event) {
   if (control) {
     state.editingValue = control.value;
   }
+}
+
+export function openStepModelPicker(stepNumber) {
+  document.querySelector('#step-model-picker')?.remove();
+  const section = state.stepSections.find((candidate) => candidate.number === stepNumber);
+  const runners = state.capabilities.runners;
+  if (!section?.model || runners.length === 0) {
+    showToast('Runner options are unavailable.');
+    return;
+  }
+
+  const currentPrimary = section.model.primary ?? section.model.claudeCode ?? '';
+  const currentAlternate = section.model.alternate ?? section.model.codex ?? '';
+  const primaryMatch = matchCatalogSegment(currentPrimary, runners);
+  let runnerId = primaryMatch?.runner.id
+    ?? state.capabilities.defaultRunner
+    ?? runners[0]?.id;
+
+  const overlay = element('div', { className: 'model-picker-modal', id: 'step-model-picker' });
+  overlay.setAttribute('role', 'dialog');
+  overlay.setAttribute('aria-modal', 'true');
+  overlay.setAttribute('aria-labelledby', 'step-model-picker-title');
+  const card = element('div', { className: 'model-picker-card' });
+  const title = element('h3', {
+    className: 'model-picker-title',
+    id: 'step-model-picker-title',
+    text: `Step ${stepNumber} model`,
+  });
+  const form = element('div', { className: 'model-picker-fields' });
+  const runnerSelect = document.createElement('select');
+  const modelSelect = document.createElement('select');
+  const effortSelect = document.createElement('select');
+  const availability = element('p', { className: 'model-picker-hint' });
+  const save = element('button', {
+    className: 'button button-primary',
+    text: 'Use this model',
+    type: 'button',
+  });
+  const cancel = element('button', {
+    className: 'button button-quiet',
+    text: 'Cancel',
+    type: 'button',
+  });
+
+  for (const runner of runners) {
+    const option = document.createElement('option');
+    option.value = runner.id;
+    option.textContent = runner.available ? runner.label : `${runner.label} — unavailable`;
+    option.disabled = !runner.available;
+    option.title = runner.availabilityHint || '';
+    runnerSelect.append(option);
+  }
+
+  function selectedRunner() {
+    return runners.find((runner) => runner.id === runnerId) ?? runners[0];
+  }
+
+  function fillDependentSelects(preserveCurrent = false) {
+    const runner = selectedRunner();
+    modelSelect.replaceChildren();
+    effortSelect.replaceChildren();
+    for (const model of runner.models ?? []) {
+      const option = document.createElement('option');
+      option.value = model.id;
+      option.textContent = model.label;
+      modelSelect.append(option);
+    }
+    for (const effort of runner.efforts ?? []) {
+      const option = document.createElement('option');
+      option.value = effort.id;
+      option.textContent = effort.label;
+      effortSelect.append(option);
+    }
+    const matched = preserveCurrent && primaryMatch?.runner.id === runner.id ? primaryMatch : null;
+    modelSelect.value = matched?.model.id ?? runner.defaults?.model ?? runner.models?.[0]?.id ?? '';
+    effortSelect.value = matched?.effort?.id ?? runner.defaults?.effort ?? runner.efforts?.[0]?.id ?? '';
+    availability.textContent = runner.available ? '' : runner.availabilityHint;
+    save.disabled = !runner.available;
+  }
+
+  runnerSelect.value = runnerId;
+  if (!runnerSelect.value) {
+    runnerId = runners.find((runner) => runner.available)?.id ?? runners[0]?.id;
+    runnerSelect.value = runnerId;
+  }
+  fillDependentSelects(true);
+  runnerSelect.addEventListener('change', () => {
+    runnerId = runnerSelect.value;
+    fillDependentSelects(false);
+  });
+
+  const close = () => overlay.remove();
+  cancel.addEventListener('click', close);
+  overlay.addEventListener('click', (event) => {
+    if (event.target === overlay) close();
+  });
+  save.addEventListener('click', async () => {
+    const runner = selectedRunner();
+    const model = runner.models.find((candidate) => candidate.id === modelSelect.value);
+    const effort = runner.efforts.find((candidate) => candidate.id === effortSelect.value);
+    if (!runner.available || !model || !effort) return;
+    const primary = `${model.label} · ${effort.label}`;
+    const alternate = runner.id === primaryMatch?.runner.id ? currentAlternate : currentPrimary;
+    const nextValue = formatModelValue(primary, alternate === primary ? '' : alternate);
+    setMarkdown(replaceStepModelValue(state.markdown, stepNumber, nextValue));
+    close();
+    await saveToServer();
+  });
+
+  form.append(
+    pickerField('Runner', runnerSelect),
+    pickerField('Model', modelSelect),
+    pickerField('Effort', effortSelect),
+  );
+  const actions = element('div', { className: 'model-picker-actions' });
+  actions.append(cancel, save);
+  card.append(title, form, availability, actions);
+  overlay.append(card);
+  document.body.append(overlay);
+  runnerSelect.focus();
+}
+
+function pickerField(label, select) {
+  const field = element('label', { className: 'model-picker-field' });
+  field.append(element('span', { text: label }), select);
+  return field;
+}
+
+function matchCatalogSegment(segment, runners) {
+  const parsed = parseModelSegment(segment);
+  if (!parsed) return null;
+  const modelKey = parsed.model.trim().toLowerCase();
+  for (const runner of runners) {
+    const model = runner.models?.find((candidate) => (
+      candidate.id.trim().toLowerCase() === modelKey
+      || candidate.label.trim().toLowerCase() === modelKey
+    ));
+    if (!model) continue;
+    const effortKey = parsed.effort.trim().toLowerCase().replace(/\s+/g, '-');
+    const effort = runner.efforts?.find((candidate) => (
+      candidate.id.toLowerCase() === effortKey
+      || candidate.label.toLowerCase().replace(/\s+/g, '-') === effortKey
+    )) ?? null;
+    return { runner, model, effort };
+  }
+  return null;
 }
 
 export function toggleLineCheck(lineIndex) {
@@ -322,6 +476,10 @@ export async function saveToServer(options = {}) {
     return;
   }
   if (!state.dirty && !options.manual && !options.force) return;
+  if (autoSaveTimer) {
+    clearTimeout(autoSaveTimer);
+    autoSaveTimer = null;
+  }
 
   state.saveStatus = 'saving';
   updateSaveStatus();

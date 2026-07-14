@@ -499,9 +499,53 @@ export function parseModelValue(rawValue) {
   const segments = value.split(/\s*\/\s*/).map((segment) => segment.trim()).filter(Boolean);
   if (segments.length === 0) return null;
   return {
+    primary: segments[0] || '',
+    alternate: segments[1] || '',
+    // Compatibility aliases for older browser consumers. These are positions,
+    // not provider identities; new code should use primary/alternate.
     claudeCode: segments[0] || '',
     codex: segments[1] || '',
   };
+}
+
+export function parseModelSegment(rawSegment) {
+  const value = (rawSegment || '').trim();
+  if (!value) return null;
+  const dotParts = value.split(/\s*·\s*/).map((part) => part.trim()).filter(Boolean);
+  if (dotParts.length > 1) {
+    return {
+      model: dotParts.slice(0, -1).join(' · '),
+      effort: dotParts.at(-1),
+    };
+  }
+  const legacy = value.match(/^(.*)\s+-\s+([^\s].*)$/);
+  return legacy
+    ? { model: legacy[1].trim(), effort: legacy[2].trim() }
+    : { model: value, effort: '' };
+}
+
+export function formatModelValue(primary, alternate = '') {
+  const segments = [primary, alternate].map((segment) => String(segment || '').trim()).filter(Boolean);
+  if (segments.length === 0) throw new TypeError('Model value requires a primary segment.');
+  return segments.join(' / ');
+}
+
+export function replaceStepModelValue(markdown, stepNumber, nextValue) {
+  const lines = getLines(markdown);
+  const sections = extractStepSections(parseMarkdown(markdown), markdown);
+  const section = sections.find((candidate) => candidate.number === String(stepNumber));
+  if (!section) throw new TypeError(`Unknown step: ${stepNumber}`);
+  if (section.metaLineStart == null || section.metaLineEnd == null) {
+    throw new TypeError(`Step ${stepNumber} has no Model metadata line.`);
+  }
+  const modelLine = lines.findIndex((line, index) => (
+    index >= section.metaLineStart
+    && index <= section.metaLineEnd
+    && /^\s*Model:/i.test(line)
+  ));
+  if (modelLine < 0) throw new TypeError(`Step ${stepNumber} has no Model metadata line.`);
+  lines[modelLine] = `Model: ${formatModelValue(nextValue)}`;
+  return lines.join('\n');
 }
 
 export function parseParallelValue(rawValue) {

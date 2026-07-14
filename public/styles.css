@@ -2943,7 +2943,12 @@ details.step-group[data-completed="true"] .step-meta {
 
 .meta-model {
   font-family: var(--mono);
-  cursor: help;
+  cursor: pointer;
+}
+
+.meta-model:hover {
+  border-color: color-mix(in srgb, var(--accent) 42%, transparent);
+  background: color-mix(in srgb, var(--accent) 5%, var(--paper));
 }
 
 .meta-model .agent-glyph {
@@ -3011,6 +3016,69 @@ details.step-group[data-completed="true"] .step-meta {
   letter-spacing: 0.02em;
   text-transform: uppercase;
   font-size: 11px;
+}
+
+.model-picker-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: color-mix(in srgb, var(--ink) 34%, transparent);
+}
+
+.model-picker-card {
+  width: min(420px, 100%);
+  padding: 20px;
+  border: 1px solid color-mix(in srgb, var(--ink) 14%, transparent);
+  border-radius: 14px;
+  background: var(--paper);
+  box-shadow: 0 18px 50px color-mix(in srgb, var(--ink) 22%, transparent);
+}
+
+.model-picker-title {
+  margin: 0 0 16px;
+  color: var(--ink);
+  font-size: 17px;
+}
+
+.model-picker-fields {
+  display: grid;
+  gap: 12px;
+}
+
+.model-picker-field {
+  display: grid;
+  gap: 5px;
+  color: var(--ink-soft);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.model-picker-field select {
+  width: 100%;
+  min-height: 38px;
+  padding: 7px 10px;
+  border: 1px solid color-mix(in srgb, var(--ink) 16%, transparent);
+  border-radius: 8px;
+  background: var(--paper);
+  color: var(--ink);
+  font: inherit;
+}
+
+.model-picker-hint {
+  min-height: 18px;
+  margin: 10px 0 0;
+  color: var(--danger);
+  font-size: 12px;
+}
+
+.model-picker-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
 }
 
 /* --- Doc section (collapsible top-level intro/protocol H2 sections) ------- */
