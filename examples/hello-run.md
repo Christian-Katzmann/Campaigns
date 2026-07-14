@@ -37,4 +37,6 @@ Verify both files, then commit only hello-output/verified.txt with commit messag
 
 ## Final review
 
+```text
 Confirm both proof files contain exactly the requested text and the run ledger is awaiting review.
+```
