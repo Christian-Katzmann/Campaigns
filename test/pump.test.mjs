@@ -63,7 +63,7 @@ test('an interrupted worker is reset and the next invocation resumes the first u
   await writeConfig(fixture.configPath, { delayMs: 0 });
   const resumed = await runCampaign(fixture.campaignPath, fixture.options);
   const state = JSON.parse(await readFile(resumed.statePath, 'utf8'));
-  assert.equal(state.run.status, 'merged');
+  assert.equal(state.run.status, 'completed');
   assert.equal(state.steps[0].attempt, 2);
   assert.ok(state.history.some((entry) => entry.event === 'step_reset_by_recover'));
 });
@@ -76,7 +76,7 @@ test('a hand-ticked checkbox is source of truth and is not rerun', async (t) => 
   assert.equal(state.steps[0].status, 'skipped');
   assert.equal(state.steps[0].attempt, 0);
   assert.equal(state.steps[1].status, 'completed');
-  assert.equal(state.run.status, 'merged');
+  assert.equal(state.run.status, 'completed');
 });
 
 test('dirty run-start preflight blocks without consuming an attempt and succeeds after cleanup', async (t) => {
@@ -98,7 +98,7 @@ test('dirty run-start preflight blocks without consuming an attempt and succeeds
 
   await rm(dirtyPath);
   const resumed = await runCampaign(fixture.campaignPath, fixture.options);
-  assert.equal(resumed.state.run.status, 'merged');
+  assert.equal(resumed.state.run.status, 'completed');
 });
 
 test('invalid campaign preflight records its taxonomy event and can restart after repair', async (t) => {
@@ -117,7 +117,7 @@ test('invalid campaign preflight records its taxonomy event and can restart afte
 
   await writeFile(fixture.campaignPath, campaignMarkdown(false), 'utf8');
   const resumed = await runCampaign(fixture.campaignPath, fixture.options);
-  assert.equal(resumed.state.run.status, 'merged');
+  assert.equal(resumed.state.run.status, 'completed');
 });
 
 test('unavailable branch preflight records its taxonomy event without starting a step', async (t) => {
@@ -153,7 +153,7 @@ test('watchdog keeps an active runner alive after the runtime floor', async (t) 
   });
 
   const result = await runCampaign(fixture.campaignPath, fixture.options);
-  assert.equal(result.state.run.status, 'merged');
+  assert.equal(result.state.run.status, 'completed');
   assert.equal(result.state.steps[0].status, 'completed');
   assert.equal(result.state.steps[1].status, 'completed');
 });
