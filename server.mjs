@@ -25,6 +25,7 @@ import {
   statSpritesheet,
 } from './lib/companion-pets.mjs';
 import { httpError, readJsonBody, sendJson, sendStatic } from './lib/http.mjs';
+import { RecoveryError, recoverCampaign } from './lib/recovery.mjs';
 import {
   normalizeRegistryCollections,
   pruneMissingCampaigns,
@@ -262,6 +263,11 @@ const server = createServer(async (request, response) => {
 
     if (url.pathname === '/api/automate-nudge' && request.method === 'POST') {
       await handleAutomateNudge(request, response);
+      return;
+    }
+
+    if (url.pathname === '/api/run/recover' && request.method === 'POST') {
+      await handleRunRecover(request, response);
       return;
     }
 
@@ -2062,6 +2068,37 @@ async function handleAutomateNudge(request, response) {
 
   const result = await nudgeAutomateState(entry.filePath, payload.mode, { registryId: entry.id });
   sendJson(response, result.ok ? 200 : 502, result);
+}
+
+async function handleRunRecover(request, response) {
+  const payload = await readJsonBody(request);
+  if (typeof payload.id !== 'string') {
+    sendJson(response, 400, { error: 'Expected { id: string }.' });
+    return;
+  }
+
+  const registry = await readRegistry();
+  const entry = registry.campaigns.find((campaign) => campaign.id === payload.id);
+  if (!entry) {
+    sendJson(response, 404, { error: 'Campaign not found.' });
+    return;
+  }
+
+  try {
+    const result = await recoverCampaign(entry.filePath);
+    sendJson(response, 200, {
+      ok: true,
+      message: result.message,
+      status: result.status,
+      actions: result.actions,
+    });
+  } catch (error) {
+    if (error instanceof RecoveryError) {
+      sendJson(response, 409, { ok: false, error: error.message });
+      return;
+    }
+    throw error;
+  }
 }
 
 async function handleAutomateFinalize(request, response) {

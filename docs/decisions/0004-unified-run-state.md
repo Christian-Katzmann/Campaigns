@@ -100,7 +100,7 @@ preflight `blocked` run may start after the next preflight passes.
 | `campaign_merged` | `completed -> merged` |
 | `force_merged_unreviewed` | review/halted states `-> force_merged`, only with `explicit: true` |
 | `stopped_by_user` | non-success states `-> stopped` |
-| `recovery_started` | `blocked/failed/halted/stopped -> recovering` |
+| `recovery_started` | `pending/running/blocked/failed/awaiting_review/halted/stopped -> recovering` |
 | recovery actions | `recovering -> recovering/running/pending/awaiting_review/halted` |
 
 `awaiting_review` is the deliberate terminal boundary for the Campaign 2 pump,
@@ -121,6 +121,11 @@ pending -> running -> completed
 pending -> skipped
 failed/stopped -> recovering -> pending/running
 ```
+
+`pending/running/awaiting_review -> recovering` is reserved for harness
+recovery: a dead pump may leave a stale lock between steps or at the review
+boundary, or a `running` step whose worker process no longer exists. Normal
+execution does not enter recovery from these states.
 
 Only one step may run. `step_started` increments its attempt and requires
 generic worker metadata. `step_completed` requires an absolute receipt path.

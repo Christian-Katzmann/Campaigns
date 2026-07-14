@@ -1,9 +1,11 @@
 #!/usr/bin/env node
 
 import { PumpLockError, runCampaign } from '../lib/pump.mjs';
+import { RecoveryError, recoverCampaign } from '../lib/recovery.mjs';
 
 const HELP = `Usage:
   campaigns run <campaign.md> [options]
+  campaigns recover <campaign.md> [options]
 
 Options:
   --runner <name>       Runner from campaigns.config.json
@@ -23,18 +25,29 @@ async function main(argv) {
     return 0;
   }
   const [command, campaignFile, ...rest] = argv;
-  if (command !== 'run' || !campaignFile) {
+  if (!['run', 'recover'].includes(command) || !campaignFile) {
     process.stderr.write(HELP);
     return 2;
   }
 
   let options;
   try {
-    options = parseOptions(rest);
+    options = parseOptions(rest, command);
   } catch (error) {
     process.stderr.write(`campaigns: ${error.message}\n`);
     return 2;
   }
+  if (command === 'recover') {
+    try {
+      const result = await recoverCampaign(campaignFile, { runsDir: options.runsDir });
+      process.stdout.write(`${result.message}\nState: ${result.statePath}\n`);
+      return 0;
+    } catch (error) {
+      process.stderr.write(`campaigns: ${error.message}\n`);
+      return error instanceof RecoveryError ? 2 : 1;
+    }
+  }
+
   const controller = new AbortController();
   let interrupted = false;
   const stop = () => {
@@ -56,8 +69,8 @@ async function main(argv) {
   }
 }
 
-function parseOptions(args) {
-  const names = new Map([
+function parseOptions(args, command) {
+  const runNames = [
     ['--runner', 'runner'],
     ['--model', 'model'],
     ['--effort', 'effort'],
@@ -66,7 +79,10 @@ function parseOptions(args) {
     ['--config', 'configPath'],
     ['--state-dir', 'runsDir'],
     ['--registry-id', 'registryId'],
-  ]);
+  ];
+  const names = new Map(command === 'recover'
+    ? [['--state-dir', 'runsDir']]
+    : runNames);
   const options = {};
   for (let index = 0; index < args.length; index += 1) {
     const key = names.get(args[index]);
