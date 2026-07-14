@@ -7,6 +7,7 @@ import { test } from 'node:test';
 
 import {
   PumpLockError,
+  requestCampaignStop,
   runCampaign,
   runPathsForCampaign,
 } from '../lib/pump.mjs';
@@ -181,6 +182,125 @@ test('watchdog kills a silent runner and salvages its output tail in the receipt
   assert.match(receipt, /last useful output before silence/);
 });
 
+test('max_steps_per_run stops at the boundary with a visible cap event', async (t) => {
+  const fixture = await makeFixture(t, { maxStepsPerRun: 1 });
+
+  const result = await runCampaign(fixture.campaignPath, fixture.options);
+  const state = JSON.parse(await readFile(result.statePath, 'utf8'));
+
+  assert.equal(state.run.status, 'cap_reached');
+  assert.equal(state.steps[0].status, 'completed');
+  assert.equal(state.steps[1].status, 'pending');
+  assert.equal(state.history.at(-1).event, 'cap_reached');
+  assert.match(state.history.at(-1).message, /Step cap reached after 1 completed step/);
+  assert.equal(state.history.at(-1).details.cap, 'max_steps_per_run');
+});
+
+test('max_run_minutes terminates an active worker and salvages its output', async (t) => {
+  const fixture = await makeFixture(t, {
+    maxRunMinutes: 0.002,
+    watchdog: { minimum_runtime_ms: 10_000, stall_window_ms: 10_000 },
+    runnerScript: `
+      process.stdout.write('useful output before run-time cap\\n');
+      setTimeout(() => process.stdout.write(process.argv[1]), 5_000);
+    `,
+  });
+
+  const result = await runCampaign(fixture.campaignPath, fixture.options);
+  const state = JSON.parse(await readFile(result.statePath, 'utf8'));
+  const receipt = await readFile(path.join(result.receiptsDir, '1.1-1.md'), 'utf8');
+
+  assert.equal(state.run.status, 'cap_reached');
+  assert.equal(state.steps[0].status, 'stopped');
+  assert.equal(state.history.at(-1).details.cap, 'max_run_minutes');
+  assert.match(state.history.at(-1).message, /Run-time cap reached during Step 1\.1/);
+  assert.match(receipt, /useful output before run-time cap/);
+});
+
+test('user stop gives grace, kills the active process group, and records salvage', async (t) => {
+  const fixture = await makeFixture(t, {
+    stopGraceMs: 50,
+    watchdog: { minimum_runtime_ms: 10_000, stall_window_ms: 10_000 },
+    runnerScript: `
+      const fs = require('node:fs');
+      const { spawn } = require('node:child_process');
+      const grandchild = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+      fs.writeFileSync('grandchild.pid', String(grandchild.pid));
+      process.stdout.write('salvage this user-stopped work\\n');
+      setInterval(() => {}, 1_000);
+    `,
+  });
+  const running = runCampaign(fixture.campaignPath, fixture.options);
+  const paths = runPathsForCampaign(fixture.campaignPath, fixture.runsDir);
+  await waitFor(async () => {
+    const state = await readOptional(paths.statePath);
+    return Boolean(state?.worker?.pid && await readTextOptional(path.join(fixture.repo, 'grandchild.pid')));
+  });
+  const active = JSON.parse(await readFile(paths.statePath, 'utf8'));
+  const workerPid = active.worker.pid;
+  const grandchildPid = Number(await readFile(path.join(fixture.repo, 'grandchild.pid'), 'utf8'));
+  t.after(() => {
+    for (const pid of [workerPid, grandchildPid]) {
+      try { process.kill(pid, 'SIGKILL'); } catch { /* already stopped */ }
+    }
+  });
+
+  await requestCampaignStop(fixture.campaignPath, {
+    runsDir: fixture.runsDir,
+    stopGraceMs: 50,
+    waitTimeoutMs: 3_000,
+  });
+  const result = await running;
+  const state = JSON.parse(await readFile(result.statePath, 'utf8'));
+  const receipt = await readFile(path.join(result.receiptsDir, '1.1-1.md'), 'utf8');
+  await waitFor(async () => !isPidAlive(workerPid) && !isPidAlive(grandchildPid));
+
+  assert.equal(state.run.status, 'stopped_by_user');
+  assert.equal(state.steps[0].status, 'stopped');
+  assert.equal(state.history.at(-1).event, 'stopped_by_user');
+  assert.equal(state.history.at(-1).details.forced, true);
+  assert.match(receipt, /salvage this user-stopped work/);
+});
+
+test('a worker finishing inside stop grace is completed before the stop boundary', async (t) => {
+  const fixture = await makeFixture(t, {
+    delayMs: 120,
+    stopGraceMs: 1_000,
+    watchdog: { minimum_runtime_ms: 10_000, stall_window_ms: 10_000 },
+  });
+  const running = runCampaign(fixture.campaignPath, fixture.options);
+  const paths = runPathsForCampaign(fixture.campaignPath, fixture.runsDir);
+  await waitFor(async () => Boolean((await readOptional(paths.statePath))?.worker?.pid));
+
+  await requestCampaignStop(fixture.campaignPath, {
+    runsDir: fixture.runsDir,
+    stopGraceMs: 1_000,
+    waitTimeoutMs: 3_000,
+  });
+  const result = await running;
+  const state = JSON.parse(await readFile(result.statePath, 'utf8'));
+
+  assert.equal(state.run.status, 'stopped_by_user');
+  assert.equal(state.steps[0].status, 'completed');
+  assert.equal(state.steps[1].status, 'pending');
+  assert.deepEqual(state.history.slice(-2).map((entry) => entry.event), [
+    'step_completed',
+    'stopped_by_user',
+  ]);
+  assert.equal(state.history.at(-1).details.boundary, true);
+});
+
+test('containment refuses a campaign resolving outside the declared repository root', async (t) => {
+  const fixture = await makeFixture(t);
+  const outsideCampaign = path.join(fixture.root, 'outside-campaign.md');
+  await writeFile(outsideCampaign, campaignMarkdown(false), 'utf8');
+
+  await assert.rejects(
+    runCampaign(outsideCampaign, { ...fixture.options, repoRoot: fixture.repo }),
+    /Campaign file resolves outside repository root/,
+  );
+});
+
 test('an unparseable review is re-asked exactly once before awaiting human review', async (t) => {
   const fixture = await makeFixture(t, {
     reviewScript: "process.stdout.write('I reviewed it, but omitted the required header.')",
@@ -353,6 +473,9 @@ async function makeFixture(t, {
   watchdog = null,
   maxFixAttempts = 2,
   forceMergeUnreviewed = false,
+  maxStepsPerRun = 50,
+  maxRunMinutes = 360,
+  stopGraceMs = 3_000,
   divergeTarget = false,
 } = {}) {
   const root = await mkdtemp(path.join(tmpdir(), 'campaigns-pump-'));
@@ -376,6 +499,9 @@ async function makeFixture(t, {
     watchdog,
     maxFixAttempts,
     forceMergeUnreviewed,
+    maxStepsPerRun,
+    maxRunMinutes,
+    stopGraceMs,
   });
   await git(repo, ['add', 'campaign.md']);
   await git(repo, ['commit', '-m', 'Add fixture campaign']);
@@ -436,6 +562,9 @@ async function writeConfig(configPath, {
   watchdog = null,
   maxFixAttempts = 2,
   forceMergeUnreviewed = false,
+  maxStepsPerRun = 50,
+  maxRunMinutes = 360,
+  stopGraceMs = 3_000,
 } = {}) {
   const stepScript = runnerScript ?? (delayMs > 0
     ? `setTimeout(() => process.stdout.write(process.argv[1]), ${delayMs})`
@@ -456,7 +585,13 @@ async function writeConfig(configPath, {
     schemaVersion: 1,
     defaultRunner: 'fake',
     watchdog: watchdog ?? { minimum_runtime_ms: 0, stall_window_ms: 1_000 },
-    run: { repoRoot: null, branch },
+    run: {
+      repoRoot: null,
+      branch,
+      max_steps_per_run: maxStepsPerRun,
+      max_run_minutes: maxRunMinutes,
+      stop_grace_ms: stopGraceMs,
+    },
     review: { maxFixAttempts, forceMergeUnreviewed },
     runners: {
       fake: {
@@ -482,6 +617,24 @@ async function readOptional(filePath) {
   } catch (error) {
     if (error.code === 'ENOENT') return null;
     throw error;
+  }
+}
+
+async function readTextOptional(filePath) {
+  try {
+    return await readFile(filePath, 'utf8');
+  } catch (error) {
+    if (error.code === 'ENOENT') return null;
+    throw error;
+  }
+}
+
+function isPidAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error.code === 'EPERM';
   }
 }
 

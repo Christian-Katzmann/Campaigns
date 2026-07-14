@@ -7,6 +7,7 @@ import {
   assertValidRunState,
   createRunState,
   transitionRunState,
+  upgradeRunState,
   validateRunState,
 } from '../lib/run-state.mjs';
 
@@ -90,6 +91,28 @@ test('creates a valid runner-neutral ledger with stable source and execution ide
   assert.equal(state.run.identity.execution.branch, 'campaign/a');
   assert.equal(state.history[0].event, 'run_created');
   assert.doesNotMatch(JSON.stringify(state), /claude_|codex_/i);
+});
+
+test('version-1 ledgers upgrade with cap defaults and the explicit stop status', () => {
+  let state = move(stateWithSteps(), 'run_started');
+  state = move(state, 'step_started', { step_id: '1.1', worker: worker() });
+  state = move(state, 'stopped_by_user');
+  const old = structuredClone(state);
+  old.schema_version = 1;
+  delete old.config.max_steps_per_run;
+  delete old.config.max_run_minutes;
+  delete old.config.stop_grace_ms;
+  old.run.status = 'stopped';
+  for (const entry of old.history) {
+    if (entry.to_status === 'stopped_by_user') entry.to_status = 'stopped';
+  }
+
+  const upgraded = upgradeRunState(old);
+  assert.equal(upgraded.run.status, 'stopped_by_user');
+  assert.equal(upgraded.config.max_steps_per_run, 50);
+  assert.equal(upgraded.config.max_run_minutes, 360);
+  assert.equal(upgraded.config.stop_grace_ms, 3_000);
+  assertValidRunState(upgraded);
 });
 
 test('runs every normal step and review transition through merge', () => {
@@ -198,6 +221,7 @@ test('a user-stopped live step can be continued by recovery', () => {
   let state = move(stateWithSteps(), 'run_started');
   state = move(state, 'step_started', { step_id: '1.1', worker: worker() });
   state = move(state, 'stopped_by_user', { message: 'Stopped from the board.' });
+  assert.equal(state.run.status, 'stopped_by_user');
   state = move(state, 'recovery_started', { step_id: '1.1' });
   state = move(state, 'step_continued_by_recover', {
     step_id: '1.1',
@@ -207,6 +231,22 @@ test('a user-stopped live step can be continued by recovery', () => {
   assert.equal(state.run.status, 'running');
   assert.equal(state.steps[0].status, 'running');
   assert.equal(state.worker.invocation_id, 'continued-worker');
+});
+
+test('a run cap stops the active step with a structured terminal reason', () => {
+  let state = move(stateWithSteps(), 'run_started');
+  state = move(state, 'step_started', { step_id: '1.1', worker: worker() });
+  state = move(state, 'cap_reached', {
+    step_id: '1.1',
+    message: 'Run-time cap reached.',
+    details: { cap: 'max_run_minutes', limit: 60 },
+  });
+
+  assert.equal(state.run.status, 'cap_reached');
+  assert.equal(state.steps[0].status, 'stopped');
+  assert.equal(state.worker, null);
+  assert.equal(state.history.at(-1).details.cap, 'max_run_minutes');
+  assertValidRunState(state);
 });
 
 test('recovery failure halts a blocked run', () => {
@@ -252,6 +292,7 @@ test('all audit taxonomy events have a first-class schema name', () => {
     'review_unparseable',
     'final_review_halted',
     'force_merged_unreviewed',
+    'cap_reached',
     'stopped_by_user',
     'step_reset_by_recover',
     'step_continued_by_recover',

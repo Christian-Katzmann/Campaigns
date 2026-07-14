@@ -25,6 +25,7 @@ import {
   statSpritesheet,
 } from './lib/companion-pets.mjs';
 import { httpError, readJsonBody, sendJson, sendStatic } from './lib/http.mjs';
+import { CampaignStopError, requestCampaignStop } from './lib/pump.mjs';
 import { RecoveryError, recoverCampaign } from './lib/recovery.mjs';
 import {
   normalizeRegistryCollections,
@@ -86,11 +87,14 @@ const COMPANION_STATUS_BY_SOURCE = {
   scheduled: 'queued',
   stalled: 'stalled',
   blocked: 'stalled',
+  cap_reached: 'stalled',
+  awaiting_human_review: 'stalled',
   paused: 'paused',
   parked: 'paused',
   stale: 'stale',
   halted: 'halted',
   abandoned: 'halted',
+  stopped_by_user: 'halted',
   failed: 'failed',
   completed: 'completed',
   complete: 'completed',
@@ -268,6 +272,11 @@ const server = createServer(async (request, response) => {
 
     if (url.pathname === '/api/run/recover' && request.method === 'POST') {
       await handleRunRecover(request, response);
+      return;
+    }
+
+    if (url.pathname === '/api/run/stop' && request.method === 'POST') {
+      await handleRunStop(request, response);
       return;
     }
 
@@ -2094,6 +2103,36 @@ async function handleRunRecover(request, response) {
     });
   } catch (error) {
     if (error instanceof RecoveryError) {
+      sendJson(response, 409, { ok: false, error: error.message });
+      return;
+    }
+    throw error;
+  }
+}
+
+async function handleRunStop(request, response) {
+  const payload = await readJsonBody(request);
+  if (typeof payload.id !== 'string') {
+    sendJson(response, 400, { error: 'Expected { id: string }.' });
+    return;
+  }
+
+  const registry = await readRegistry();
+  const entry = registry.campaigns.find((campaign) => campaign.id === payload.id);
+  if (!entry) {
+    sendJson(response, 404, { error: 'Campaign not found.' });
+    return;
+  }
+
+  try {
+    const result = await requestCampaignStop(entry.filePath);
+    sendJson(response, 200, {
+      ok: true,
+      status: result.state.run.status,
+      groupTerminated: result.groupTerminated,
+    });
+  } catch (error) {
+    if (error instanceof CampaignStopError) {
       sendJson(response, 409, { ok: false, error: error.message });
       return;
     }

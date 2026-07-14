@@ -100,6 +100,24 @@ test('a dead running worker is failed with salvaged output, reset, and resumes o
   assert.equal(resumed.state.steps[0].attempt, 2);
 });
 
+test('campaigns stop records stopped_by_user through the CLI', async (t) => {
+  const fixture = await makeFixture(t);
+  const paths = await writeRunningState(fixture);
+
+  const { stdout } = await execFileAsync(process.execPath, [
+    path.resolve('bin/campaigns.mjs'),
+    'stop',
+    fixture.campaignPath,
+    '--state-dir',
+    fixture.runsDir,
+  ]);
+  const state = JSON.parse(await readFile(paths.statePath, 'utf8'));
+
+  assert.match(stdout, /Campaign stopped/);
+  assert.equal(state.run.status, 'stopped_by_user');
+  assert.equal(state.history.at(-1).event, 'stopped_by_user');
+});
+
 test('POST /api/run/recover applies the same recovery over the loopback server', async (t) => {
   const fixture = await makeFixture(t);
   const paths = await writeRunningState(fixture);
@@ -135,6 +153,43 @@ test('POST /api/run/recover applies the same recovery over the loopback server',
   assert.equal(payload.status, 'running');
   assert.ok(payload.actions.includes('released_stale_lock'));
   await assert.rejects(access(paths.lockPath), { code: 'ENOENT' });
+});
+
+test('POST /api/run/stop records the explicit user-stop status', async (t) => {
+  const fixture = await makeFixture(t);
+  const paths = await writeRunningState(fixture);
+  const registryDir = path.join(fixture.root, 'registry');
+  await mkdir(registryDir, { recursive: true });
+  await writeFile(path.join(registryDir, 'registry.json'), `${JSON.stringify({
+    campaigns: [{ id: 'fixture-campaign', filePath: fixture.campaignPath }],
+  }, null, 2)}\n`, 'utf8');
+
+  const child = spawn(process.execPath, ['server.mjs', '--port', '0'], {
+    cwd: path.resolve('.'),
+    env: {
+      ...process.env,
+      CAMPAIGNS_REGISTRY_DIR: registryDir,
+      CAMPAIGNS_RUNS_DIR: fixture.runsDir,
+      CAMPAIGNS_PORT_FILE: path.join(fixture.root, 'server.port'),
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  t.after(() => stopChild(child));
+  const port = await waitForServerPort(child);
+
+  const response = await fetch(`http://127.0.0.1:${port}/api/run/stop`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ id: 'fixture-campaign' }),
+  });
+  const payload = await response.json();
+  const state = JSON.parse(await readFile(paths.statePath, 'utf8'));
+
+  assert.equal(response.status, 200);
+  assert.equal(payload.ok, true);
+  assert.equal(payload.status, 'stopped_by_user');
+  assert.equal(state.run.status, 'stopped_by_user');
+  assert.equal(state.history.at(-1).event, 'stopped_by_user');
 });
 
 async function makeFixture(t) {

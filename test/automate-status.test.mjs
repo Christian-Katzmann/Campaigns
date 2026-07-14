@@ -65,6 +65,17 @@ test('awaiting human review stays a visible engine attention status', () => {
   );
 });
 
+test('run caps and user stops stay distinct engine attention statuses', () => {
+  assert.deepEqual(
+    deriveEngineRuntime({ run: { status: 'cap_reached' } }, null),
+    { status: 'cap_reached', isActive: false },
+  );
+  assert.deepEqual(
+    deriveEngineRuntime({ run: { status: 'stopped_by_user' } }, null),
+    { status: 'stopped_by_user', isActive: false },
+  );
+});
+
 test('provider arbitration lets a live worker beat a stale warning', () => {
   const winner = chooseAutomateState([
     {

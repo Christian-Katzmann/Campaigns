@@ -1,11 +1,17 @@
 #!/usr/bin/env node
 
-import { PumpLockError, runCampaign } from '../lib/pump.mjs';
+import {
+  CampaignStopError,
+  PumpLockError,
+  requestCampaignStop,
+  runCampaign,
+} from '../lib/pump.mjs';
 import { RecoveryError, recoverCampaign } from '../lib/recovery.mjs';
 
 const HELP = `Usage:
   campaigns run <campaign.md> [options]
   campaigns recover <campaign.md> [options]
+  campaigns stop <campaign.md> [options]
 
 Options:
   --runner <name>       Runner from campaigns.config.json
@@ -16,6 +22,11 @@ Options:
   --config <path>       Runner config path
   --state-dir <path>    Run-ledger directory
   --registry-id <id>    Campaign registry identity
+  --max-steps-per-run <count>
+                         Stop before starting more than this many steps
+  --max-run-minutes <minutes>
+                         Stop when the total run-time cap is reached
+  --stop-grace-ms <ms>  Grace period before terminating the worker group
   --force-merge-unreviewed
                          Merge after review failure (explicit escape hatch)
   -h, --help            Show this help
@@ -27,7 +38,7 @@ async function main(argv) {
     return 0;
   }
   const [command, campaignFile, ...rest] = argv;
-  if (!['run', 'recover'].includes(command) || !campaignFile) {
+  if (!['run', 'recover', 'stop'].includes(command) || !campaignFile) {
     process.stderr.write(HELP);
     return 2;
   }
@@ -47,6 +58,16 @@ async function main(argv) {
     } catch (error) {
       process.stderr.write(`campaigns: ${error.message}\n`);
       return error instanceof RecoveryError ? 2 : 1;
+    }
+  }
+  if (command === 'stop') {
+    try {
+      const result = await requestCampaignStop(campaignFile, options);
+      process.stdout.write(`Campaign stopped.\nState: ${result.statePath}\n`);
+      return 0;
+    } catch (error) {
+      process.stderr.write(`campaigns: ${error.message}\n`);
+      return error instanceof CampaignStopError ? 2 : 1;
     }
   }
 
@@ -81,10 +102,15 @@ function parseOptions(args, command) {
     ['--config', 'configPath'],
     ['--state-dir', 'runsDir'],
     ['--registry-id', 'registryId'],
+    ['--max-steps-per-run', 'maxStepsPerRun'],
+    ['--max-run-minutes', 'maxRunMinutes'],
+    ['--stop-grace-ms', 'stopGraceMs'],
   ];
   const names = new Map(command === 'recover'
     ? [['--state-dir', 'runsDir']]
-    : runNames);
+    : command === 'stop'
+      ? [['--state-dir', 'runsDir'], ['--stop-grace-ms', 'stopGraceMs']]
+      : runNames);
   const options = {};
   for (let index = 0; index < args.length; index += 1) {
     if (command === 'run' && args[index] === '--force-merge-unreviewed') {

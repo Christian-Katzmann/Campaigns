@@ -311,6 +311,8 @@ export function renderAutomateStatusContent(el, data) {
     halted: 'Halted',
     failed: 'Failed',
     awaiting_human_review: 'Awaiting review',
+    cap_reached: 'Cap reached',
+    stopped_by_user: 'Stopped by user',
   }[displayStatus];
 
   const text = prefix ? `${prefix} · ${unitLabel}` : elapsed ? `${unitLabel} · ${elapsed}` : unitLabel;
@@ -510,7 +512,11 @@ export function formatTokenCount(n) {
 
 export function renderDrawerStatusPill(data) {
   const status = automateDisplayStatus(data);
-  const label = status === 'awaiting_human_review' ? 'Awaiting review' : status;
+  const label = {
+    awaiting_human_review: 'Awaiting review',
+    cap_reached: 'Cap reached',
+    stopped_by_user: 'Stopped by user',
+  }[status] ?? status;
   const pill = element('div', { className: `drawer-status-pill drawer-status-pill--${status}` });
   pill.append(
     automateIndicator(status),
