@@ -78,7 +78,116 @@ test('a hand-ticked checkbox is source of truth and is not rerun', async (t) => 
   assert.equal(state.run.status, 'awaiting_review');
 });
 
-async function makeFixture(t, { branch = null, delayMs = 0, firstChecked = false } = {}) {
+test('dirty run-start preflight blocks without consuming an attempt and succeeds after cleanup', async (t) => {
+  const fixture = await makeFixture(t);
+  const dirtyPath = path.join(fixture.repo, 'unfinished.txt');
+  await writeFile(dirtyPath, 'unfinished\n', 'utf8');
+
+  await assert.rejects(
+    runCampaign(fixture.campaignPath, fixture.options),
+    /worktree has uncommitted changes.*Remedy:/,
+  );
+
+  const paths = runPathsForCampaign(fixture.campaignPath, fixture.runsDir);
+  const blocked = JSON.parse(await readFile(paths.statePath, 'utf8'));
+  assert.equal(blocked.run.status, 'blocked');
+  assert.equal(blocked.steps[0].attempt, 0);
+  assert.equal(blocked.history.at(-1).event, 'preflight_dirty_worktree');
+  assert.match(blocked.history.at(-1).message, /Remedy:/);
+
+  await rm(dirtyPath);
+  const resumed = await runCampaign(fixture.campaignPath, fixture.options);
+  assert.equal(resumed.state.run.status, 'awaiting_review');
+});
+
+test('invalid campaign preflight records its taxonomy event and can restart after repair', async (t) => {
+  const fixture = await makeFixture(t);
+  await writeFile(fixture.campaignPath, '# Broken campaign\n', 'utf8');
+
+  await assert.rejects(
+    runCampaign(fixture.campaignPath, fixture.options),
+    /campaign markdown is invalid.*Remedy:/,
+  );
+
+  const paths = runPathsForCampaign(fixture.campaignPath, fixture.runsDir);
+  const blocked = JSON.parse(await readFile(paths.statePath, 'utf8'));
+  assert.equal(blocked.run.status, 'blocked');
+  assert.equal(blocked.history.at(-1).event, 'preflight_campaign_invalid');
+
+  await writeFile(fixture.campaignPath, campaignMarkdown(false), 'utf8');
+  const resumed = await runCampaign(fixture.campaignPath, fixture.options);
+  assert.equal(resumed.state.run.status, 'awaiting_review');
+});
+
+test('unavailable branch preflight records its taxonomy event without starting a step', async (t) => {
+  const fixture = await makeFixture(t, { branch: 'not a valid branch' });
+
+  await assert.rejects(
+    runCampaign(fixture.campaignPath, fixture.options),
+    /cannot be checked out or created.*Remedy:/,
+  );
+
+  const paths = runPathsForCampaign(fixture.campaignPath, fixture.runsDir);
+  const blocked = JSON.parse(await readFile(paths.statePath, 'utf8'));
+  assert.equal(blocked.run.status, 'blocked');
+  assert.equal(blocked.steps[0].attempt, 0);
+  assert.equal(blocked.history.at(-1).event, 'preflight_branch_unavailable');
+});
+
+test('watchdog keeps an active runner alive after the runtime floor', async (t) => {
+  const fixture = await makeFixture(t, {
+    watchdog: { minimum_runtime_ms: 100, stall_window_ms: 60 },
+    runnerScript: `
+      const prompt = process.argv[1];
+      let count = 0;
+      const timer = setInterval(() => {
+        process.stdout.write('activity-' + count + '\\n');
+        count += 1;
+        if (count === 7) {
+          clearInterval(timer);
+          process.stdout.write(prompt);
+        }
+      }, 25);
+    `,
+  });
+
+  const result = await runCampaign(fixture.campaignPath, fixture.options);
+  assert.equal(result.state.run.status, 'awaiting_review');
+  assert.equal(result.state.steps[0].status, 'completed');
+  assert.equal(result.state.steps[1].status, 'completed');
+});
+
+test('watchdog kills a silent runner and salvages its output tail in the receipt', async (t) => {
+  const fixture = await makeFixture(t, {
+    watchdog: { minimum_runtime_ms: 100, stall_window_ms: 70 },
+    runnerScript: `
+      process.stdout.write('last useful output before silence\\n');
+      setTimeout(() => process.stdout.write(process.argv[1]), 5_000);
+    `,
+  });
+  const paths = runPathsForCampaign(fixture.campaignPath, fixture.runsDir);
+
+  await assert.rejects(
+    runCampaign(fixture.campaignPath, fixture.options),
+    /failed: Runner stalled/,
+  );
+
+  const state = JSON.parse(await readFile(paths.statePath, 'utf8'));
+  const receipt = await readFile(path.join(paths.receiptsDir, '1.1-1.md'), 'utf8');
+  assert.equal(state.run.status, 'failed');
+  assert.equal(state.steps[0].failure.code, 'watchdog_stalled');
+  assert.match(state.steps[0].failure.output_tail, /last useful output before silence/);
+  assert.match(receipt, /## Salvaged output tail/);
+  assert.match(receipt, /last useful output before silence/);
+});
+
+async function makeFixture(t, {
+  branch = null,
+  delayMs = 0,
+  firstChecked = false,
+  runnerScript = null,
+  watchdog = null,
+} = {}) {
   const root = await mkdtemp(path.join(tmpdir(), 'campaigns-pump-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const repo = path.join(root, 'repo');
@@ -90,7 +199,7 @@ async function makeFixture(t, { branch = null, delayMs = 0, firstChecked = false
   await git(repo, ['config', 'user.name', 'Campaigns Test']);
   await git(repo, ['config', 'user.email', 'campaigns@example.test']);
   await writeFile(campaignPath, campaignMarkdown(firstChecked), 'utf8');
-  await writeConfig(configPath, { branch, delayMs });
+  await writeConfig(configPath, { branch, delayMs, runnerScript, watchdog });
   await git(repo, ['add', 'campaign.md']);
   await git(repo, ['commit', '-m', 'Add fixture campaign']);
   return {
@@ -133,14 +242,19 @@ Review the fixture.
 `;
 }
 
-async function writeConfig(configPath, { branch = null, delayMs = 0 } = {}) {
-  const script = delayMs > 0
+async function writeConfig(configPath, {
+  branch = null,
+  delayMs = 0,
+  runnerScript = null,
+  watchdog = null,
+} = {}) {
+  const script = runnerScript ?? (delayMs > 0
     ? `setTimeout(() => process.stdout.write(process.argv[1]), ${delayMs})`
-    : 'process.stdout.write(process.argv[1])';
+    : 'process.stdout.write(process.argv[1])');
   const config = {
     schemaVersion: 1,
     defaultRunner: 'fake',
-    watchdog: { minimum_runtime_ms: 0, stall_window_ms: 1_000 },
+    watchdog: watchdog ?? { minimum_runtime_ms: 0, stall_window_ms: 1_000 },
     run: { repoRoot: null, branch },
     runners: {
       fake: {
