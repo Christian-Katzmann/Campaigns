@@ -155,6 +155,21 @@ human-readable evidence; folding them into frequently-polled state would make
 every update large and fragile. State keeps absolute receipt, log, and review
 paths plus the small structured facts needed by the board.
 
+### Runner completion contract
+
+The engine gives each worker the run id, step id, and a unique invocation id.
+Success requires the worker's final response to end with a JSON marker carrying
+those three values plus the configured marker type, version, and completed
+status. `lib/runners.mjs` extracts the final response from each CLI's structured
+stream and verifies every field. Exit code zero without that marker becomes a
+retryable `step_failed` event with code `completion_signal_missing`.
+
+Runner binaries, argument templates, prompt delivery, effort aliases,
+environment removals, stream extraction rules, and default models all live in
+`campaigns.config.json`. This keeps runner selection out of the engine. The
+engine writes the receipt only after it verifies the marker, then applies the
+`step_completed` transition with that absolute receipt path.
+
 ## Consequences
 
 - The board can match worktree runs without path guessing.

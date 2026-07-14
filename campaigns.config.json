@@ -1,0 +1,121 @@
+{
+  "schemaVersion": 1,
+  "_comment": "Effort names are normalized per runner here because the CLIs use different names: extra-high maps to max for Claude and xhigh for Codex.",
+  "defaultRunner": "claude",
+  "watchdog": {
+    "minimum_runtime_ms": 3600000,
+    "stall_window_ms": 1200000
+  },
+  "runners": {
+    "claude": {
+      "binary": "claude",
+      "args": [
+        "--effort",
+        "{effort}",
+        "--print",
+        "--permission-mode",
+        "bypassPermissions",
+        "--model",
+        "{model}",
+        "--input-format",
+        "text",
+        "--output-format",
+        "stream-json",
+        "--verbose"
+      ],
+      "prompt": {
+        "delivery": "stdin"
+      },
+      "defaults": {
+        "model": "claude-opus-4-8",
+        "effort": "max"
+      },
+      "effortMap": {
+        "extra-high": "max",
+        "xhigh": "max",
+        "max": "max",
+        "high": "high",
+        "medium": "medium",
+        "low": "low"
+      },
+      "environment": {
+        "remove": [
+          "CLAUDECODE",
+          "CLAUDE_CODE_ENTRYPOINT"
+        ]
+      },
+      "completion": {
+        "marker": {
+          "type": "campaigns.step_completed",
+          "version": 1,
+          "status": "completed"
+        },
+        "sources": [
+          {
+            "kind": "jsonl",
+            "match": {
+              "type": "result"
+            },
+            "field": "result"
+          }
+        ]
+      }
+    },
+    "codex": {
+      "binary": "codex",
+      "args": [
+        "exec",
+        "--ignore-user-config",
+        "--json",
+        "-C",
+        "{repo}",
+        "-m",
+        "{model}",
+        "-c",
+        "model_reasoning_effort=\"{effort}\"",
+        "-c",
+        "approval_policy=\"never\"",
+        "-s",
+        "danger-full-access",
+        "-o",
+        "{output}",
+        "-"
+      ],
+      "prompt": {
+        "delivery": "stdin"
+      },
+      "defaults": {
+        "model": "gpt-5.6-sol",
+        "effort": "xhigh"
+      },
+      "effortMap": {
+        "extra-high": "xhigh",
+        "xhigh": "xhigh",
+        "max": "xhigh",
+        "high": "high",
+        "medium": "medium",
+        "low": "low"
+      },
+      "environment": {
+        "remove": []
+      },
+      "completion": {
+        "marker": {
+          "type": "campaigns.step_completed",
+          "version": 1,
+          "status": "completed"
+        },
+        "sources": [
+          {
+            "kind": "jsonl",
+            "match": {
+              "type": "item.completed",
+              "item.type": "agent_message"
+            },
+            "field": "item.text"
+          }
+        ]
+      }
+    }
+  }
+}
