@@ -23,11 +23,14 @@
   "engines": {
     "node": ">=20"
   },
+  "bin": {
+    "campaigns": "./bin/campaigns.mjs"
+  },
   "scripts": {
     "start": "node server.mjs",
     "start:sample": "node server.mjs --file examples/sample-campaign.md",
     "assets:render": "./scripts/render-public-assets.sh",
-    "check": "find server.mjs lib public -type f \\( -name '*.mjs' -o -name 'app.js' \\) -not -path '*/vendor/*' -print0 | xargs -0 -n1 node --check",
+    "check": "find server.mjs lib public bin -type f \\( -name '*.mjs' -o -name 'app.js' \\) -not -path '*/vendor/*' -print0 | xargs -0 -n1 node --check",
     "test": "node --test test/*.test.mjs",
     "desktop:icons": "APP_NAME='Campaigns' APP_SLUG='campaigns' ./scripts/desktop-icons.sh",
     "desktop:build": "./scripts/desktop-build.sh",

@@ -10,8 +10,11 @@ import {
   chooseAutomateState,
   countAutomationProgress,
   deriveCodexRuntime,
+  findEngineStatePath,
   findCodexStatePath,
+  getAutomateState,
 } from '../lib/automate-providers.mjs';
+import { createRunState, transitionRunState } from '../lib/run-state.mjs';
 
 function runtime(overrides = {}) {
   return deriveCodexRuntime({
@@ -289,4 +292,103 @@ test('live progress counts only the authored progress checklist', () => {
 \`\`\`
 `;
   assert.deepEqual(countAutomationProgress(markdown), { done: 1, total: 3 });
+});
+
+test('new-engine provider discovers by run identity and maps awaiting review for the drawer', async (t) => {
+  const sandbox = await mkdtemp(path.join(tmpdir(), 'campaigns-engine-provider-'));
+  const repo = path.join(sandbox, 'repo');
+  const campaignPath = path.join(repo, 'campaigns', 'hello.md');
+  const runsDir = path.join(sandbox, 'state', 'runs');
+  const runDir = path.join(runsDir, 'custom-run-name');
+  const receiptsDir = path.join(runDir, 'receipts');
+  const receiptOne = path.join(receiptsDir, '1.1-1.md');
+  const receiptTwo = path.join(receiptsDir, '1.2-1.md');
+  const previousRunsDir = process.env.CAMPAIGNS_RUNS_DIR;
+  t.after(async () => {
+    if (previousRunsDir === undefined) delete process.env.CAMPAIGNS_RUNS_DIR;
+    else process.env.CAMPAIGNS_RUNS_DIR = previousRunsDir;
+    await rm(sandbox, { recursive: true, force: true });
+  });
+  process.env.CAMPAIGNS_RUNS_DIR = runsDir;
+
+  await mkdir(path.dirname(campaignPath), { recursive: true });
+  await mkdir(receiptsDir, { recursive: true });
+  await writeFile(campaignPath, `# Hello
+
+## Progress checklist
+
+- [x] Step 1.1 — First
+- [x] Step 1.2 — Second
+- [ ] Final review
+
+## Step 1.1 — First
+
+\`\`\`text
+First prompt.
+\`\`\`
+
+## Step 1.2 — Second
+
+\`\`\`text
+Second prompt.
+\`\`\`
+`, 'utf8');
+  await writeFile(receiptOne, '# First receipt\n', 'utf8');
+  await writeFile(receiptTwo, '# Second receipt\n', 'utf8');
+
+  let state = createRunState({
+    id: 'run-1',
+    identity: {
+      registry_id: 'hello-registry',
+      source: { campaign_path: campaignPath, repo_root: repo },
+      execution: { campaign_path: campaignPath, repo_root: repo, branch: 'main' },
+    },
+    steps: [
+      { id: '1.1', name: 'First', phase: '1' },
+      { id: '1.2', name: 'Second', phase: '1' },
+    ],
+    config: {
+      runner: 'claude',
+      model: 'fixture',
+      effort: 'high',
+      watchdog: { minimum_runtime_ms: 60_000, stall_window_ms: 60_000 },
+    },
+    artifacts: { run_dir: runDir, receipts_dir: receiptsDir, final_review_path: null },
+  });
+  state = transitionRunState(state, { event: 'run_started' });
+  state = transitionRunState(state, {
+    event: 'step_started',
+    step_id: '1.1',
+    worker: { runner: 'claude', invocation_id: 'worker-1', pid: null, log_path: null },
+  });
+  state = transitionRunState(state, {
+    event: 'step_completed',
+    step_id: '1.1',
+    receipt_path: receiptOne,
+  });
+  state = transitionRunState(state, {
+    event: 'step_started',
+    step_id: '1.2',
+    worker: { runner: 'claude', invocation_id: 'worker-2', pid: null, log_path: null },
+  });
+  state = transitionRunState(state, {
+    event: 'step_completed',
+    step_id: '1.2',
+    receipt_path: receiptTwo,
+  });
+  state = transitionRunState(state, { event: 'run_reached_final_review' });
+  await writeFile(path.join(runDir, 'state.json'), `${JSON.stringify(state, null, 2)}\n`, 'utf8');
+
+  assert.equal(
+    await findEngineStatePath(campaignPath, 'hello-registry', runsDir),
+    path.join(runDir, 'state.json'),
+  );
+  const providerState = await getAutomateState(campaignPath, { registryId: 'hello-registry' });
+  assert.equal(providerState.backend, 'engine');
+  assert.equal(providerState.status, 'completed');
+  assert.equal(providerState.run_status, 'awaiting_review');
+  assert.deepEqual(providerState.progress, { done: 2, total: 3 });
+  assert.deepEqual(providerState.steps.map((step) => step.status), ['done', 'done']);
+  assert.match(providerState.steps[0].receipt, /First receipt/);
+  assert.equal(providerState.timeline_events.at(-1).event, 'run_reached_final_review');
 });
