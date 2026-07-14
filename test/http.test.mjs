@@ -239,7 +239,11 @@ test('campaigns run completes through the CLI with a fake runner and valid state
     configPath,
     '--state-dir',
     runsDir,
-  ], { cwd: repo, timeout: 20_000 });
+  ], {
+    cwd: repo,
+    timeout: 20_000,
+    env: { ...process.env, CAMPAIGNS_CONFIG_DIR: path.join(fixtureRoot, 'user-config') },
+  });
   assert.equal(stderr, '');
 
   const paths = runPathsForCampaign(campaignPath, runsDir);

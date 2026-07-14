@@ -239,7 +239,13 @@ Review the fixture.
     runsDir,
     campaignPath,
     configPath,
-    runOptions: { configPath, runsDir, stdout: silent, stderr: silent },
+    runOptions: {
+      configPath,
+      runsDir,
+      stdout: silent,
+      stderr: silent,
+      env: { ...process.env, CAMPAIGNS_CONFIG_DIR: path.join(root, 'user-config') },
+    },
   };
 }
 

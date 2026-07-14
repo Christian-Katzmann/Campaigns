@@ -571,7 +571,13 @@ async function makeFixture(t, {
     runsDir,
     campaignPath,
     configPath,
-    options: { configPath, runsDir, stdout: silent, stderr: silent },
+    options: {
+      configPath,
+      runsDir,
+      stdout: silent,
+      stderr: silent,
+      env: { ...process.env, CAMPAIGNS_CONFIG_DIR: path.join(root, 'user-config') },
+    },
   };
 }
 

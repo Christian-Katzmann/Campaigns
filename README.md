@@ -104,11 +104,14 @@ The markdown file is the source of truth. Browser edits use a `baseHash`; stale 
 | `campaigns run <campaign.md>` | Run or resume the next unchecked unit |
 | `campaigns stop <campaign.md>` | Stop at a safe boundary, then terminate after the grace period |
 | `campaigns recover <campaign.md>` | Repair a stopped or failed run ledger |
+| `campaigns config doctor [campaign.md]` | Show resolved config, sources, root, and warnings |
 | `npx campaigns-app` | Open the bundled sample board without installing |
 | `npm start -- --file <campaign.md>` | Open one campaign in the local board |
 | `npm run start:sample` | Open the included sample campaign |
 
-Run `campaigns --help` for runner, model, branch, state-directory, and run-cap options.
+Run `campaigns --help` for runner, model, branch, state-directory, config, and
+run-cap options. Configuration precedence and platform paths are documented in
+[Running campaigns](docs/running-campaigns.md#configuration).
 
 ## Server and API reference
 

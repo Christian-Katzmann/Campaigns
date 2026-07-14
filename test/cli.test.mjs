@@ -17,6 +17,7 @@ test('campaigns --help keeps the engine commands and documents sample launch', a
   assert.match(stdout, /campaigns run <campaign\.md>/);
   assert.match(stdout, /campaigns recover <campaign\.md>/);
   assert.match(stdout, /campaigns stop <campaign\.md>/);
+  assert.match(stdout, /campaigns config doctor \[campaign\.md\]/);
 });
 
 test('campaigns --no-open launches the bundled sample on loopback', async (t) => {

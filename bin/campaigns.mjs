@@ -10,6 +10,7 @@ import {
   requestCampaignStop,
   runCampaign,
 } from '../lib/pump.mjs';
+import { formatConfigDoctor, resolveCampaignConfig } from '../lib/config.mjs';
 import { RecoveryError, recoverCampaign } from '../lib/recovery.mjs';
 
 const HELP = `Usage:
@@ -17,6 +18,7 @@ const HELP = `Usage:
   campaigns run <campaign.md> [options]
   campaigns recover <campaign.md> [options]
   campaigns stop <campaign.md> [options]
+  campaigns config doctor [campaign.md] [options]
 
 Board options:
   --no-open             Launch the bundled sample without opening a browser
@@ -28,7 +30,7 @@ Options:
   --effort <level>      Override the runner's default effort
   --repo <path>         Execution repository (defaults to campaign's Git root)
   --branch <name>       Branch to check out or create before the first step
-  --config <path>       Runner config path
+  --config <path>       Extra config file, after project and user config
   --state-dir <path>    Run-ledger directory
   --registry-id <id>    Campaign registry identity
   --max-steps-per-run <count>
@@ -57,6 +59,7 @@ async function main(argv) {
       return 1;
     }
   }
+  if (argv[0] === 'config') return runConfigCommand(argv.slice(1));
   const [command, campaignFile, ...rest] = argv;
   if (!['run', 'recover', 'stop'].includes(command) || !campaignFile) {
     process.stderr.write(HELP);
@@ -109,6 +112,33 @@ async function main(argv) {
   } finally {
     process.removeListener('SIGINT', stop);
     process.removeListener('SIGTERM', stop);
+  }
+}
+
+async function runConfigCommand(argv) {
+  if (argv[0] !== 'doctor') {
+    process.stderr.write(HELP);
+    return 2;
+  }
+  let parsed;
+  try {
+    parsed = parseDoctorOptions(argv.slice(1));
+  } catch (error) {
+    process.stderr.write(`campaigns: ${error.message}\n`);
+    return 2;
+  }
+  try {
+    const result = await resolveCampaignConfig({
+      campaignPath: parsed.campaignFile,
+      env: process.env,
+      cli: parsed.options,
+      explicitConfigPath: parsed.options.configPath,
+    });
+    process.stdout.write(formatConfigDoctor(result));
+    return 0;
+  } catch (error) {
+    process.stderr.write(`campaigns: ${error.message}\n`);
+    return 1;
   }
 }
 
@@ -195,6 +225,25 @@ function parseOptions(args, command) {
     index += 1;
   }
   return options;
+}
+
+function parseDoctorOptions(args) {
+  let campaignFile = null;
+  const optionArgs = [];
+  for (let index = 0; index < args.length; index += 1) {
+    const argument = args[index];
+    if (!argument.startsWith('-')) {
+      if (campaignFile) throw new Error(`Unexpected argument: ${argument}`);
+      campaignFile = argument;
+      continue;
+    }
+    optionArgs.push(argument);
+    if (argument === '--force-merge-unreviewed') continue;
+    if (!args[index + 1]) throw new Error(`Unknown or incomplete option: ${argument}`);
+    optionArgs.push(args[index + 1]);
+    index += 1;
+  }
+  return { campaignFile, options: parseOptions(optionArgs, 'run') };
 }
 
 process.exitCode = await main(process.argv.slice(2));

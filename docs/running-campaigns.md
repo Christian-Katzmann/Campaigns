@@ -26,6 +26,43 @@ Override the caps for one launch with `--max-steps-per-run` and
 `--max-run-minutes`. A cap ends the ledger as `cap_reached`; it does not pretend
 the campaign completed.
 
+## Configuration
+
+Campaigns resolves configuration in this order; later layers win:
+
+| Priority | Layer | Location |
+| --- | --- | --- |
+| 1 | Bundled defaults | `campaigns.config.json` in the installed package |
+| 2 | Project | `.campaigns.json` in the campaign file's canonical Git root |
+| 3 | User | Platform config directory, listed below |
+| 4 | Explicit file | `--config <path>` |
+| 5 | Environment | `CAMPAIGNS_*` scalar overrides |
+| 6 | Command line | Explicit scalar flags such as `--runner` and `--model` |
+
+Project discovery follows the campaign file, not the shell's current directory.
+That means `campaigns run /absolute/path/campaign.md` loads the right project's
+`.campaigns.json` from anywhere. A runner with the same name replaces the lower
+layer's whole runner definition; runner fields are not partially merged.
+
+The user config file is `config.json` in:
+
+| Platform | Directory |
+| --- | --- |
+| macOS | `~/Library/Application Support/Campaigns` |
+| Linux | `$XDG_CONFIG_HOME/campaigns`, or `~/.config/campaigns` |
+| Windows | `%APPDATA%\Campaigns` |
+
+Set `CAMPAIGNS_CONFIG_DIR` to use another user-config directory. Scalar
+environment overrides are `CAMPAIGNS_RUNNER`, `CAMPAIGNS_MODEL`,
+`CAMPAIGNS_EFFORT`, `CAMPAIGNS_REPO`, `CAMPAIGNS_BRANCH`,
+`CAMPAIGNS_MAX_STEPS_PER_RUN`, `CAMPAIGNS_MAX_RUN_MINUTES`,
+`CAMPAIGNS_STOP_GRACE_MS`, and `CAMPAIGNS_FORCE_MERGE_UNREVIEWED`.
+
+Run `campaigns config doctor [campaign.md]` to print the effective values,
+their source, and the project root. With no campaign argument it uses the
+current directory's Git root. Unknown keys and paths that do not exist are
+reported as warnings; secret-shaped values are masked.
+
 ## Stopping a run
 
 Use `campaigns stop <campaign.md>` or `POST /api/run/stop` with the registered
