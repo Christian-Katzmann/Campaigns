@@ -25,7 +25,8 @@ import {
   statSpritesheet,
 } from './lib/companion-pets.mjs';
 import { httpError, readJsonBody, sendJson, sendStatic } from './lib/http.mjs';
-import { CampaignStopError, requestCampaignStop } from './lib/pump.mjs';
+import { hasUnifiedRunLedgers, loadUnifiedLessons } from './lib/lessons.mjs';
+import { CampaignStopError, defaultCampaignsRunsDir, requestCampaignStop } from './lib/pump.mjs';
 import { RecoveryError, recoverCampaign } from './lib/recovery.mjs';
 import {
   normalizeRegistryCollections,
@@ -57,6 +58,7 @@ const notificationSettingsPath = path.join(registryDir, 'notification-settings.j
 const stopWatcherStatePath = path.join(registryDir, 'stop-watcher-state.json');
 const portFilePath = process.env.CAMPAIGNS_PORT_FILE || defaultPortFilePath();
 const lessonsHelperPath = process.env.CAMPAIGNS_LESSONS_HELPER || defaultLessonsHelperPath();
+const lessonsRunsDir = defaultCampaignsRunsDir();
 // Codex custom pet packages for the Campaign Companion. Resolves to
 // ${CODEX_HOME:-$HOME/.codex}/pets (override with CAMPAIGNS_PETS_DIR). Read-only.
 const petsDir = resolvePetsDir();
@@ -393,8 +395,9 @@ function defaultLessonsHelperPath() {
 }
 
 async function sendCapabilities(response) {
-  const [automation, lessons] = await Promise.all([
+  const [automation, nativeLessons, legacyLessons] = await Promise.all([
     getAutomateProviderAvailability(),
+    hasUnifiedRunLedgers(lessonsRunsDir).catch(() => false),
     stat(lessonsHelperPath).then((info) => info.isFile()).catch(() => false),
   ]);
   sendJson(response, 200, {
@@ -402,7 +405,7 @@ async function sendCapabilities(response) {
       automate: automation.available,
       away: automation.available,
       companion: automation.available,
-      lessons,
+      lessons: nativeLessons || legacyLessons,
     },
     providers: automation.providers,
   });
@@ -1076,6 +1079,12 @@ function extractWorkflowTitle(markdown) {
 
 async function sendLessons(response) {
   try {
+    const nativeLessons = await loadUnifiedLessons(lessonsRunsDir);
+    if (nativeLessons.scanned.total > 0) {
+      sendJson(response, 200, nativeLessons);
+      return;
+    }
+
     await stat(lessonsHelperPath);
     const analysis = await readLessonsAnalysis();
     sendJson(response, 200, summarizeLessons(analysis));
@@ -1084,7 +1093,7 @@ async function sendLessons(response) {
     sendJson(response, missing ? 200 : 502, {
       available: false,
       generatedAt: new Date().toISOString(),
-      error: missing ? 'Campaign lessons helper is not available.' : 'Campaign lessons could not be loaded.',
+      error: missing ? 'No unified campaign runs are available yet.' : 'Campaign lessons could not be loaded.',
     });
   }
 }
@@ -1120,6 +1129,7 @@ function summarizeLessons(analysis) {
 
   return {
     available: true,
+    source: 'legacy',
     generatedAt: new Date().toISOString(),
     scanned: {
       claude: positiveNumber(analysis?.scanned?.claude),

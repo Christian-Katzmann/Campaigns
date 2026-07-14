@@ -10,8 +10,10 @@ surfaces appear only when the server detects the local data they need.
   `CAMPAIGNS_AUTOMATE_BASE` to override the Claude directory and `CODEX_HOME` to
   override the Codex directory. `CAMPAIGNS_CODEX_RECOVER` can point recovery
   actions at a different `campaign_recover.py` script.
-- **Lessons** appears when the lessons helper exists. Set
-  `CAMPAIGNS_LESSONS_HELPER` to a compatible `read-past-campaigns.py` helper.
+- **Lessons** appears when Campaigns finds unified run ledgers. Set
+  `CAMPAIGNS_RUNS_DIR` to move that local history. A compatible
+  `CAMPAIGNS_LESSONS_HELPER` is used only as a legacy fallback when no unified
+  ledgers exist.
 - Companion pets are optional decoration. Set `CAMPAIGNS_PETS_DIR` to a pet
   package directory and `CAMPAIGNS_COMPANION_PET` to select one package by id.
 
