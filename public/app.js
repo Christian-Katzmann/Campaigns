@@ -30,6 +30,15 @@ async function initialize() {
   const params = new URLSearchParams(window.location.search);
   const view = params.get('view');
   if (view === 'workflows' || view === 'workflows-v2') {
+    const hasWorkflows = await updateWorkflowsAvailability();
+    if (!hasWorkflows) {
+      document.body.classList.add('view-workflows-v2');
+      const host = document.querySelector('#workflows-v2');
+      const empty = document.querySelector('#workflows-empty');
+      if (host) host.hidden = false;
+      if (empty) empty.hidden = false;
+      return;
+    }
     // The Workflows view is a full-bleed, self-contained module with its own render;
     // the campaign app renders nothing behind it. Wired to GET /api/workflows and
     // draws each map in the DëvSec flowchart style (Mermaid converted live by
@@ -50,6 +59,7 @@ async function initialize() {
     return;
   }
   if (params.has('library')) {
+    await updateWorkflowsAvailability();
     initLibraryFilter();
     await renderLibrary();
     startAutomatePolling();
@@ -68,6 +78,7 @@ async function initialize() {
   }
 
   if (!id && response.status === 404) {
+    await updateWorkflowsAvailability();
     initLibraryFilter();
     await renderLibrary();
     startAutomatePolling();
@@ -106,6 +117,26 @@ async function initialize() {
   initSettings();
   initAutomateDrawer();
   startAutomatePolling();
+}
+
+async function updateWorkflowsAvailability() {
+  let available = false;
+  try {
+    const response = await fetch('/api/workflows');
+    if (response.ok) {
+      const payload = await response.json();
+      available = Array.isArray(payload.workflows) && payload.workflows.length > 0;
+    }
+  } catch {
+    // Discovery unavailable is equivalent to no maps: keep the optional view gated.
+  }
+
+  const tab = document.querySelector('#workflows-tab');
+  if (tab) {
+    if (available) tab.hidden = false;
+    else tab.remove();
+  }
+  return available;
 }
 
 function showLoadError(message) {

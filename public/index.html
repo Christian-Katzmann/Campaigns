@@ -89,7 +89,7 @@
     <div id="library" class="library" hidden>
       <nav class="topbar-tabs" aria-label="Views">
         <a class="button button-quiet" href="?library" aria-pressed="true">Campaigns</a>
-        <a class="button button-quiet" href="?view=workflows" aria-pressed="false">Workflows</a>
+        <a id="workflows-tab" class="button button-quiet" href="?view=workflows" aria-pressed="false" hidden>Workflows</a>
       </nav>
       <header class="library-header">
         <div class="library-header-text">
@@ -126,7 +126,17 @@
     <!-- Workflows: a full-bleed, self-contained DëvSec-style fragility-map browser,
          wired to GET /api/workflows. Filled imperatively by /workflows-v2.js when
          ?view=workflows (or the ?view=workflows-v2 alias). -->
-    <div id="workflows-v2" class="workflows-v2" hidden></div>
+    <div id="workflows-v2" class="workflows-v2" hidden>
+      <div id="workflows-empty" class="library" hidden>
+        <nav class="topbar-tabs" aria-label="Views">
+          <a class="button button-quiet" href="?library">Campaigns</a>
+        </nav>
+        <div class="library-empty">
+          <p class="library-empty-title">No workflow maps yet.</p>
+          <p class="library-empty-body">Workflows appears when a registered repository contains a map under <code>docs/workflows/</code>.</p>
+        </div>
+      </div>
+    </div>
 
     <div id="phase-banner" class="phase-banner" role="status" aria-live="polite"></div>
 
