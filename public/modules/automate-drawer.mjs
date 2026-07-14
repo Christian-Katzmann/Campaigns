@@ -17,8 +17,13 @@ import {
 } from './state.mjs';
 import { element, relativeTime, showToast } from './dom.mjs';
 import { automateIndicator, formatAutomateUnitLabel, updateLibraryDots } from './library.mjs';
-import { awayBestFitHint, estimateAutomateWait, openAwayMode } from './away.mjs';
+import { awayBestFitHint, openAwayMode } from './away.mjs';
 import { playAudioFeedback } from './effects.mjs';
+import {
+  fetchCampaignEstimate,
+  formatDurationRange,
+  renderCampaignEstimate,
+} from './estimate-ui.mjs';
 
 const DRAWER_WIDTH_KEY = 'campaigns-drawer-width:v1';
 
@@ -48,6 +53,14 @@ export function initAutomateDrawer() {
 
   drawer.querySelectorAll('[data-action="close-automate-drawer"]').forEach((btn) => {
     btn.addEventListener('click', closeAutomateDrawer);
+  });
+
+  window.addEventListener('campaign:run-started', () => {
+    window.setTimeout(async () => {
+      await fetchCampaignAutomateState();
+      await fetchCampaignEstimate();
+      openAutomateDrawer();
+    }, 250);
   });
 
   drawer.addEventListener('keydown', (event) => {
@@ -231,6 +244,10 @@ export async function fetchCampaignAutomateState() {
     const stepChanged = (prev?.current_step?.id || null) !== (next?.current_step?.id || null);
     const timelineChanged = (prev?.timeline_events?.length || 0) !== (next?.timeline_events?.length || 0);
     const logChanged = (prev?.current_step_log?.length || 0) !== (next?.current_step_log?.length || 0);
+    const completedChanged = completedStepSignature(prev) !== completedStepSignature(next);
+
+    if (completedChanged || statusChanged || !state.campaignEstimate) await fetchCampaignEstimate();
+    renderCampaignEstimate();
 
     if (statusChanged || stepChanged || timelineChanged || !prev) {
       updateAutomateStatusLine();
@@ -336,28 +353,29 @@ export function formatAutomateElapsed(startedAt) {
 }
 
 export function renderDrawerEta(data) {
-  const estimate = estimateAutomateWait(data);
-  if (!estimate) return null;
+  const estimate = state.campaignEstimate;
+  if (!estimate || !isAutomateRunning(data)) return null;
 
   const block = element('section', { className: 'drawer-eta' });
   const header = element('div', { className: 'drawer-eta-header' });
   header.append(
-    element('span', { className: 'drawer-eta-label', text: 'Away window' }),
-    element('span', { className: 'drawer-eta-window', text: estimate.windowLabel }),
+    element('span', { className: 'drawer-eta-label', text: 'Remaining' }),
+    element('span', { className: 'drawer-eta-window', text: formatDurationRange(estimate.duration) }),
     element('span', { className: `drawer-eta-confidence drawer-eta-confidence--${estimate.confidence}`, text: estimate.confidence }),
   );
   block.append(header);
 
-  // Best-fit hint from the user's task library — real suggestions, not canned copy.
-  const hint = awayBestFitHint(estimate.overTypical ? 0 : estimate.safeAway);
+  const hint = awayBestFitHint(estimate.duration.lowMinutes);
   block.append(element('p', { className: 'drawer-eta-suggestion', text: hint }));
 
   const facts = element('div', { className: 'drawer-eta-facts' });
-  facts.append(element('span', { text: `Step left ${estimate.stepRangeLabel}` }));
-  if (estimate.phaseWindowLabel) {
-    facts.append(element('span', { text: `Phase window ${estimate.phaseWindowLabel}` }));
+  facts.append(element('span', { text: `${estimate.remainingSteps} steps left` }));
+  facts.append(element('span', { text: `${estimate.sessions.low}–${estimate.sessions.high} sessions` }));
+  const sample = estimate.source === 'personal' ? estimate.personalSampleSize : estimate.sampleSize;
+  facts.append(element('span', { text: `${estimateSourceLabel(estimate.source)}, n=${sample}` }));
+  if (estimate.live?.applied) {
+    facts.append(element('span', { text: `${Number(estimate.live.paceRatio).toFixed(1)}× live pace` }));
   }
-  facts.append(element('span', { text: `${estimate.baseline.label} history, n=${estimate.baseline.sample}` }));
   block.append(facts);
 
   const awayBtn = element('button', {
@@ -369,6 +387,19 @@ export function renderDrawerEta(data) {
   block.append(awayBtn);
 
   return block;
+}
+
+function completedStepSignature(data) {
+  return (data?.steps ?? [])
+    .filter((step) => step.status === 'done' || step.status === 'completed')
+    .map((step) => step.id)
+    .join('|');
+}
+
+function estimateSourceLabel(source) {
+  if (source === 'personal') return 'your history';
+  if (source === 'personal+fleet') return 'history + fleet';
+  return 'fleet baseline';
 }
 
 /* ------------------------------ Drawer content rendering ------------------- */

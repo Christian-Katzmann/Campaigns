@@ -518,6 +518,7 @@ export async function saveToServer(options = {}) {
     state.saveStatus = 'idle';
     state.lastSaveError = '';
     updateSaveStatus();
+    window.dispatchEvent(new CustomEvent('campaign:saved'));
     if (options.manual) showToast('Saved.');
   } catch (error) {
     state.saveStatus = 'error';

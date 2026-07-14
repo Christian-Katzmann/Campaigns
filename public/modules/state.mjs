@@ -17,6 +17,7 @@ import { DEFAULT_AVOID_ABOVE_STEPS } from '../lib/plan-health.mjs';
 export const state = {
   activeStepId: null,
   baseHash: '',
+  campaignEstimate: null,
   capabilities: {
     automate: false,
     away: false,
@@ -34,6 +35,8 @@ export const state = {
   lastModified: '',
   lastPhaseSnapshot: null,
   lastSaveError: '',
+  launchError: '',
+  launchPending: false,
   markdown: '',
   planHealthAvoidAboveSteps: DEFAULT_AVOID_ABOVE_STEPS,
   phaseBannerTimer: null,
@@ -71,6 +74,8 @@ export const elements = {
   mobileBottombar: document.querySelector('#mobile-bottombar'),
   openFileButton: document.querySelector('#open-file-button'),
   overviewActiveIndicator: document.querySelector('#overview-active-indicator'),
+  estimateCard: document.querySelector('#estimate-card'),
+  launchButton: document.querySelector('#launch-campaign-button'),
   phaseBanner: document.querySelector('#phase-banner'),
   progressFill: document.querySelector('#progress-fill'),
   progressLabel: document.querySelector('#progress-label'),

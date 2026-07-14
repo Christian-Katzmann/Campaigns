@@ -31,6 +31,7 @@ import {
   scheduleAutoSave,
   showResumeCardIfNeeded,
 } from './modules/board.mjs';
+import { fetchCampaignEstimate, initCampaignEstimate } from './modules/estimate-ui.mjs';
 
 const WORKFLOWS_V2_ASSET_VERSION = '2026-06-22-dedupe';
 
@@ -131,6 +132,8 @@ async function initialize() {
   }
 
   render();
+  initCampaignEstimate({ save: saveToServer });
+  await fetchCampaignEstimate();
   showResumeCardIfNeeded();
   initSwitcher();
   initSettings(payload.app);
