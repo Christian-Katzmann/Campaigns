@@ -6,6 +6,10 @@
     "minimum_runtime_ms": 3600000,
     "stall_window_ms": 1200000
   },
+  "run": {
+    "repoRoot": null,
+    "branch": null
+  },
   "runners": {
     "claude": {
       "binary": "claude",
