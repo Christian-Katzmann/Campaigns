@@ -11,6 +11,7 @@ import {
   abandonAutomateCampaign,
   getAutomateProviderAvailability,
   getAutomateState,
+  getEngineRunLedger,
   nudgeAutomateState,
   rerunAutomateFinalize,
 } from './lib/automate-providers.mjs';
@@ -26,9 +27,16 @@ import {
 } from './lib/companion-pets.mjs';
 import { httpError, readJsonBody, sendJson, sendStatic } from './lib/http.mjs';
 import { resolveCampaignConfig } from './lib/config.mjs';
-import { hasUnifiedRunLedgers, loadUnifiedLessons } from './lib/lessons.mjs';
+import { estimateCampaign } from './lib/estimate.mjs';
+import { hasUnifiedRunLedgers, loadUnifiedLessons, readUnifiedRunLedgers } from './lib/lessons.mjs';
 import { PlannerDraftError, draftCampaign } from './lib/planner.mjs';
-import { CampaignStopError, defaultCampaignsRunsDir, requestCampaignStop } from './lib/pump.mjs';
+import {
+  CampaignStopError,
+  defaultCampaignsRunsDir,
+  parseCampaignPlan,
+  requestCampaignStop,
+  resolveStepRunnerSelection,
+} from './lib/pump.mjs';
 import { RecoveryError, recoverCampaign } from './lib/recovery.mjs';
 import { createRunnerRegistry, loadRunnerRegistry, runnerCapabilities } from './lib/runners.mjs';
 import {
@@ -194,6 +202,11 @@ const server = createServer(async (request, response) => {
 
     if (url.pathname === '/api/lessons' && request.method === 'GET') {
       await sendLessons(response);
+      return;
+    }
+
+    if (url.pathname === '/api/estimate' && request.method === 'GET') {
+      await sendEstimate(url, response);
       return;
     }
 
@@ -475,6 +488,46 @@ async function sendCapabilities(url, response) {
     defaultRunner: runnerRegistry.defaultRunner,
     runners,
   });
+}
+
+async function sendEstimate(url, response) {
+  const campaign = await resolveCampaign(url);
+  if (!campaign) {
+    sendJson(response, 404, { error: 'Campaign not found.' });
+    return;
+  }
+
+  const markdown = await readFile(campaign.filePath, 'utf8');
+  const plan = parseCampaignPlan(markdown);
+  let runnerRegistry;
+  try {
+    const resolved = await resolveCampaignConfig({ campaignPath: campaign.filePath, cwd: __dirname });
+    runnerRegistry = createRunnerRegistry(resolved.config);
+  } catch (error) {
+    if (!/No Git project root found/.test(error.message)) throw error;
+    runnerRegistry = await loadRunnerRegistry();
+  }
+  const steps = plan.steps.map((step) => ({
+    id: step.id,
+    checked: step.checked,
+    runner: resolveStepRunnerSelection(runnerRegistry, step).runner,
+  }));
+  const [allLedgers, locatedLedger] = await Promise.all([
+    readUnifiedRunLedgers(lessonsRunsDir),
+    getEngineRunLedger(campaign.filePath, campaign.id),
+  ]);
+  const liveLedger = locatedLedger && !['completed', 'merged', 'force_merged'].includes(locatedLedger.run.status)
+    ? locatedLedger
+    : null;
+  const historicalLedgers = liveLedger
+    ? allLedgers.filter((ledger) => ledger.run.id !== liveLedger.run.id)
+    : allLedgers;
+  sendJson(response, 200, estimateCampaign({
+    steps,
+    ledgers: historicalLedgers,
+    liveLedger,
+    seed: `${campaign.id}:${hashMarkdown(markdown)}`,
+  }));
 }
 
 async function writeRuntimePort(actualPort) {
