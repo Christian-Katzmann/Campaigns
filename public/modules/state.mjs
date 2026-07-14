@@ -100,7 +100,15 @@ export const automateState = {
   elapsedTimer: null,
 };
 
-export const AUTOMATE_ATTENTION_STATUSES = new Set(['stalled', 'halted', 'failed', 'blocked']);
+export const AUTOMATE_ATTENTION_STATUSES = new Set([
+  'stalled',
+  'halted',
+  'failed',
+  'blocked',
+  'awaiting_human_review',
+  'cap_reached',
+  'stopped_by_user',
+]);
 export const AUTOMATE_SCHEDULED_STATUSES = new Set(['queued', 'scheduled']);
 
 export function automateDisplayStatus(data) {

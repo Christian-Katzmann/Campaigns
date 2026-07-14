@@ -7,41 +7,41 @@ receipts, git history, or final review.
 
 ## Sources
 
-The lessons helper reads two local ledgers:
+`GET /api/lessons` reads versioned unified run ledgers from the Campaigns runs
+directory natively in Node. The default is the platform data directory's
+`runs/` folder; `CAMPAIGNS_RUNS_DIR` overrides it. Current `state.json` files
+and archived `state-<run-id>.json` files are included and deduplicated by run
+id.
 
-- Claude campaign runs under the user's Claude automation campaign directory.
-- Codex campaign runs discovered through the Campaigns registry, then resolved
-  to each repo's `reports/campaign-automation/<slug>/state.json`.
-
-The app calls the helper through `GET /api/lessons`. By default it looks for the
-campaign-planner helper in the user's home directory. Set
-`CAMPAIGNS_LESSONS_HELPER` to point at a different compatible helper.
+Schema-versioned unified ledgers are the cutoff. Pre-unified Claude and Codex
+state files are excluded by default. When no unified ledgers exist, a configured
+`CAMPAIGNS_LESSONS_HELPER` remains a legacy fallback; native runs never shell
+out to Python.
 
 ## Metrics
 
-- `approval_rate` counts campaigns with a final verdict and the share that ended
-  `APPROVED`.
-- `first_try_rate` counts verdict-bearing campaigns approved without any prior
-  `NEEDS WORK`, final rework, or structured rework evidence.
-- `rework_rate` counts campaigns with any `NEEDS WORK` review attempt or rework
-  event. For Claude, older timelines are parsed for `NEEDS WORK` text because
-  they did not always write structured rework events.
-- `halt_rate` counts runs whose final state is halted, blocked, or failed.
-- `recovery` counts explicit recovery events. Older runs can under-report this
-  when recovery happened only in prose.
-- `reason tags` come from normalized final-review `Reasons:` values. Unknown
-  historical tags are kept as legacy evidence but are not used as planning
-  reminders.
+- `approval_rate` is approved runs divided by runs with a structured verdict.
+- `first_try_rate` is verdict-bearing runs approved without `NEEDS WORK`, fix,
+  or final-rework events.
+- `rework_rate` is runs with structured review/fix rework evidence divided by
+  all unified runs.
+- `manual_stop_rate`, shown as the **babysitting index**, is runs with a
+  `stopped_by_user` event divided by all unified runs. Recovered runs retain the
+  stop signal.
+- `failure_taxonomy` counts structured preflight, step-failure, review-failure,
+  cap, stop, and recovery-failure events. `step_failed` is grouped by its stable
+  `failure.code`.
+- Canonical reason counts consume only values in validated `reasons`. Values in
+  `raw_tags` are counted separately and never enter the canonical signal.
 - `step-count guidance` is a correlation from local history, not a hard rule.
   Treat `avoid_above` as "split the campaign unless there is a good reason."
 
 ## Current Caveats
 
-Legacy ledgers are uneven. Some older Codex campaigns have approved verdicts but
-no recorded receipts, several older campaigns have no final verdict at all, and
-some step counts are unavailable. Those rows stay in the scan, but they surface
-`data_quality_warnings` so the UI can label the confidence instead of inventing
-precision.
+Only the unified ledger's structured fields count. Prose timelines, receipt
+text, and pre-unified files are deliberately not guessed into metrics. A schema
+version 1 unified ledger is upgraded in memory to the current schema before it
+is validated and aggregated.
 
 The most important interpretation rule is simple: compare trends, not tiny
 differences. A first-try rate moving from 40% to 70% is meaningful. A one-run
@@ -53,8 +53,7 @@ explains it.
 Before trusting a learning-loop change, run:
 
 ```bash
-python3 ~/.claude/skills/campaign-planner/bin/test_read_past_campaigns.py
-python3 ~/.claude/skills/campaign-planner/bin/read-past-campaigns.py --include-raw
+npm test
 npm run check
 ```
 

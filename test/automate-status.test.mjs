@@ -9,6 +9,7 @@ import {
   campaignStateMatchesFile,
   chooseAutomateState,
   countAutomationProgress,
+  deriveEngineRuntime,
   deriveCodexRuntime,
   findEngineStatePath,
   findCodexStatePath,
@@ -55,6 +56,24 @@ test('failed campaign without live worker proof stays a failure state', () => {
   });
 
   assert.deepEqual(result, { status: 'failed', isActive: false });
+});
+
+test('awaiting human review stays a visible engine attention status', () => {
+  assert.deepEqual(
+    deriveEngineRuntime({ run: { status: 'awaiting_human_review' } }, null),
+    { status: 'awaiting_human_review', isActive: false },
+  );
+});
+
+test('run caps and user stops stay distinct engine attention statuses', () => {
+  assert.deepEqual(
+    deriveEngineRuntime({ run: { status: 'cap_reached' } }, null),
+    { status: 'cap_reached', isActive: false },
+  );
+  assert.deepEqual(
+    deriveEngineRuntime({ run: { status: 'stopped_by_user' } }, null),
+    { status: 'stopped_by_user', isActive: false },
+  );
 });
 
 test('provider arbitration lets a live worker beat a stale warning', () => {

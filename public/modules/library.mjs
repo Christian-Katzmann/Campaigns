@@ -291,11 +291,11 @@ export function renderLibraryLessons(lessons) {
   const codex = backends.get('codex');
   const total = positiveWholeNumber(lessons.scanned?.total);
   const metricItems = [
-    lessonMetric('First try', backendRates([claude, codex], 'firstTryRate')),
-    lessonMetric('Rework', backendRates([claude, codex], 'reworkRate')),
-    lessonMetric('Halts', haltSummary(lessons.halt)),
-    lessonMetric('Recovery', recoverySummary(lessons.recovery)),
-    lessonMetric('Warnings', dataQualitySummary(lessons.dataQuality)),
+    lessonMetric('Approval', lessonRateSummary(lessons, [claude, codex], 'approvalRate')),
+    lessonMetric('First try', lessonRateSummary(lessons, [claude, codex], 'firstTryRate')),
+    lessonMetric('Rework', lessonRateSummary(lessons, [claude, codex], 'reworkRate')),
+    lessonMetric('Babysitting index', babysittingSummary(lessons.overall)),
+    lessonMetric('Failures', failureTaxonomySummary(lessons.failureTaxonomy)),
     lessonMetric('Step count', sizingSummary(lessons.sizing)),
   ];
 
@@ -332,6 +332,26 @@ export function backendRates(backends, field) {
   return parts.length ? parts.join(' / ') : 'No verdicts yet';
 }
 
+export function lessonRateSummary(lessons, backends, field) {
+  const overall = formatPercent(lessons.overall?.[field]);
+  return overall === 'n/a' ? backendRates(backends, field) : overall;
+}
+
+export function babysittingSummary(overall) {
+  const rate = formatPercent(overall?.manualStopRate);
+  if (rate === 'n/a') return 'Not tracked in legacy data';
+  const stops = positiveWholeNumber(overall?.manualStops);
+  return `${rate} · ${stops} manual stop${stops === 1 ? '' : 's'}`;
+}
+
+export function failureTaxonomySummary(taxonomy) {
+  if (!taxonomy) return 'Not tracked in legacy data';
+  const total = positiveWholeNumber(taxonomy.total);
+  if (total === 0) return 'No failures logged';
+  const top = Array.isArray(taxonomy.counts) ? taxonomy.counts[0] : null;
+  return top ? `${total} events · ${top.code} ${positiveWholeNumber(top.count)}` : `${total} events`;
+}
+
 export function haltSummary(halt) {
   const overall = formatPercent(halt?.overallRate);
   const highStep = formatPercent(halt?.highStepCountRate);
@@ -362,6 +382,9 @@ export function sizingSummary(sizing) {
 export function renderLessonTags(reasons) {
   const row = element('div', { className: 'library-lessons-tags' });
   const tags = Array.isArray(reasons?.topTags) ? reasons.topTags : [];
+  const rawTags = Array.isArray(reasons?.rawTopTags)
+    ? reasons.rawTopTags
+    : Array.isArray(reasons?.legacyTopTags) ? reasons.legacyTopTags : [];
 
   row.append(element('span', { className: 'library-lessons-tags-label', text: 'Reason tags' }));
 
@@ -369,19 +392,18 @@ export function renderLessonTags(reasons) {
     for (const tag of tags) {
       row.append(renderLessonTag(tag));
     }
-    return row;
   }
 
-  const legacy = Array.isArray(reasons?.legacyTopTags) ? reasons.legacyTopTags : [];
-  if (legacy.length > 0) {
-    row.append(element('span', { className: 'library-lessons-tags-empty', text: 'Legacy' }));
-    for (const tag of legacy) {
+  if (rawTags.length > 0) {
+    row.append(element('span', { className: 'library-lessons-tags-empty', text: 'Raw' }));
+    for (const tag of rawTags) {
       row.append(renderLessonTag(tag, { legacy: true }));
     }
-    return row;
   }
 
-  row.append(element('span', { className: 'library-lessons-tags-empty', text: 'No review tags yet.' }));
+  if (tags.length === 0 && rawTags.length === 0) {
+    row.append(element('span', { className: 'library-lessons-tags-empty', text: 'No review tags yet.' }));
+  }
   return row;
 }
 

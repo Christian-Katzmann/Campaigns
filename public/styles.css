@@ -3825,6 +3825,16 @@ body.theme-signal {
 }
 .drawer-status-pill--failed .automate-indicator { color: var(--danger); }
 
+.drawer-status-pill--awaiting_human_review,
+.drawer-status-pill--cap_reached,
+.drawer-status-pill--stopped_by_user {
+  background: var(--danger-wash);
+  color: var(--danger);
+}
+.drawer-status-pill--awaiting_human_review .automate-indicator,
+.drawer-status-pill--cap_reached .automate-indicator,
+.drawer-status-pill--stopped_by_user .automate-indicator { color: var(--danger); }
+
 /* Current step block — legacy fallback (drawer-now subsumes this for
    campaigns with parsed live_activity). */
 .drawer-current-step {

@@ -23,6 +23,9 @@ Use the versioned shape and pure transition function in `lib/run-state.mjs` for
 every runner. Runner names are values in `config.runner` and `worker.runner`;
 there are no runner-specific fields.
 
+Schema version 2 adds the `cap_reached` and `stopped_by_user` lifecycle states
+plus the run-cap and stop-grace config snapshot.
+
 The campaign markdown remains the progress source of truth. The run state is an
 execution ledger: it records attempts, worker activity, review/recovery state,
 and evidence paths without becoming a second campaign plan.
@@ -81,7 +84,8 @@ Review rework is:
 reviewing -> reworking -> awaiting_review
 ```
 
-Failures and operator stops enter `blocked`, `failed`, `halted`, or `stopped`.
+Failures, caps, and operator stops enter `blocked`, `failed`, `halted`,
+`cap_reached`, or `stopped_by_user`.
 Those states can only resume through the explicit recovery events, except a
 preflight `blocked` run may start after the next preflight passes.
 
@@ -99,7 +103,8 @@ preflight `blocked` run may start after the next preflight passes.
 | `final_review_halted` | review states `-> halted` |
 | `campaign_merged` | `completed -> merged` |
 | `force_merged_unreviewed` | review/halted states `-> force_merged`, only with `explicit: true` |
-| `stopped_by_user` | non-success states `-> stopped` |
+| `cap_reached` | active non-success states `-> cap_reached` |
+| `stopped_by_user` | non-success states `-> stopped_by_user` |
 | `recovery_started` | `pending/running/blocked/failed/awaiting_review/halted/stopped -> recovering` |
 | recovery actions | `recovering -> recovering/running/pending/awaiting_review/halted` |
 
@@ -141,6 +146,7 @@ The event enum gives first-class homes to the audit events:
 - `final_review_halted`;
 - `force_merged_unreviewed`;
 - `stopped_by_user`;
+- `cap_reached`;
 - `step_reset_by_recover` and `step_continued_by_recover`.
 
 It also includes preflight, review/rework, stale-lock, and recovery lifecycle

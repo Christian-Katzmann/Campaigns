@@ -58,6 +58,7 @@ companion/workflow/lessons handlers. It delegates to:
 - `lib/registry.mjs` — registry read/write/normalize, the atomic file writer, and
   missing-campaign pruning (paths passed in; covered by `test/registry.test.mjs`).
 - `lib/http.mjs` — `sendJson`, `readJsonBody`, `httpError`, `sendStatic`.
+- `lib/lessons.mjs` — native unified-ledger discovery and learning-loop metrics.
 - `lib/notifications.mjs` — macOS/ntfy/webhook delivery and the stop-watcher's
   pure alert classification.
 - `lib/automate-providers.mjs`, `lib/companion-pets.mjs` — pre-existing.
