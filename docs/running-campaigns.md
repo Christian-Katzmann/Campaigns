@@ -41,6 +41,25 @@ each fix; all campaign checks run again before final review. Check output is
 redacted first, then capped at 4096 characters with a visible truncation marker
 before it is written to a receipt/state file or sent to a fix worker.
 
+## Plan health
+
+Run `campaigns lint <campaign.md>` to check a plan without starting it. The
+shared rules report:
+
+- **Error:** missing Model metadata, ACCEPTANCE criteria, or a campaign-level
+  final-review prompt.
+- **Warning:** step count above learned sizing guidance or more than five
+  REQUIRED READING items in one step.
+- **Info:** a step has no executable CHECK yet.
+
+The CLI exits `1` only when at least one error finding exists. Warning- and
+info-only results exit `0`; invocation or file-loading failures exit `2`. The
+editor will use the same browser-safe rules module to display these findings
+inline. The CLI reads local unified lessons directly and both consumers use
+`sizing.avoidAboveSteps`, falling back to 10 steps when lessons have no sizing
+data. Lint does not block the campaign pump in v1; a future `--strict` mode may
+make that policy explicit.
+
 ## Run limits
 
 The shipped defaults are 50 completed steps and 360 minutes per run:
