@@ -11,7 +11,13 @@ import {
 import { initSwitcher } from './modules/switcher.mjs';
 import { loadPrefs } from './modules/prefs-store.mjs';
 import { initSettings } from './modules/settings.mjs';
-import { initAutomateDrawer, startAutomatePolling, toggleAutomateDrawer } from './modules/automate-drawer.mjs';
+import {
+  fetchCampaignAutomateState,
+  initAutomateDrawer,
+  openAutomateDrawer,
+  startAutomatePolling,
+  toggleAutomateDrawer,
+} from './modules/automate-drawer.mjs';
 import { jumpToAnchor, neighbouringSteps, render, toggleFocusMode } from './modules/render.mjs';
 import {
   exportMarkdown,
@@ -123,6 +129,10 @@ async function initialize() {
   initSwitcher();
   initSettings();
   initAutomateDrawer();
+  if (params.get('drawer') === 'activity') {
+    await fetchCampaignAutomateState();
+    openAutomateDrawer();
+  }
   startAutomatePolling();
 }
 
@@ -148,11 +158,13 @@ async function updateWorkflowsAvailability() {
 
 async function updatePersonalLayerAvailability() {
   let personalLayer = {};
+  let fileDeletion = {};
   try {
     const response = await fetch('/api/capabilities');
     if (response.ok) {
       const payload = await response.json();
       personalLayer = payload.personalLayer ?? {};
+      fileDeletion = payload.fileDeletion ?? {};
     }
   } catch {
     // Optional integrations stay hidden when capability discovery is unavailable.
@@ -162,6 +174,7 @@ async function updatePersonalLayerAvailability() {
     automate: personalLayer.automate === true,
     away: personalLayer.away === true,
     companion: personalLayer.companion === true,
+    fileDeletionMode: fileDeletion.mode === 'trash' ? 'trash' : 'permanent',
     lessons: personalLayer.lessons === true,
   };
 

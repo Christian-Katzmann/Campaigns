@@ -1303,6 +1303,7 @@ export function showDeleteCampaignConfirm(campaign, sourceButton) {
 
   const overlay = element('div', { className: 'nudge-confirm-modal', id: 'delete-campaign-modal' });
   const card = element('div', { className: 'nudge-confirm-card' });
+  const permanent = state.capabilities.fileDeletionMode !== 'trash';
 
   card.append(
     element('h3', {
@@ -1311,7 +1312,9 @@ export function showDeleteCampaignConfirm(campaign, sourceButton) {
     }),
     element('p', {
       className: 'nudge-confirm-desc',
-      text: 'Moves the markdown file to your Trash and removes it from the library. You can put it back from Finder.',
+      text: permanent
+        ? 'Permanently deletes the markdown file and removes it from the library. This cannot be undone.'
+        : 'Moves the markdown file to the macOS Trash and removes it from the library. You can put it back from Finder.',
     }),
   );
 
@@ -1323,7 +1326,7 @@ export function showDeleteCampaignConfirm(campaign, sourceButton) {
   const cancelBtn = element('button', { className: 'button', text: 'Cancel', type: 'button' });
   const confirmBtn = element('button', {
     className: 'button button-danger',
-    text: 'Delete',
+    text: permanent ? 'Delete permanently' : 'Move to Trash',
     type: 'button',
   });
 
@@ -1336,17 +1339,23 @@ export function showDeleteCampaignConfirm(campaign, sourceButton) {
       const res = await fetch('/api/registry', {
         method: 'DELETE',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ id: campaign.id, deleteFile: true }),
+        body: JSON.stringify({
+          id: campaign.id,
+          deleteFile: true,
+          confirmPermanentDelete: permanent,
+        }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || `Delete failed (${res.status})`);
       overlay.remove();
       await renderLibrary();
-      showToast(data.trashed ? 'Campaign moved to Trash.' : 'Campaign removed.');
+      showToast(data.deletionMode === 'trash'
+        ? 'Campaign moved to Trash.'
+        : 'Campaign permanently deleted.');
     } catch (error) {
       confirmBtn.disabled = false;
       cancelBtn.disabled = false;
-      confirmBtn.textContent = 'Delete';
+      confirmBtn.textContent = permanent ? 'Delete permanently' : 'Move to Trash';
       showToast(error.message || 'Could not delete campaign.');
     }
   });

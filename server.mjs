@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream } from 'node:fs';
-import { mkdir, readdir, readFile, realpath, rename, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, realpath, rename, stat, unlink, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { homedir } from 'node:os';
 import path from 'node:path';
@@ -435,7 +435,12 @@ async function sendCapabilities(response) {
     hasUnifiedRunLedgers(lessonsRunsDir).catch(() => false),
     stat(lessonsHelperPath).then((info) => info.isFile()).catch(() => false),
   ]);
+  const fileDeletionMode = campaignFileDeletionMode();
   sendJson(response, 200, {
+    fileDeletion: {
+      mode: fileDeletionMode,
+      requiresExplicitConfirmation: fileDeletionMode === 'permanent',
+    },
     personalLayer: {
       automate: automation.available,
       away: automation.available,
@@ -625,43 +630,49 @@ async function deleteMissingCampaign(id) {
   }
 }
 
-// Full delete: move the campaign markdown to the macOS Trash, then unregister.
-// Using mv to ~/.Trash (collision-safe with a timestamp suffix) instead of
-// fs.unlink — the user explicitly asked for a delete option, but losing a
-// hand-written campaign markdown permanently is the wrong default. Trash
-// gives them Finder-level "Put Back" recovery.
 async function fullDeleteCampaign(id) {
   const registry = await readRegistry();
   const index = registry.campaigns.findIndex((c) => c.id === id);
-  if (index === -1) return { found: false, removed: false, trashed: false };
+  const deletionMode = campaignFileDeletionMode();
+  if (index === -1) return { found: false, removed: false, trashed: false, deletionMode };
 
   const entry = registry.campaigns[index];
   let trashed = false;
-  let trashError = null;
+  let deletionError = null;
   try {
-    await trashCampaignFile(entry.filePath);
-    trashed = true;
+    const deletion = await deleteCampaignFile(entry.filePath);
+    trashed = deletion.trashed;
   } catch (err) {
     if (err.code === 'ENOENT') {
       trashed = false; // file was already gone — proceed to unregister anyway
     } else {
-      trashError = err.message;
+      deletionError = err.message;
     }
   }
 
-  if (trashError) {
-    return { found: true, removed: false, trashed: false, error: trashError };
+  if (deletionError) {
+    return { found: true, removed: false, trashed: false, deletionMode, error: deletionError };
   }
 
   registry.campaigns.splice(index, 1);
   if (defaultCampaignId === id) defaultCampaignId = null;
   normalizeRegistryCollections(registry);
   await writeRegistry(registry);
-  return { found: true, removed: true, trashed };
+  return { found: true, removed: true, trashed, deletionMode };
 }
 
-async function trashCampaignFile(filePath) {
-  const trashDir = path.join(homedir(), '.Trash');
+export function campaignFileDeletionMode(platform = process.platform) {
+  return platform === 'darwin' ? 'trash' : 'permanent';
+}
+
+export async function deleteCampaignFile(filePath, options = {}) {
+  const platform = options.platform ?? process.platform;
+  if (campaignFileDeletionMode(platform) === 'permanent') {
+    await unlink(filePath);
+    return { deletionMode: 'permanent', trashed: false };
+  }
+
+  const trashDir = path.join(options.home ?? homedir(), '.Trash');
   const base = path.basename(filePath);
   let dest = path.join(trashDir, base);
   try {
@@ -675,6 +686,7 @@ async function trashCampaignFile(filePath) {
     /* no collision — original dest is fine */
   }
   await rename(filePath, dest);
+  return { deletionMode: 'trash', trashed: true, destination: dest };
 }
 
 async function setCampaignLogo(id, logoPath) {
@@ -1411,18 +1423,29 @@ async function deleteMissingRegistryEndpoint(request, response) {
 
   // Two modes:
   //   - { id }                       → legacy: unregister only if file already missing
-  //   - { id, deleteFile: true }     → full delete: move file to Trash + unregister
+  //   - { id, deleteFile: true }     → Trash on macOS; permanent delete elsewhere
   if (payload.deleteFile === true) {
+    const deletionMode = campaignFileDeletionMode();
+    if (deletionMode === 'permanent' && payload.confirmPermanentDelete !== true) {
+      sendJson(response, 400, {
+        error: 'Permanent deletion requires confirmPermanentDelete: true.',
+      });
+      return;
+    }
     const result = await fullDeleteCampaign(payload.id);
     if (!result.found) {
       sendJson(response, 404, { error: 'Campaign not found.' });
       return;
     }
     if (result.error) {
-      sendJson(response, 500, { error: `Could not move file to Trash: ${result.error}` });
+      sendJson(response, 500, { error: `Could not delete campaign file: ${result.error}` });
       return;
     }
-    sendJson(response, 200, { ok: true, trashed: result.trashed });
+    sendJson(response, 200, {
+      ok: true,
+      deletionMode: result.deletionMode,
+      trashed: result.trashed,
+    });
     return;
   }
 

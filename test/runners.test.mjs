@@ -89,6 +89,23 @@ test('effort aliases normalize per runner from config', async () => {
   assert.equal(codex.effort, shippedConfig.runners.codex.effortMap['extra-high']);
 });
 
+test('runner invocation preserves Windows paths as literal arguments', async () => {
+  const registry = await loadRunnerRegistry();
+  const repoRoot = String.raw`C:\Users\Ada Lovelace\Campaigns\repo`;
+  const outputPath = String.raw`C:\Users\Ada Lovelace\Campaigns\run\last message.md`;
+  const codex = buildRunnerInvocation(registry, 'codex', {
+    prompt: 'work',
+    repoRoot,
+    outputPath,
+    env: {},
+  });
+
+  assert.equal(codex.command, 'codex');
+  assert.equal(codex.args[codex.args.indexOf('-C') + 1], repoRoot);
+  assert.equal(codex.args[codex.args.indexOf('-o') + 1], outputPath);
+  assert.equal(codex.stdin, 'work');
+});
+
 test('Claude strips only nested-session variables and otherwise inherits the environment', async () => {
   const registry = await loadRunnerRegistry();
   const inherited = {

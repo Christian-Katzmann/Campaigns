@@ -1,121 +1,129 @@
 # Campaigns
 
-Campaigns turns a markdown plan into a local execution board for AI-assisted projects: phases, checklists, prompt cards, progress, and a registry of plans you can switch between.
+Plan work in markdown. Run it with a coding agent. Watch progress, activity, and review evidence from one local board.
 
-Status: usable public alpha. The Node server and sample campaign are portable; the optional desktop wrapper is macOS-only.
+![A Campaigns plan running with live activity visible beside the markdown board](design/screenshots/01-campaign-board.png)
 
-![Campaigns showing a markdown campaign as an execution board](design/screenshots/01-campaign-board.png)
+*Plan → run → watch: the checklist stays in the markdown file while the activity drawer shows the current step and its evidence.*
 
-*The board reads checklist state straight from markdown, so the plan file stays the source of truth while the UI gives you a calmer way to execute it.*
+## Five-minute quickstart
 
-## What This Is Not
+You need Node.js 20+ and either Claude Code or Codex installed and signed in.
 
-- Not a hosted project manager or team workspace.
-- Not a replacement for GitHub Issues, Linear, or your source control history.
-- Not a cloud sync layer; Campaigns reads and writes local markdown files.
-
-## Quick Start
-
-Requirements:
-
-- Node.js 20 or newer
-- A markdown campaign file, or the sample in this repo
+In your first terminal:
 
 ```bash
 git clone https://github.com/Christian-Katzmann/Campaigns.git
 cd Campaigns
-./install.sh
+npm link --silent
 npm run start:sample
 ```
 
-Then open the URL printed by the server. By default it is `http://localhost:4178`.
-The install step also puts the `campaigns` execution CLI on `PATH`.
+`./install.sh` is the equivalent Bash helper on macOS and Linux.
 
-Open your own campaign file:
+Open the URL printed by the server. It defaults to `http://localhost:4178`.
+Keep that terminal running, then start the sample in a second terminal:
+
+```bash
+cd Campaigns
+campaigns run examples/sample-campaign.md
+```
+
+The default runner is Claude Code. To use Codex, add `--runner codex`. Open the activity button in the board to follow the live step, then watch the same markdown checkboxes advance as receipts land.
+
+## Plan → run → watch
+
+### 1. Plan in markdown
+
+A campaign is an ordinary `.md` file with phases, checklist items, and a fenced prompt for each step. Start from [the sample campaign](examples/sample-campaign.md), create one in the app, or use the [paste-anywhere planner prompt](docs/paste-anywhere-planner.md).
+
+### 2. Run with your agent
+
+```bash
+campaigns run path/to/your-campaign.md --runner codex
+```
+
+Campaigns executes the next unchecked step, saves a receipt, checks the markdown item only after successful verification, and ends with the campaign's final review. Run caps, stopping, recovery, and path containment are documented in [Running campaigns](docs/running-campaigns.md).
+
+### 3. Watch the real work
+
+Run the local board against the same file:
 
 ```bash
 npm start -- --file path/to/your-campaign.md
-campaigns run path/to/your-campaign.md
 ```
 
-Useful flags and environment variables:
+The board reads progress from disk and the activity drawer reads the local run ledger. There is no second project database to reconcile.
 
-- `--file <path>` or `CAMPAIGN_FILE=path/to/file.md`
-- `--port <number>` or `PORT=4179`
-- `CAMPAIGNS_REGISTRY_DIR=/path/to/state`
-- `CAMPAIGNS_PORT_FILE=/path/to/server.port`
-- `CAMPAIGNS_LESSONS_HELPER=/path/to/read-past-campaigns.py`
+![Campaigns on mobile with core controls and campaign progress kept within reach](design/screenshots/02-mobile-step-flow.png)
 
-## Choose Your Path
+## Power-ups
 
-- **Try the product:** run `npm run start:sample` and edit `examples/sample-campaign.md`.
-- **Pair it with an agent skill:** register campaigns through the local `POST /api/registry` contract.
-- **Package the desktop launcher:** run `npm run desktop:build` on macOS.
-- **Work on the repo:** run `npm run check` before handing changes back.
+- **Planning skills:** the optional Campaigns skills package adds `campaign-planner` and `automate-campaign`. From that package directory, run `node bin/install.mjs --claude` or `node bin/install.mjs --codex`.
+- **Desktop launcher:** package the macOS wrapper with `npm run desktop:build`; the Node server remains the portable path.
+- **Notifications and local integrations:** they are off unless configured. See [Optional integrations](docs/optional-integrations.md) for detection and environment variables.
+- **Public assets:** regenerate every README screenshot, the social preview, and the local trailer with `npm run assets:render` on macOS.
 
-## What It Reads
+## What this is not
 
-Any markdown file opens. These conventions unlock the richer campaign UI:
+- Not a hosted project manager or team workspace.
+- Not a replacement for GitHub Issues, Linear, or source-control history.
+- Not a cloud sync layer. Campaigns reads and writes local markdown files.
+- Not an agent sandbox. The engine contains execution paths and processes; the selected agent CLI still owns its permissions.
 
-- `## Progress checklist` with `### Phase N - Title` sections and `- [ ] Step N.M - name` checklist items.
-- `## Step N.M - name` headings for the implementation steps.
-- `Model:` and `Parallel:` metadata lines directly under each step heading.
-- Fenced prompt blocks inside steps.
-- A single `## Final review` section plus a `- [ ] Final review` checklist item for campaign-level closure.
+## Markdown reference
 
-Legacy campaigns with per-step or per-phase review templates still render.
+Any markdown file opens. These conventions unlock the execution board:
 
-See [examples/sample-campaign.md](examples/sample-campaign.md) for a small file you can edit safely.
+| Markdown | Meaning |
+| --- | --- |
+| `## Progress checklist` | The progress ledger |
+| `### Phase N — Title` | A phase on the board |
+| `- [ ] Step N.M — Name` | An executable step |
+| `## Step N.M — Name` | The step's detail section |
+| `Model:` and `Parallel:` | Runner guidance shown with the step |
+| A fenced block inside the step | The prompt sent to the agent |
+| `- [ ] Final review` + `## Final review` | One campaign-level release gate |
 
-The library lessons view is local evidence from past automation ledgers. Its
-data contract and caveats are documented in
-[docs/learning-loop-data-contract.md](docs/learning-loop-data-contract.md).
+The markdown file is the source of truth. Browser edits use a `baseHash`; stale writes return `409` instead of overwriting newer disk changes.
 
-## How It Works
+## CLI reference
 
-```text
-Markdown campaign
-  -> parser extracts phases, steps, prompts, and checkboxes
-  -> local server exposes the document and registry API
-  -> browser UI edits the same markdown file with conflict checks
-  -> paired skills can register new campaigns by local HTTP
-```
+| Command | Purpose |
+| --- | --- |
+| `campaigns run <campaign.md>` | Run or resume the next unchecked unit |
+| `campaigns stop <campaign.md>` | Stop at a safe boundary, then terminate after the grace period |
+| `campaigns recover <campaign.md>` | Repair a stopped or failed run ledger |
+| `npm start -- --file <campaign.md>` | Open one campaign in the local board |
+| `npm run start:sample` | Open the included sample campaign |
 
-The important choice: markdown remains the source of truth. Campaigns is the execution surface around it, not a second database you have to reconcile later.
+Run `campaigns --help` for runner, model, branch, state-directory, and run-cap options.
 
-## Paired Skills
+## Server and API reference
 
-Campaigns is designed to pair with agent skills that create and register campaign markdown.
+Useful server settings:
 
-The expected flow is:
+| Setting | Purpose |
+| --- | --- |
+| `--file <path>` / `CAMPAIGN_FILE` | Campaign to open |
+| `--port <number>` / `PORT` | Loopback server port |
+| `CAMPAIGNS_REGISTRY_DIR` | Registry and app-state directory |
+| `CAMPAIGNS_PORT_FILE` | Port-discovery file for paired tools |
+| `CAMPAIGNS_RUNS_DIR` | Run-ledger directory |
 
-1. A skill writes a campaign markdown file into a project.
-2. It discovers the running Campaigns server port.
-3. It registers the file with `POST /api/registry`.
-4. The file appears in the Campaigns library and switcher.
+Local endpoints used by the app and paired tools:
 
-The desktop launcher writes the active port to:
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /api/registry` | List registered campaigns |
+| `POST /api/registry` | Register a campaign file |
+| `DELETE /api/registry` | Remove a missing campaign from the registry |
+| `GET /api/document?id=<id>` | Read markdown and its current hash |
+| `PUT /api/document?id=<id>` | Save markdown with conflict protection |
+| `GET /api/automate-state?id=<id>` | Read live local execution state |
+| `POST /api/run/stop` | Request a controlled stop |
 
-- macOS: `~/Library/Logs/Campaigns/server.port`
-- Linux: `${XDG_STATE_HOME:-~/.local/state}/campaigns/server.port`
-- Windows: `%LOCALAPPDATA%\Campaigns\server.port`
-
-If you run the server manually, it writes the same port file on startup. Set `CAMPAIGNS_PORT_FILE` if your paired skill should read a different location.
-
-## API Contract
-
-The local server exposes the endpoints paired skills rely on:
-
-```http
-GET /api/registry
-POST /api/registry
-DELETE /api/registry
-POST /api/registry/park
-GET /api/document?id=<campaign-id>
-PUT /api/document?id=<campaign-id>
-```
-
-Register a campaign:
+Registering a file uses an absolute path:
 
 ```json
 {
@@ -124,77 +132,36 @@ Register a campaign:
 }
 ```
 
-The response contains:
+## Platform support
 
-```json
-{
-  "id": "campaign-id",
-  "filePath": "/absolute/path/to/campaign.md"
-}
-```
+- The board, local server, and execution engine run on macOS and Linux; the full suite runs on both in CI. Windows paths, spawning, and signals received a static audit for v1.
+- `npm link --silent` is the cross-platform install. `./install.sh` is a macOS/Linux convenience wrapper.
+- The desktop launcher and native alerts are macOS-only. Remote notifications and the browser UI remain cross-platform.
+- Windows engine limits in v1: Node cannot directly launch `.cmd`/`.bat` agent shims without a shell, and forced stops signal only the direct agent process. Use a native agent executable; descendants started by it may need manual cleanup.
+- The optional public-asset renderer is macOS-only and is not required to plan, run, or watch campaigns.
 
-`PUT /api/document` expects `{ "markdown": "...", "baseHash": "optional-current-hash" }`. If `baseHash` is stale, the server returns `409` so a client does not overwrite disk changes.
+## Local state
 
-## Local State
+| Platform | Registry | Port file |
+| --- | --- | --- |
+| macOS | `~/Library/Application Support/Campaigns/registry.json` | `~/Library/Logs/Campaigns/server.port` |
+| Linux | `${XDG_DATA_HOME:-~/.local/share}/campaigns/registry.json` | `${XDG_STATE_HOME:-~/.local/state}/campaigns/server.port` |
+| Windows | `%APPDATA%\Campaigns\registry.json` | `%LOCALAPPDATA%\Campaigns\server.port` |
 
-The registry is stored outside the repo:
+Small per-file display preferences live in browser `localStorage`, keyed by campaign path. See [the architecture map](docs/architecture.md) for the full module and persistence boundaries.
 
-- macOS: `~/Library/Application Support/Campaigns/registry.json`
-- Linux: `${XDG_DATA_HOME:-~/.local/share}/campaigns/registry.json`
-- Windows: `%APPDATA%\Campaigns\registry.json`
+![The local campaign library with realistic public demo data](design/screenshots/03-library.png)
 
-Per-file UI preferences live in browser `localStorage`, keyed by the campaign file path.
+## Contributing
 
-## Notifications
-
-Completion notifications are opt-in:
-
-- Mac alerts use `POST /api/notify` and require macOS.
-- ntfy.sh, Slack, and Discord use `POST /api/push`.
-
-No remote notification topic or webhook is configured by default.
-
-## Desktop Launcher
-
-The optional desktop wrapper is macOS-only. It builds a local `.app` that starts the Node server and opens a WebKit window.
-
-```bash
-npm run desktop:build
-npm run desktop:install
-npm run desktop:quit
-```
-
-The plain Node server is the portable path. A Dockerfile is intentionally not included yet because the app has no build step or service dependencies; `clone + ./install.sh + npm start` is the shorter reliable install path.
-
-## Public Assets
-
-Publication assets live in `design/`:
-
-- `design/screenshots/` contains the README hero and supporting screenshots.
-- `design/social/social-preview.png` is the GitHub social preview source.
-- `design/trailer/trailer.mp4` is a local 30-second product-forward preview for later GitHub attachment upload.
-- `design/visual-principles.md` records the screenshot, poster, and demo-data rules.
-
-Regenerate them from the built-in public demo campaign:
-
-```bash
-npm run assets:render
-```
-
-## Development
-
-```bash
-npm run check
-npm start -- --file examples/sample-campaign.md
-```
-
-The repository keeps product examples in `examples/`. Local dogfood campaigns and implementation plans are ignored so they do not leak machine-specific paths into the public repo.
+Issues and small pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, checks, and repository etiquette.
 
 ## Decisions
 
-- [0001 - Markdown remains the source of truth](docs/decisions/0001-markdown-source-of-truth.md)
-- [0002 - Local registry and port-file contract](docs/decisions/0002-local-registry-port-contract.md)
-- [0003 - No hosted live demo yet](docs/decisions/0003-no-hosted-live-demo-yet.md)
+- [Markdown remains the source of truth](docs/decisions/0001-markdown-source-of-truth.md)
+- [Local registry and port-file contract](docs/decisions/0002-local-registry-port-contract.md)
+- [No hosted live demo yet](docs/decisions/0003-no-hosted-live-demo-yet.md)
+- [Unified run state](docs/decisions/0004-unified-run-state.md)
 
 ## License
 

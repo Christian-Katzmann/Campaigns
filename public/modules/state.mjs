@@ -20,6 +20,7 @@ export const state = {
     automate: false,
     away: false,
     companion: false,
+    fileDeletionMode: 'permanent',
     lessons: false,
   },
   dirty: false,

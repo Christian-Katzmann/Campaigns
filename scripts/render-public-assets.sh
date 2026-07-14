@@ -149,6 +149,103 @@ PY
   chmod +x "$LESSONS_HELPER"
 }
 
+write_run_fixture() {
+  node --input-type=module - "$ROOT_DIR" "$DEMO_FILE" "$TMP_DIR/runs" "$SERVER_PID" <<'NODE'
+import { mkdir, writeFile } from 'node:fs/promises';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+
+const [rootDir, campaignPath, runsDir, serverPid] = process.argv.slice(2);
+const { runPathsForCampaign } = await import(pathToFileURL(path.join(rootDir, 'lib/pump.mjs')));
+const { createRunState, transitionRunState } = await import(pathToFileURL(path.join(rootDir, 'lib/run-state.mjs')));
+const paths = runPathsForCampaign(campaignPath, runsDir);
+const receiptPath = path.join(paths.receiptsDir, '1.1-1.md');
+const logPath = path.join(paths.logsDir, 'step-1.2-1.jsonl');
+const now = Date.now();
+const at = (minutesAgo) => new Date(now - minutesAgo * 60_000).toISOString();
+
+await mkdir(paths.receiptsDir, { recursive: true });
+await mkdir(paths.logsDir, { recursive: true });
+await writeFile(receiptPath, '# Step 1.1 receipt\n\nInstall path drafted and checked.\n', 'utf8');
+
+const activity = [
+  {
+    type: 'assistant',
+    timestamp: at(1),
+    message: {
+      content: [
+        { type: 'tool_use', name: 'Read', input: { file_path: 'design/demo-data/publication-campaign.md' } },
+        { type: 'tool_use', name: 'Bash', input: { command: 'npm run check' } },
+        { type: 'tool_use', name: 'Edit', input: { file_path: 'README.md' } },
+      ],
+    },
+  },
+  {
+    type: 'assistant',
+    timestamp: at(0),
+    message: {
+      content: [
+        { type: 'text', text: 'Refreshing the public proof from the deterministic campaign fixture, then checking the rendered board.' },
+      ],
+    },
+  },
+];
+await writeFile(logPath, `${activity.map((event) => JSON.stringify(event)).join('\n')}\n`, 'utf8');
+
+let state = createRunState({
+  id: 'public-assets-live-run',
+  identity: {
+    registry_id: null,
+    source: { campaign_path: campaignPath, repo_root: rootDir },
+    execution: { campaign_path: campaignPath, repo_root: rootDir, branch: 'main' },
+  },
+  steps: [
+    { id: '1.1', name: 'Draft the installation path', phase: '1' },
+    { id: '1.2', name: 'Capture the product proof', phase: '1' },
+    { id: '1.3', name: 'Tighten the release notes', phase: '1' },
+  ],
+  config: {
+    runner: 'claude',
+    model: 'public-fixture',
+    effort: 'high',
+    watchdog: { minimum_runtime_ms: 60_000, stall_window_ms: 60_000 },
+  },
+  artifacts: {
+    run_dir: paths.runDir,
+    receipts_dir: paths.receiptsDir,
+    final_review_path: paths.finalReviewPath,
+  },
+  created_at: at(5),
+});
+state = transitionRunState(state, { event: 'run_started', at: at(4) });
+state = transitionRunState(state, {
+  event: 'step_started',
+  step_id: '1.1',
+  at: at(3),
+  worker: { runner: 'claude', invocation_id: 'public-step-1', pid: Number(serverPid) },
+});
+state = transitionRunState(state, {
+  event: 'step_completed',
+  step_id: '1.1',
+  receipt_path: receiptPath,
+  at: at(2),
+  message: 'Install path drafted and checked.',
+});
+state = transitionRunState(state, {
+  event: 'step_started',
+  step_id: '1.2',
+  at: at(1),
+  worker: {
+    runner: 'claude',
+    invocation_id: 'public-step-2',
+    pid: Number(serverPid),
+    log_path: logPath,
+  },
+});
+await writeFile(paths.statePath, `${JSON.stringify(state, null, 2)}\n`, 'utf8');
+NODE
+}
+
 render_social_preview() {
   hero="$ROOT_DIR/design/screenshots/01-campaign-board.png"
   social="$ROOT_DIR/design/social/social-preview.png"
@@ -164,8 +261,8 @@ render_social_preview() {
     -fill '#121212' -font Avenir-Next-Bold -pointsize 176 -annotate +180+430 'Campaigns' \
     -fill '#5f5b56' -font Avenir-Book -pointsize 58 -annotate +190+545 'A local execution board' \
     -fill '#5f5b56' -font Avenir-Book -pointsize 58 -annotate +190+620 'for markdown plans.' \
-    -fill '#121212' -font Avenir-Medium -pointsize 40 -annotate +190+800 'Plan in markdown. Execute with prompts.' \
-    -fill '#121212' -font Avenir-Medium -pointsize 40 -annotate +190+855 'Keep progress in Git.' \
+    -fill '#121212' -font Avenir-Medium -pointsize 40 -annotate +190+800 'Plan in markdown. Run with an agent.' \
+    -fill '#121212' -font Avenir-Medium -pointsize 40 -annotate +190+855 'Watch progress locally.' \
     -fill '#dedbd5' -draw 'rectangle 190,920 780,924' \
     "$base"
 
@@ -197,13 +294,16 @@ fi
 
 mkdir -p "$ROOT_DIR/design/screenshots" "$ROOT_DIR/design/social" "$ROOT_DIR/design/trailer"
 write_lessons_fixture
+mkdir -p "$TMP_DIR/runs"
 
 cd "$ROOT_DIR"
-CAMPAIGNS_REGISTRY_DIR="$TMP_DIR/registry" CAMPAIGNS_LESSONS_HELPER="$LESSONS_HELPER" CAMPAIGNS_PORT_FILE="$TMP_DIR/server.port" PORT="$PORT" node server.mjs --file "$DEMO_FILE" > "$TMP_DIR/server.log" 2>&1 &
+CAMPAIGNS_REGISTRY_DIR="$TMP_DIR/registry" CAMPAIGNS_RUNS_DIR="$TMP_DIR/runs" CAMPAIGNS_AUTOMATE_BASE="$TMP_DIR/claude-automate" CODEX_HOME="$TMP_DIR/codex-home" CAMPAIGNS_LESSONS_HELPER="$LESSONS_HELPER" CAMPAIGNS_PORT_FILE="$TMP_DIR/server.port" PORT="$PORT" node server.mjs --file "$DEMO_FILE" > "$TMP_DIR/server.log" 2>&1 &
 SERVER_PID="$!"
 wait_for_server
+write_run_fixture
 
-capture "$ROOT_DIR/design/screenshots/01-campaign-board.png" "1440,1100" "/" 2500
+capture "$ROOT_DIR/design/screenshots/01-campaign-board.png" "1440,1100" "?drawer=activity" 3000
+mv "$TMP_DIR/runs" "$TMP_DIR/captured-live-run"
 capture "$ROOT_DIR/design/screenshots/02-mobile-step-flow.png" "390,900" "/" 2500
 capture "$ROOT_DIR/design/screenshots/03-library.png" "1440,900" "?library" 6000 20000
 render_social_preview

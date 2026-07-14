@@ -25,7 +25,11 @@ for (const [name, value] of Object.entries({
   process.env[name] = value;
 }
 
-const { startServer } = await import('../server.mjs');
+const {
+  campaignFileDeletionMode,
+  deleteCampaignFile,
+  startServer,
+} = await import('../server.mjs');
 
 after(async () => {
   await rm(root, { recursive: true, force: true });
@@ -34,6 +38,31 @@ after(async () => {
     if (value === undefined) delete process.env[name];
     else process.env[name] = value;
   }
+});
+
+test('campaign file deletion is recoverable on macOS and explicit permanent removal elsewhere', async () => {
+  const fixtureRoot = path.join(root, 'delete-fixture');
+  const fakeHome = path.join(fixtureRoot, 'home');
+  const trashDir = path.join(fakeHome, '.Trash');
+  const trashSource = path.join(fixtureRoot, 'trash-campaign.md');
+  const permanentSource = path.join(fixtureRoot, 'permanent-campaign.md');
+  await mkdir(trashDir, { recursive: true });
+  await writeFile(trashSource, '# Trash fixture\n', 'utf8');
+  await writeFile(permanentSource, '# Permanent fixture\n', 'utf8');
+
+  assert.equal(campaignFileDeletionMode('darwin'), 'trash');
+  assert.equal(campaignFileDeletionMode('linux'), 'permanent');
+  assert.equal(campaignFileDeletionMode('win32'), 'permanent');
+
+  const trashed = await deleteCampaignFile(trashSource, { platform: 'darwin', home: fakeHome });
+  assert.equal(trashed.deletionMode, 'trash');
+  assert.equal(trashed.trashed, true);
+  assert.equal(await readFile(path.join(trashDir, 'trash-campaign.md'), 'utf8'), '# Trash fixture\n');
+  await assert.rejects(access(trashSource), { code: 'ENOENT' });
+
+  const deleted = await deleteCampaignFile(permanentSource, { platform: 'win32' });
+  assert.deepEqual(deleted, { deletionMode: 'permanent', trashed: false });
+  await assert.rejects(access(permanentSource), { code: 'ENOENT' });
 });
 
 test('document and registry HTTP contracts hold against a real ephemeral server', async (t) => {
@@ -56,6 +85,15 @@ test('document and registry HTTP contracts hold against a real ephemeral server'
   const address = server.address();
   assert.equal(typeof address, 'object');
   const baseUrl = `http://127.0.0.1:${address.port}`;
+
+  const capabilitiesResponse = await fetch(`${baseUrl}/api/capabilities`);
+  const capabilities = await capabilitiesResponse.json();
+  const deletionMode = campaignFileDeletionMode();
+  assert.equal(capabilitiesResponse.status, 200);
+  assert.deepEqual(capabilities.fileDeletion, {
+    mode: deletionMode,
+    requiresExplicitConfirmation: deletionMode === 'permanent',
+  });
 
   const documentResponse = await fetch(`${baseUrl}/api/document`);
   const document = await documentResponse.json();
@@ -131,6 +169,44 @@ test('document and registry HTTP contracts hold against a real ephemeral server'
   });
   assert.equal(deleteMissingResponse.status, 200);
   assert.deepEqual(await deleteMissingResponse.json(), { ok: true });
+
+  if (process.platform !== 'darwin') {
+    const permanentPath = path.join(fixtureDir, 'permanent-delete.md');
+    await writeFile(permanentPath, '# Permanent delete fixture\n', 'utf8');
+    const permanentRegistration = await fetch(`${baseUrl}/api/registry`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ filePath: permanentPath }),
+    }).then((response) => response.json());
+
+    const unconfirmedDelete = await fetch(`${baseUrl}/api/registry`, {
+      method: 'DELETE',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id: permanentRegistration.id, deleteFile: true }),
+    });
+    assert.equal(unconfirmedDelete.status, 400);
+    assert.deepEqual(await unconfirmedDelete.json(), {
+      error: 'Permanent deletion requires confirmPermanentDelete: true.',
+    });
+    assert.equal(await readFile(permanentPath, 'utf8'), '# Permanent delete fixture\n');
+
+    const confirmedDelete = await fetch(`${baseUrl}/api/registry`, {
+      method: 'DELETE',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        id: permanentRegistration.id,
+        deleteFile: true,
+        confirmPermanentDelete: true,
+      }),
+    });
+    assert.equal(confirmedDelete.status, 200);
+    assert.deepEqual(await confirmedDelete.json(), {
+      ok: true,
+      deletionMode: 'permanent',
+      trashed: false,
+    });
+    await assert.rejects(access(permanentPath), { code: 'ENOENT' });
+  }
 
   const finalRegistry = await fetch(`${baseUrl}/api/registry`).then((response) => response.json());
   assert.ok(!finalRegistry.campaigns.some((campaign) => campaign.id === registered.id));

@@ -5,17 +5,17 @@ Campaigns should look like a calm execution desk: local files, visible progress,
 ## Hero Shot
 
 - Category: product screenshot hero.
-- Subject: the campaign board with progress, collapsed context, and checklist state visible.
+- Subject: the campaign board with progress, checklist state, and a reproducible live-run drawer visible.
 - Demo data: fictional but realistic agent-workflow language.
 - Crop: wide desktop view, centered on the board and progress sidebar.
-- Caption: explain that markdown remains the source of truth while the UI provides execution structure.
+- Caption: explain that markdown remains the source of truth while local run activity stays visible beside it.
 
 ## Screenshot System
 
 - Theme: light only.
 - Aspect ratios: desktop hero at 1440 x 1100, mobile flow at 390 x 900, library view at 1440 x 900.
 - Captions should say what each image proves, not merely what it depicts.
-- Reuse `design/demo-data/publication-campaign.md` when regenerating public screenshots.
+- Reuse `design/demo-data/publication-campaign.md` and the generated live-run ledger in `scripts/render-public-assets.sh` when regenerating public screenshots.
 - Never show Christian's personal paths, private campaign names, or local worktree directories.
 
 ## Social Preview

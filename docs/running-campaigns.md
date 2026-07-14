@@ -30,6 +30,18 @@ worker, it allows the configured grace period, then terminates that worker's
 process group, saves the output tail as salvage, and records
 `stopped_by_user`.
 
+## Platform behavior
+
+The engine uses argument arrays rather than shell command strings, and all run,
+receipt, and working-directory paths use Node's platform path API. macOS and
+Linux run in CI.
+
+Windows support is best-effort in v1. Native runner executables can use the
+same argument contract, but Node cannot directly launch `.cmd` or `.bat` agent
+shims without a shell. Forced stops also target the direct runner process on
+Windows, not a Unix-style process group, so descendants may need manual
+cleanup.
+
 ## Containment
 
 The execution root is the canonical, real-path Git root containing the campaign

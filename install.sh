@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
-# install.sh - verify local requirements for Campaigns.
+# install.sh - macOS/Linux convenience wrapper for Campaigns setup.
 #
 # Usage:
 #   ./install.sh
+#
+# Windows: run `npm link --silent` from the repository instead.
 #
 # Campaigns has no npm dependencies. This script keeps first-run setup boring:
 # it checks Node, makes helper scripts executable, and prints the start command.

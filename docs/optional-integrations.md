@@ -21,6 +21,12 @@ Defaults and examples live in [`.env.example`](../.env.example). Missing
 integrations stay hidden; they do not block the board, library, or campaign
 editing.
 
+## Notifications
+
+- Native desktop alerts use `osascript` and are available on macOS only.
+- ntfy, Slack, and Discord notifications use HTTP and work on every supported platform.
+- No remote topic or webhook is configured by default.
+
 ## Workflow maps
 
 The **Workflows** view appears when at least one registered campaign belongs to
