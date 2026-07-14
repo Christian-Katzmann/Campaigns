@@ -50,6 +50,7 @@ import {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
+const docsDir = path.join(__dirname, 'docs');
 const APP_NAME = 'Campaigns';
 const APP_SLUG = 'campaigns';
 const registryDir = process.env.CAMPAIGNS_REGISTRY_DIR || defaultRegistryDir();
@@ -264,6 +265,11 @@ const server = createServer(async (request, response) => {
     // real file so neither lands on a 404.
     if (url.pathname === '/companion' && (request.method === 'GET' || request.method === 'HEAD')) {
       await sendStatic(publicDir, '/companion.html', response, request.method === 'HEAD');
+      return;
+    }
+
+    if (url.pathname === '/planner-prompt' && (request.method === 'GET' || request.method === 'HEAD')) {
+      await sendStatic(docsDir, '/paste-anywhere-planner.md', response, request.method === 'HEAD');
       return;
     }
 

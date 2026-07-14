@@ -2449,6 +2449,11 @@ body.view-library #conflict-modal {
   line-height: 1.5;
 }
 
+.library-empty-aside a {
+  color: var(--ink-soft);
+  text-underline-offset: 0.16em;
+}
+
 .library-empty code {
   background: var(--paper-strong);
   padding: 0.1em 0.4em;
