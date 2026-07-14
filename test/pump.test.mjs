@@ -6,6 +6,7 @@ import path from 'node:path';
 import { test } from 'node:test';
 
 import {
+  parseCampaignPlan,
   PumpLockError,
   requestCampaignStop,
   runCampaign,
@@ -14,6 +15,43 @@ import {
 import { validateRunState } from '../lib/run-state.mjs';
 
 const silent = { write() {} };
+
+test('parseCampaignPlan preserves old steps with no executable checks', () => {
+  const plan = parseCampaignPlan(campaignMarkdown(false));
+  assert.deepEqual(plan.steps[0], {
+    id: '1.1',
+    name: 'First',
+    phase: '1',
+    checked: false,
+    checklistLine: 6,
+    prompt: 'Create the first fixture result.',
+  });
+  assert.equal('checks' in plan.steps[1], false);
+});
+
+test('parseCampaignPlan attaches one and several executable checks', () => {
+  const oneCheckMarkdown = campaignMarkdown(false).replace(
+    'Create the first fixture result.',
+    `Create the first fixture result.\nCHECK: ${JSON.stringify({ command: 'npm test' })}`,
+  );
+  assert.deepEqual(parseCampaignPlan(oneCheckMarkdown).steps[0].checks, [{
+    command: 'npm test',
+    expectedExit: 0,
+    expectedOutput: null,
+    timeoutMs: 120_000,
+  }]);
+
+  const severalChecks = [
+    { command: 'npm test', expectedExit: 0, timeoutMs: 30_000 },
+    { command: 'npm run check', expectedOutput: 'clean' },
+    { command: 'git diff --check', expectedExit: 0, timeoutMs: 5_000 },
+  ].map((check) => `CHECK: ${JSON.stringify(check)}`).join('\n');
+  const severalChecksMarkdown = campaignMarkdown(false).replace(
+    'Create the second fixture result.',
+    `Create the second fixture result.\n${severalChecks}`,
+  );
+  assert.equal(parseCampaignPlan(severalChecksMarkdown).steps[1].checks.length, 3);
+});
 
 test('fake success runner ticks every step, runs final review, and merges', async (t) => {
   const fixture = await makeFixture(t, { branch: 'campaign/fixture' });

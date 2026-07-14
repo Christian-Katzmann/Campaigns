@@ -11,6 +11,8 @@
 // markdown or the parsed blocks through explicitly.
 
 export const CHECK_LINE_REGEX = /^(\s*[-*]\s+\[)( |x|X)(\]\s+)(.+)$/;
+export const EXECUTABLE_CHECK_LINE_REGEX = /^\s*CHECK:\s*(.*)$/;
+export const DEFAULT_EXECUTABLE_CHECK_TIMEOUT_MS = 120_000;
 
 /* ------------------------------ Line utilities -------------------------------------- */
 
@@ -20,6 +22,76 @@ export function getLines(markdown) {
 
 export function normalizeNewlines(value) {
   return value.replace(/\r\n?/g, '\n');
+}
+
+export function replaceFencedBlockContent(markdown, block, nextContent) {
+  const lines = getLines(markdown);
+  const replacement = normalizeNewlines(nextContent).split('\n');
+  lines.splice(block.lineStart + 1, block.lineEnd - block.lineStart - 1, ...replacement);
+  return lines.join('\n');
+}
+
+export function parseExecutableChecks(prompt) {
+  const checks = [];
+
+  for (const [index, line] of getLines(prompt).entries()) {
+    const match = line.match(EXECUTABLE_CHECK_LINE_REGEX);
+    if (!match) continue;
+
+    const lineNumber = index + 1;
+    let value;
+    try {
+      value = JSON.parse(match[1]);
+    } catch {
+      throw new TypeError(`Invalid CHECK on prompt line ${lineNumber}: expected one JSON object.`);
+    }
+
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      throw new TypeError(`Invalid CHECK on prompt line ${lineNumber}: expected one JSON object.`);
+    }
+
+    const allowedKeys = new Set(['command', 'expectedExit', 'expectedOutput', 'timeoutMs']);
+    const unknownKeys = Object.keys(value).filter((key) => !allowedKeys.has(key));
+    if (unknownKeys.length > 0) {
+      throw new TypeError(
+        `Invalid CHECK on prompt line ${lineNumber}: unknown field ${unknownKeys[0]}.`,
+      );
+    }
+
+    if (typeof value.command !== 'string' || value.command.trim() === '') {
+      throw new TypeError(`Invalid CHECK on prompt line ${lineNumber}: command must be a non-empty string.`);
+    }
+
+    const hasExpectedExit = Object.prototype.hasOwnProperty.call(value, 'expectedExit');
+    if (hasExpectedExit && (!Number.isInteger(value.expectedExit) || value.expectedExit < 0)) {
+      throw new TypeError(
+        `Invalid CHECK on prompt line ${lineNumber}: expectedExit must be a non-negative integer.`,
+      );
+    }
+
+    const hasExpectedOutput = Object.prototype.hasOwnProperty.call(value, 'expectedOutput');
+    if (hasExpectedOutput && typeof value.expectedOutput !== 'string') {
+      throw new TypeError(
+        `Invalid CHECK on prompt line ${lineNumber}: expectedOutput must be a string.`,
+      );
+    }
+
+    const hasTimeout = Object.prototype.hasOwnProperty.call(value, 'timeoutMs');
+    if (hasTimeout && (!Number.isInteger(value.timeoutMs) || value.timeoutMs <= 0)) {
+      throw new TypeError(
+        `Invalid CHECK on prompt line ${lineNumber}: timeoutMs must be a positive integer.`,
+      );
+    }
+
+    checks.push({
+      command: value.command,
+      expectedExit: hasExpectedExit ? value.expectedExit : 0,
+      expectedOutput: hasExpectedOutput ? value.expectedOutput : null,
+      timeoutMs: hasTimeout ? value.timeoutMs : DEFAULT_EXECUTABLE_CHECK_TIMEOUT_MS,
+    });
+  }
+
+  return checks;
 }
 
 export function stripTrailingHashes(value) {

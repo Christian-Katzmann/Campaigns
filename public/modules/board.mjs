@@ -23,8 +23,8 @@ import {
   findResumeTarget,
   getLines,
   getProgressStats,
-  normalizeNewlines,
   parseMarkdown,
+  replaceFencedBlockContent,
 } from '../lib/parser.mjs';
 import { extractCheckRef, loadPrefs, recordSessionTick, savePrefs } from './prefs-store.mjs';
 import { handleCompletionEffects, playAudioFeedback } from './effects.mjs';
@@ -286,12 +286,10 @@ export function saveCodeEdit(key) {
     return;
   }
 
-  const lines = getLines(state.markdown);
-  const replacement = normalizeNewlines(state.editingValue).split('\n');
-  lines.splice(block.lineStart + 1, block.lineEnd - block.lineStart - 1, ...replacement);
+  const nextMarkdown = replaceFencedBlockContent(state.markdown, block, state.editingValue);
   state.editingCodeKey = null;
   state.editingValue = '';
-  setMarkdown(lines.join('\n'));
+  setMarkdown(nextMarkdown);
 }
 
 export function findCodeBlock(key) {

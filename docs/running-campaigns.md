@@ -8,6 +8,32 @@ Install the engine with `npm install --global campaigns-app`. For a zero-install
 look at the bundled sample board, run `npx campaigns-app`; add `--no-open --port
 0` for an unattended smoke test. The installed executable remains `campaigns`.
 
+## Executable checks
+
+A step can declare machine-checkable acceptance criteria inside its fenced
+prompt. Each check is one physical line beginning with `CHECK:` followed by a
+JSON object:
+
+```text
+SCOPE: Ship the parser change.
+CHECK: {"command":"npm test","expectedExit":0,"timeoutMs":120000}
+CHECK: {"command":"node -e \"console.log('ready')\"","expectedOutput":"ready","timeoutMs":10000}
+```
+
+| Field | Rule |
+| --- | --- |
+| `command` | Required non-empty shell command. |
+| `expectedExit` | Non-negative integer; defaults to `0`. |
+| `expectedOutput` | Optional literal substring in captured output. v1 does not interpret regular expressions. |
+| `timeoutMs` | Positive integer in milliseconds; defaults to `120000`. |
+
+The marker must be uppercase and the JSON must stay on one line. Because the
+prompt is already fenced Markdown, Markdown does not interpret the command.
+Inside the JSON string, escape only as JSON requires: `\"` for a double quote,
+`\\` for a backslash, and `\n` for a newline. Shell quotes, pipes, `$`, and
+backticks otherwise remain part of the command unchanged. Repeat the line for
+several checks. Campaigns without `CHECK:` lines keep their previous plan shape.
+
 ## Run limits
 
 The shipped defaults are 50 completed steps and 360 minutes per run:
