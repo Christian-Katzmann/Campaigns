@@ -6,6 +6,7 @@
 import { state } from './state.mjs';
 import { showToast, trapDialogFocus } from './dom.mjs';
 import { applyTheme, NTFY_TOPIC_REGEX, postRemoteNotification } from './effects.mjs';
+import { buildFeatureRequestUrl } from '../lib/feature-request.mjs';
 import { normalizeTheme } from '../lib/prefs.mjs';
 import { savePrefs } from './prefs-store.mjs';
 
@@ -82,7 +83,7 @@ export async function persistNotificationSettings() {
 
 /* ---------- Custom Vibe Coder Extensions ---------- */
 
-export function initSettings() {
+export function initSettings(appInfo) {
   const settingsBtn = document.querySelector('#settings-button');
   const drawer = document.querySelector('#settings-drawer');
   const drawerContent = drawer?.querySelector('.settings-drawer-content');
@@ -94,8 +95,14 @@ export function initSettings() {
   const testNtfyBtn = document.querySelector('#test-ntfy-button');
   const webhookInput = document.querySelector('#webhook-url-input');
   const testWebhookBtn = document.querySelector('#test-webhook-button');
+  const featureRequestLink = document.querySelector('#feature-request-link');
 
   if (!settingsBtn || !drawer) return;
+
+  if (featureRequestLink && appInfo?.version && appInfo?.platform) {
+    featureRequestLink.href = buildFeatureRequestUrl(appInfo);
+    featureRequestLink.hidden = false;
+  }
 
   let previouslyFocused = null;
 

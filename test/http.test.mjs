@@ -12,6 +12,7 @@ import { validateRunState } from '../lib/run-state.mjs';
 
 const execFileAsync = promisify(execFile);
 const projectRoot = path.resolve('.');
+const packageJson = JSON.parse(await readFile(path.join(projectRoot, 'package.json'), 'utf8'));
 const root = await mkdtemp(path.join(tmpdir(), 'campaigns-http-'));
 const registryDir = path.join(root, 'registry');
 const previousEnv = new Map();
@@ -101,6 +102,10 @@ test('document and registry HTTP contracts hold against a real ephemeral server'
   assert.equal(document.markdown, originalMarkdown);
   assert.equal(document.hash, hash(originalMarkdown));
   assert.equal(document.filePath, campaignPath);
+  assert.deepEqual(document.app, {
+    version: packageJson.version,
+    platform: process.platform,
+  });
 
   const savedMarkdown = '# HTTP fixture\n\nSaved through HTTP.\n';
   const saveResponse = await fetch(`${baseUrl}/api/document`, {

@@ -3222,6 +3222,30 @@ details.doc-section[open] .doc-section-chevron {
   gap: 28px;
 }
 
+.settings-footer {
+  flex: 0 0 auto;
+  padding: 14px 24px 18px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.settings-feature-link {
+  color: var(--ink-faint);
+  font-size: 13px;
+  text-decoration: none;
+}
+
+.settings-feature-link:hover {
+  color: var(--ink);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.settings-feature-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  border-radius: 2px;
+}
+
 .settings-section {
   display: flex;
   flex-direction: column;

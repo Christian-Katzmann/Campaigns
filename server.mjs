@@ -51,6 +51,7 @@ import {
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
 const docsDir = path.join(__dirname, 'docs');
+const { version: APP_VERSION } = JSON.parse(await readFile(path.join(__dirname, 'package.json'), 'utf8'));
 const APP_NAME = 'Campaigns';
 const APP_SLUG = 'campaigns';
 const registryDir = process.env.CAMPAIGNS_REGISTRY_DIR || defaultRegistryDir();
@@ -1275,6 +1276,10 @@ async function sendDocument(url, response) {
       hash: hashMarkdown(markdown),
       markdown,
       hasLogo: Boolean(campaign.logoPath),
+      app: {
+        version: APP_VERSION,
+        platform: process.platform,
+      },
     });
   } catch {
     sendJson(response, 404, { error: 'File not found on disk.' });
