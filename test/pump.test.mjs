@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
@@ -182,6 +182,52 @@ test('watchdog kills a silent runner and salvages its output tail in the receipt
   assert.match(receipt, /last useful output before silence/);
 });
 
+test('every persisted worker and review artifact is redacted at write time', async (t) => {
+  const fixture = await makeFixture(t, {
+    runnerOutputFile: true,
+    runnerScript: `
+      const fs = require('node:fs');
+      const leaked = [
+        'AUTH_SECRET=audit-auth-value',
+        'TURSO_DATABASE_URL=libsql://audit.invalid?authToken=audit-db-value',
+        'postgres://user:db-password@db.invalid/app',
+        'Bearer bearer.audit.token-123',
+      ].join('\\n');
+      fs.writeFileSync(process.argv[2], leaked + '\\n' + process.argv[1]);
+      process.stdout.write('AUTH_SEC');
+      process.stdout.write('RET=split-secret\\n' + leaked + '\\n' + process.argv[1]);
+      process.stderr.write('Bearer stderr.bearer.token-456\\n');
+    `,
+    reviewScript: `
+      const fs = require('node:fs');
+      const review = 'Verdict: APPROVED\\nReasons:\\n\\nAUTH_SECRET=review-secret';
+      fs.writeFileSync(process.argv[2], review);
+      process.stdout.write(review);
+    `,
+  });
+
+  const result = await runCampaign(fixture.campaignPath, fixture.options);
+  const artifacts = await readFilesRecursively(result.runDir);
+  const persisted = artifacts.map((entry) => entry.contents).join('\n');
+
+  assert.equal(result.state.run.status, 'completed');
+  for (const secret of [
+    'audit-auth-value',
+    'audit-db-value',
+    'db-password',
+    'bearer.audit.token-123',
+    'stderr.bearer.token-456',
+    'split-secret',
+    'review-secret',
+  ]) {
+    assert.doesNotMatch(persisted, new RegExp(secret), secret);
+  }
+  assert.match(persisted, /\[REDACTED\]/);
+  assert.ok(artifacts.some((entry) => entry.path.endsWith('1.1-1-last-message.md')));
+  assert.ok(artifacts.some((entry) => entry.path.endsWith('review-1-1-last-message.md')));
+  assert.ok(artifacts.some((entry) => entry.path.endsWith('final-review.md')));
+});
+
 test('max_steps_per_run stops at the boundary with a visible cap event', async (t) => {
   const fixture = await makeFixture(t, { maxStepsPerRun: 1 });
 
@@ -226,7 +272,7 @@ test('user stop gives grace, kills the active process group, and records salvage
       const { spawn } = require('node:child_process');
       const grandchild = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
       fs.writeFileSync('grandchild.pid', String(grandchild.pid));
-      process.stdout.write('salvage this user-stopped work\\n');
+      process.stdout.write('salvage this user-stopped work AUTH_SECRET=stop-secret\\n');
       setInterval(() => {}, 1_000);
     `,
   });
@@ -260,6 +306,8 @@ test('user stop gives grace, kills the active process group, and records salvage
   assert.equal(state.history.at(-1).event, 'stopped_by_user');
   assert.equal(state.history.at(-1).details.forced, true);
   assert.match(receipt, /salvage this user-stopped work/);
+  assert.doesNotMatch(receipt, /stop-secret/);
+  assert.doesNotMatch(JSON.stringify(state), /stop-secret/);
 });
 
 test('a worker finishing inside stop grace is completed before the stop boundary', async (t) => {
@@ -336,6 +384,7 @@ test('a fix worker with no commit consumes the cap and never merges', async (t) 
   const fixture = await makeFixture(t, {
     branch: 'campaign/no-commit',
     reviewScript: "process.stdout.write('Verdict: NEEDS WORK\\nReasons: acceptance-miss')",
+    fixScript: "process.stdout.write('AUTH_SECRET=fix-secret')",
   });
   const targetBefore = await git(fixture.repo, ['rev-parse', 'main']);
 
@@ -350,6 +399,8 @@ test('a fix worker with no commit consumes the cap and never merges', async (t) 
   assert.equal(await git(fixture.repo, ['rev-parse', 'main']), targetBefore);
   assert.equal(await git(fixture.repo, ['branch', '--show-current']), 'campaign/no-commit');
   assert.equal(await git(fixture.repo, ['status', '--short']), '');
+  assert.doesNotMatch(await readFile(path.join(result.logsDir, 'fix-1.log'), 'utf8'), /fix-secret/);
+  assert.doesNotMatch(await readFile(path.join(result.logsDir, 'fix-2.log'), 'utf8'), /fix-secret/);
 });
 
 test('a committed fix is re-reviewed and merged into a non-main default branch', async (t) => {
@@ -477,6 +528,7 @@ async function makeFixture(t, {
   maxRunMinutes = 360,
   stopGraceMs = 3_000,
   divergeTarget = false,
+  runnerOutputFile = false,
 } = {}) {
   const root = await mkdtemp(path.join(tmpdir(), 'campaigns-pump-'));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -502,6 +554,7 @@ async function makeFixture(t, {
     maxStepsPerRun,
     maxRunMinutes,
     stopGraceMs,
+    runnerOutputFile,
   });
   await git(repo, ['add', 'campaign.md']);
   await git(repo, ['commit', '-m', 'Add fixture campaign']);
@@ -565,6 +618,7 @@ async function writeConfig(configPath, {
   maxStepsPerRun = 50,
   maxRunMinutes = 360,
   stopGraceMs = 3_000,
+  runnerOutputFile = false,
 } = {}) {
   const stepScript = runnerScript ?? (delayMs > 0
     ? `setTimeout(() => process.stdout.write(process.argv[1]), ${delayMs})`
@@ -596,7 +650,9 @@ async function writeConfig(configPath, {
     runners: {
       fake: {
         binary: process.execPath,
-        args: ['-e', script, '{prompt}'],
+        args: runnerOutputFile
+          ? ['-e', script, '{prompt}', '{output}']
+          : ['-e', script, '{prompt}'],
         prompt: { delivery: 'arg' },
         defaults: { model: 'fake-model', effort: 'none' },
         effortMap: { none: 'none' },
@@ -609,6 +665,17 @@ async function writeConfig(configPath, {
     },
   };
   await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, 'utf8');
+}
+
+async function readFilesRecursively(root) {
+  const entries = await readdir(root, { withFileTypes: true });
+  const files = [];
+  for (const entry of entries) {
+    const entryPath = path.join(root, entry.name);
+    if (entry.isDirectory()) files.push(...await readFilesRecursively(entryPath));
+    else files.push({ path: entryPath, contents: await readFile(entryPath, 'utf8') });
+  }
+  return files;
 }
 
 async function readOptional(filePath) {
