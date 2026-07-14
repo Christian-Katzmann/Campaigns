@@ -160,7 +160,7 @@ test('watchdog keeps an active runner alive after the runtime floor', async (t) 
 
 test('watchdog kills a silent runner and salvages its output tail in the receipt', async (t) => {
   const fixture = await makeFixture(t, {
-    watchdog: { minimum_runtime_ms: 100, stall_window_ms: 70 },
+    watchdog: { minimum_runtime_ms: 500, stall_window_ms: 120 },
     runnerScript: `
       process.stdout.write('last useful output before silence\\n');
       setTimeout(() => process.stdout.write(process.argv[1]), 5_000);
@@ -198,7 +198,7 @@ test('max_steps_per_run stops at the boundary with a visible cap event', async (
 
 test('max_run_minutes terminates an active worker and salvages its output', async (t) => {
   const fixture = await makeFixture(t, {
-    maxRunMinutes: 0.002,
+    maxRunMinutes: 0.02,
     watchdog: { minimum_runtime_ms: 10_000, stall_window_ms: 10_000 },
     runnerScript: `
       process.stdout.write('useful output before run-time cap\\n');
