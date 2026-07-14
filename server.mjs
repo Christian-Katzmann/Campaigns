@@ -6,7 +6,7 @@ import { homedir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFile } from 'node:child_process';
-import { createCampaignScaffold } from './lib/campaign-scaffold.mjs';
+import { createCampaignFromMarkdown, createCampaignScaffold } from './lib/campaign-scaffold.mjs';
 import {
   abandonAutomateCampaign,
   getAutomateProviderAvailability,
@@ -27,6 +27,7 @@ import {
 import { httpError, readJsonBody, sendJson, sendStatic } from './lib/http.mjs';
 import { resolveCampaignConfig } from './lib/config.mjs';
 import { hasUnifiedRunLedgers, loadUnifiedLessons } from './lib/lessons.mjs';
+import { PlannerDraftError, draftCampaign } from './lib/planner.mjs';
 import { CampaignStopError, defaultCampaignsRunsDir, requestCampaignStop } from './lib/pump.mjs';
 import { RecoveryError, recoverCampaign } from './lib/recovery.mjs';
 import { createRunnerRegistry, loadRunnerRegistry, runnerCapabilities } from './lib/runners.mjs';
@@ -153,6 +154,11 @@ const server = createServer(async (request, response) => {
 
     if (url.pathname === '/api/campaigns/new' && request.method === 'POST') {
       await newCampaignEndpoint(request, response);
+      return;
+    }
+
+    if (url.pathname === '/api/campaigns/plan' && request.method === 'POST') {
+      await planCampaignEndpoint(request, response);
       return;
     }
 
@@ -913,6 +919,56 @@ async function newCampaignEndpoint(request, response) {
   });
   const id = await ensureRegistered(created.filePath);
   sendJson(response, 201, { ...created, id });
+}
+
+async function planCampaignEndpoint(request, response) {
+  const payload = await readJsonBody(request);
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  const abortIfClosed = () => {
+    if (!response.writableEnded) controller.abort();
+  };
+  request.once('aborted', abort);
+  response.once('close', abortIfClosed);
+  let created = null;
+  try {
+    const draft = await draftCampaign({
+      effort: payload?.effort,
+      intent: payload?.intent,
+      model: payload?.model,
+      projectPath: payload?.projectPath,
+      runnerId: payload?.runnerId,
+      signal: controller.signal,
+    });
+    created = await createCampaignFromMarkdown({
+      markdown: draft.markdown,
+      name: draft.title,
+      projectPath: draft.projectRoot,
+    });
+    const id = await ensureRegistered(created.filePath);
+    sendJson(response, 201, {
+      ...created,
+      boardUrl: `?id=${encodeURIComponent(id)}`,
+      findings: draft.findings,
+      id,
+      selection: draft.selection,
+    });
+  } catch (error) {
+    if (created?.filePath) await unlink(created.filePath).catch(() => {});
+    if (response.destroyed) return;
+    if (error instanceof PlannerDraftError) {
+      sendJson(response, error.statusCode, {
+        error: error.message,
+        findings: error.findings,
+        rawOutput: error.rawOutput,
+      });
+      return;
+    }
+    throw error;
+  } finally {
+    request.removeListener('aborted', abort);
+    response.removeListener('close', abortIfClosed);
+  }
 }
 
 async function sendCampaignIcon(url, response) {

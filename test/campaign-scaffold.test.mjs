@@ -5,6 +5,7 @@ import path from 'node:path';
 import { test } from 'node:test';
 
 import {
+  createCampaignFromMarkdown,
   createCampaignScaffold,
   normalizeCampaignName,
 } from '../lib/campaign-scaffold.mjs';
@@ -38,6 +39,26 @@ test('campaign creation is exclusive and reports an existing file as 409', async
     (error) => error.statusCode === 409,
   );
   assert.equal(await readFile(first.filePath, 'utf8'), original);
+});
+
+test('drafted markdown uses the same safe slug and exclusive create contract', async (t) => {
+  const projectPath = await mkdtemp(path.join(tmpdir(), 'campaign-draft-scaffold-'));
+  t.after(() => rm(projectPath, { recursive: true, force: true }));
+  const created = await createCampaignFromMarkdown({
+    markdown: '# Planned Launch\n\nDrafted content.\n',
+    name: 'Planned Launch',
+    projectPath,
+  });
+  assert.equal(path.basename(created.filePath), 'planned-launch.md');
+  assert.equal(await readFile(created.filePath, 'utf8'), '# Planned Launch\n\nDrafted content.\n');
+  await assert.rejects(
+    createCampaignFromMarkdown({
+      markdown: '# Planned Launch\n',
+      name: 'Planned Launch',
+      projectPath,
+    }),
+    (error) => error.statusCode === 409,
+  );
 });
 
 test('scaffolded markdown follows the normal campaign parser path', async (t) => {

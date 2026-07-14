@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
-import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -24,6 +24,7 @@ const previousEnv = new Map();
 
 for (const [name, value] of Object.entries({
   CAMPAIGNS_PORT_FILE: path.join(root, 'server.port'),
+  CAMPAIGNS_CONFIG_DIR: path.join(root, 'user-config'),
   CAMPAIGNS_REGISTRY_DIR: registryDir,
   CAMPAIGNS_RUNS_DIR: path.join(root, 'runs'),
 })) {
@@ -258,6 +259,109 @@ test('document and registry HTTP contracts hold against a real ephemeral server'
   await assert.rejects(fetch(`${baseUrl}/api/document`));
 });
 
+test('plan campaign endpoint drafts, validates, registers, salvages failures, and keeps blank creation intact', async (t) => {
+  const repo = path.join(root, 'planner-http-fixture');
+  const nestedProjectPath = path.join(repo, 'src');
+  const runnerScriptPath = path.join(repo, 'fake-planner.mjs');
+  await mkdir(nestedProjectPath, { recursive: true });
+  await git(repo, ['init', '-b', 'main']);
+  await writeFile(runnerScriptPath, fakePlannerScript(), 'utf8');
+  await writeFile(
+    path.join(repo, '.campaigns.json'),
+    `${JSON.stringify(fakePlannerConfig(runnerScriptPath), null, 2)}\n`,
+    'utf8',
+  );
+  await writeFile(path.join(repo, 'README.md'), '# Planner fixture\n', 'utf8');
+
+  const server = await startServer({
+    port: 0,
+    host: '127.0.0.1',
+    watchStops: false,
+    writePortFile: false,
+  });
+  t.after(() => closeServer(server));
+  const address = server.address();
+  const baseUrl = `http://127.0.0.1:${address.port}`;
+
+  const cancelController = new AbortController();
+  const cancelledRequest = fetch(`${baseUrl}/api/campaigns/plan`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      effort: 'maximum',
+      intent: 'SLOW INTENT so request cancellation is exercised.',
+      model: 'fake-model',
+      projectPath: nestedProjectPath,
+      runnerId: 'fake',
+    }),
+    signal: cancelController.signal,
+  });
+  setTimeout(() => cancelController.abort(), 100);
+  await assert.rejects(cancelledRequest, (error) => error.name === 'AbortError');
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  await assert.rejects(access(path.join(repo, 'campaigns')), { code: 'ENOENT' });
+
+  const failedResponse = await fetch(`${baseUrl}/api/campaigns/plan`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      effort: 'maximum',
+      intent: 'FAIL INTENT so raw salvage is exercised.',
+      model: 'fake-model',
+      projectPath: nestedProjectPath,
+      runnerId: 'fake',
+    }),
+  });
+  const failed = await failedResponse.json();
+  assert.equal(failedResponse.status, 422);
+  assert.match(failed.error, /invalid campaign/i);
+  assert.match(failed.rawOutput, /API_TOKEN=\[REDACTED\]/);
+  assert.doesNotMatch(failed.rawOutput, /super-secret-value/);
+
+  const plannedResponse = await fetch(`${baseUrl}/api/campaigns/plan`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      effort: 'maximum',
+      intent: 'Create a two-phase release campaign. Keep it small and verifiable.',
+      model: 'fake-model',
+      projectPath: nestedProjectPath,
+      runnerId: 'fake',
+    }),
+  });
+  const planned = await plannedResponse.json();
+  assert.equal(plannedResponse.status, 201);
+  assert.equal(path.dirname(planned.filePath), path.join(await realpath(repo), 'campaigns'));
+  assert.equal(planned.boardUrl, `?id=${encodeURIComponent(planned.id)}`);
+  assert.deepEqual(planned.selection, { runnerId: 'fake', model: 'fake-model', effort: 'maximum' });
+  assert.equal(planned.findings.filter((finding) => finding.severity === 'error').length, 0);
+  const draftedMarkdown = await readFile(planned.filePath, 'utf8');
+  assert.match(draftedMarkdown, /Model: Fake Planner · Maximum/);
+  assert.equal(parseCampaignPlan(draftedMarkdown).steps.length, 2);
+
+  const blankResponse = await fetch(`${baseUrl}/api/campaigns/new`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ name: 'Still Blank', projectPath: nestedProjectPath }),
+  });
+  const blank = await blankResponse.json();
+  assert.equal(blankResponse.status, 201);
+  assert.equal(blank.filePath, path.join(nestedProjectPath, 'campaigns', 'still-blank.md'));
+
+  for (const created of [planned, blank]) {
+    await rm(created.filePath, { force: true });
+    const removed = await fetch(`${baseUrl}/api/registry`, {
+      method: 'DELETE',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id: created.id }),
+    });
+    assert.equal(removed.status, 200);
+  }
+
+  await closeServer(server);
+  assert.equal(server.listening, false);
+});
+
 test('campaigns run completes through the CLI with a fake runner and valid state', async () => {
   const fixtureRoot = path.join(root, 'cli-fixture');
   const repo = path.join(fixtureRoot, 'repo');
@@ -382,4 +486,98 @@ function fakeRunnerConfig() {
       },
     },
   };
+}
+
+function fakePlannerConfig(scriptPath) {
+  return {
+    defaultRunner: 'fake',
+    watchdog: { minimum_runtime_ms: 10_000, stall_window_ms: 10_000 },
+    run: { max_run_minutes: 1 },
+    runners: {
+      fake: {
+        label: 'Fake planner',
+        binary: process.execPath,
+        args: [scriptPath],
+        prompt: { delivery: 'stdin' },
+        defaults: { model: 'fake-model', effort: 'maximum' },
+        models: [{ id: 'fake-model', label: 'Fake Planner' }],
+        efforts: [{ id: 'maximum', label: 'Maximum' }],
+        effortMap: { maximum: 'maximum' },
+        environment: { remove: [] },
+        completion: {
+          marker: { type: 'campaigns.step_completed', version: 1, status: 'completed' },
+          sources: [{ kind: 'text' }],
+        },
+      },
+    },
+  };
+}
+
+function fakePlannerScript() {
+  const fixture = plannerFixture('__MODEL_VALUE__');
+  return `let prompt = '';
+process.stdin.setEncoding('utf8');
+process.stdin.on('data', (chunk) => { prompt += chunk; });
+process.stdin.on('end', () => {
+  if (prompt.includes('SLOW INTENT')) {
+    setInterval(() => {}, 1000);
+    return;
+  }
+  if (prompt.includes('FAIL INTENT')) {
+    process.stdout.write('API_TOKEN=super-secret-value\\nnot markdown');
+    return;
+  }
+  const match = prompt.match(/Write this exact line below every step heading: Model: (.+)/);
+  process.stdout.write(${JSON.stringify(fixture)}.replaceAll('__MODEL_VALUE__', match?.[1] ?? 'missing'));
+});
+`;
+}
+
+function plannerFixture(modelValue) {
+  const stepPrompt = (scope) => `\`\`\`text
+SCOPE: ${scope}
+REQUIRED READING:
+1. README.md
+OUTPUT: A checked result.
+ACCEPTANCE:
+- The result is present.
+OPEN QUESTIONS:
+- None.
+FORWARD SWEEP: before checking this step off, do a quick pass over the campaign's remaining step prompts. If your work moved a path, changed a contract or shape, or invalidated an assumption a later step leans on, make a surgical edit there. A quick sweep, not a rewrite — skip it if nothing downstream changed.
+\`\`\``;
+  return `# Drafted fake campaign
+
+> A fake runner produces a parser-complete campaign for the HTTP contract.
+
+## Progress checklist
+
+### Phase 1 — Prepare
+
+- [ ] Step 1.1 — Prepare
+
+### Phase 2 — Ship
+
+- [ ] Step 2.1 — Ship
+- [ ] Final review
+
+## Step 1.1 — Prepare
+
+Model: ${modelValue}
+Parallel: NO
+
+${stepPrompt('Prepare the release.')}
+
+## Step 2.1 — Ship
+
+Model: ${modelValue}
+Parallel: NO
+
+${stepPrompt('Ship the release.')}
+
+## Final review
+
+\`\`\`text
+Review every acceptance criterion and return APPROVED or NEEDS WORK.
+\`\`\`
+`;
 }

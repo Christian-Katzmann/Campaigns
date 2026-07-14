@@ -51,18 +51,36 @@ export function showNewCampaignDialog() {
   });
   const description = element('p', {
     className: 'nudge-confirm-desc',
-    text: 'Campaigns will create a markdown file inside a campaigns folder in your project.',
+    text: 'Draft a campaign from your intent, or start with a blank campaign.',
   });
+
+  const modePicker = element('div', { className: 'new-campaign-mode' });
+  modePicker.setAttribute('role', 'group');
+  modePicker.setAttribute('aria-label', 'Campaign starting point');
+  const planModeButton = element('button', { className: 'button button-primary', text: 'Plan for me', type: 'button' });
+  const blankModeButton = element('button', { className: 'button', text: 'Start blank', type: 'button' });
+  modePicker.append(planModeButton, blankModeButton);
 
   const nameLabel = element('label', { className: 'new-campaign-field' });
   const nameText = element('span', { text: 'Campaign name' });
   const nameInput = element('input', { className: 'new-campaign-input', id: 'new-campaign-name', type: 'text' });
   nameInput.name = 'name';
-  nameInput.required = true;
   nameInput.maxLength = 120;
   nameInput.autocomplete = 'off';
   nameLabel.htmlFor = nameInput.id;
   nameLabel.append(nameText, nameInput);
+
+  const intentLabel = element('label', { className: 'new-campaign-field' });
+  const intentText = element('span', { text: 'What should this campaign accomplish?' });
+  const intentInput = element('textarea', {
+    className: 'new-campaign-input new-campaign-intent',
+    id: 'new-campaign-intent',
+  });
+  intentInput.name = 'intent';
+  intentInput.maxLength = 20_000;
+  intentInput.placeholder = 'Describe the outcome and the constraints that matter. Two or three sentences is enough.';
+  intentLabel.htmlFor = intentInput.id;
+  intentLabel.append(intentText, intentInput);
 
   const projectLabel = element('label', { className: 'new-campaign-field' });
   const projectText = element('span', { text: 'Project folder' });
@@ -75,23 +93,132 @@ export function showNewCampaignDialog() {
   projectLabel.htmlFor = projectInput.id;
   projectLabel.append(projectText, projectInput);
 
+  const plannerFields = element('div', { className: 'new-campaign-planner-fields' });
+  const runnerLabel = element('label', { className: 'new-campaign-field' });
+  const runnerText = element('span', { text: 'Planner' });
+  const runnerSelect = element('select', { className: 'new-campaign-input', id: 'new-campaign-runner' });
+  runnerLabel.htmlFor = runnerSelect.id;
+  runnerLabel.append(runnerText, runnerSelect);
+  const modelLabel = element('label', { className: 'new-campaign-field' });
+  const modelText = element('span', { text: 'Model' });
+  const modelSelect = element('select', { className: 'new-campaign-input', id: 'new-campaign-model' });
+  modelLabel.htmlFor = modelSelect.id;
+  modelLabel.append(modelText, modelSelect);
+  const effortLabel = element('label', { className: 'new-campaign-field' });
+  const effortText = element('span', { text: 'Effort' });
+  const effortSelect = element('select', { className: 'new-campaign-input', id: 'new-campaign-effort' });
+  effortLabel.htmlFor = effortSelect.id;
+  effortLabel.append(effortText, effortSelect);
+  plannerFields.append(runnerLabel, modelLabel, effortLabel);
+
   const errorLine = element('p', { className: 'new-campaign-error' });
   errorLine.setAttribute('role', 'alert');
   errorLine.hidden = true;
+
+  const salvage = element('pre', { className: 'new-campaign-salvage' });
+  salvage.hidden = true;
+  const progress = element('p', {
+    className: 'new-campaign-progress',
+    text: 'Drafting the campaign. You can cancel safely.',
+  });
+  progress.setAttribute('role', 'status');
+  progress.hidden = true;
 
   const footer = element('div', { className: 'nudge-confirm-footer' });
   const cancelButton = element('button', { className: 'button', text: 'Cancel', type: 'button' });
   const createButton = element('button', {
     className: 'button button-primary',
-    text: 'Create campaign',
+    text: 'Draft campaign',
     type: 'submit',
   });
   footer.append(cancelButton, createButton);
-  form.append(heading, description, nameLabel, projectLabel, errorLine, footer);
+  form.append(
+    heading,
+    description,
+    modePicker,
+    nameLabel,
+    intentLabel,
+    projectLabel,
+    plannerFields,
+    errorLine,
+    salvage,
+    progress,
+    footer,
+  );
   overlay.append(form);
   document.body.append(overlay);
 
-  const close = () => overlay.remove();
+  let mode = 'plan';
+  let requestController = null;
+  const runners = state.capabilities.runners;
+  const close = () => {
+    requestController?.abort();
+    overlay.remove();
+  };
+  const appendOptions = (select, entries, selectedId) => {
+    select.replaceChildren();
+    for (const entry of entries) {
+      const option = document.createElement('option');
+      option.value = entry.id;
+      option.textContent = entry.label;
+      option.selected = entry.id === selectedId;
+      select.append(option);
+    }
+  };
+  const selectedRunner = () => runners.find((runner) => runner.id === runnerSelect.value);
+  const syncRunner = () => {
+    const runner = selectedRunner();
+    appendOptions(modelSelect, runner?.models ?? [], runner?.defaults?.model);
+    appendOptions(effortSelect, runner?.efforts ?? [], runner?.defaults?.effort);
+  };
+  const setMode = (nextMode) => {
+    mode = nextMode;
+    const planning = mode === 'plan';
+    planModeButton.classList.toggle('button-primary', planning);
+    blankModeButton.classList.toggle('button-primary', !planning);
+    planModeButton.setAttribute('aria-pressed', String(planning));
+    blankModeButton.setAttribute('aria-pressed', String(!planning));
+    nameLabel.hidden = planning;
+    intentLabel.hidden = !planning;
+    plannerFields.hidden = !planning;
+    nameInput.required = !planning;
+    intentInput.required = planning;
+    createButton.textContent = planning ? 'Draft campaign' : 'Create blank';
+    errorLine.hidden = true;
+    salvage.hidden = true;
+    (planning ? intentInput : nameInput).focus();
+  };
+  const setBusy = (busy) => {
+    for (const control of [blankModeButton, nameInput, intentInput, projectInput, runnerSelect, modelSelect, effortSelect]) {
+      control.disabled = busy;
+    }
+    planModeButton.disabled = busy || !initialRunner;
+    createButton.disabled = busy;
+    progress.hidden = !busy;
+    if (busy) createButton.textContent = mode === 'plan' ? 'Drafting…' : 'Creating…';
+    else createButton.textContent = mode === 'plan' ? 'Draft campaign' : 'Create blank';
+  };
+
+  for (const runner of runners) {
+    const option = document.createElement('option');
+    option.value = runner.id;
+    option.textContent = runner.available ? runner.label : `${runner.label} — unavailable`;
+    option.disabled = !runner.available;
+    option.title = runner.availabilityHint || '';
+    runnerSelect.append(option);
+  }
+  const initialRunner = runners.find((runner) => runner.id === state.capabilities.defaultRunner && runner.available)
+    ?? runners.find((runner) => runner.available);
+  if (initialRunner) runnerSelect.value = initialRunner.id;
+  syncRunner();
+  if (!initialRunner) {
+    planModeButton.disabled = true;
+    mode = 'blank';
+  }
+
+  planModeButton.addEventListener('click', () => setMode('plan'));
+  blankModeButton.addEventListener('click', () => setMode('blank'));
+  runnerSelect.addEventListener('change', syncRunner);
   cancelButton.addEventListener('click', close);
   overlay.addEventListener('click', (event) => {
     if (event.target === overlay) close();
@@ -101,30 +228,51 @@ export function showNewCampaignDialog() {
   });
   form.addEventListener('submit', async (event) => {
     event.preventDefault();
-    createButton.disabled = true;
-    cancelButton.disabled = true;
-    createButton.textContent = 'Creating…';
+    setBusy(true);
     errorLine.hidden = true;
+    salvage.hidden = true;
+    requestController = new AbortController();
 
     try {
-      const response = await fetch('/api/campaigns/new', {
+      const planning = mode === 'plan';
+      const response = await fetch(planning ? '/api/campaigns/plan' : '/api/campaigns/new', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ name: nameInput.value, projectPath: projectInput.value }),
+        body: JSON.stringify(planning
+          ? {
+              effort: effortSelect.value,
+              intent: intentInput.value,
+              model: modelSelect.value,
+              projectPath: projectInput.value,
+              runnerId: runnerSelect.value,
+            }
+          : { name: nameInput.value, projectPath: projectInput.value }),
+        signal: requestController.signal,
       });
       const payload = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(payload.error || 'Could not create campaign.');
-      window.location.assign(`?id=${encodeURIComponent(payload.id)}`);
+      if (!response.ok) {
+        const requestError = new Error(payload.error || 'Could not create campaign.');
+        requestError.payload = payload;
+        throw requestError;
+      }
+      if (!overlay.isConnected) return;
+      window.location.assign(payload.boardUrl || `?id=${encodeURIComponent(payload.id)}`);
     } catch (error) {
+      if (error.name === 'AbortError' || !overlay.isConnected) return;
       errorLine.textContent = error.message || 'Could not create campaign.';
       errorLine.hidden = false;
-      createButton.disabled = false;
-      cancelButton.disabled = false;
-      createButton.textContent = 'Create campaign';
+      const payload = error.payload;
+      if (payload?.rawOutput) {
+        salvage.textContent = payload.rawOutput;
+        salvage.hidden = false;
+      }
+    } finally {
+      requestController = null;
+      if (overlay.isConnected) setBusy(false);
     }
   });
 
-  nameInput.focus();
+  setMode(mode);
 }
 
 export async function renderLibrary() {
