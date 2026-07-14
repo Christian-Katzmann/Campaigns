@@ -2456,6 +2456,60 @@ body.view-library #conflict-modal {
   font-size: 13px;
 }
 
+.library-empty-action {
+  align-self: flex-start;
+}
+
+.new-campaign-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.new-campaign-form .nudge-confirm-title,
+.new-campaign-form .nudge-confirm-desc {
+  margin-bottom: 0;
+}
+
+.new-campaign-field {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.new-campaign-input {
+  width: 100%;
+  height: 40px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--paper);
+  color: var(--ink);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 400;
+}
+
+.new-campaign-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.new-campaign-error {
+  margin: 0;
+  color: var(--danger);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.new-campaign-error[hidden] {
+  display: none;
+}
+
 /* ---------- Dark mode (follows system) ---------- */
 
 @media (prefers-color-scheme: dark) {

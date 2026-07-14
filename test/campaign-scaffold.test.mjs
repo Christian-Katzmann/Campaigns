@@ -1,0 +1,57 @@
+import assert from 'node:assert/strict';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { test } from 'node:test';
+
+import {
+  createCampaignScaffold,
+  normalizeCampaignName,
+} from '../lib/campaign-scaffold.mjs';
+import {
+  classifyPhases,
+  extractPhases,
+  extractStepSections,
+  getProgressStats,
+  isNewShapeCampaign,
+  parseMarkdown,
+} from '../public/lib/parser.mjs';
+
+test('campaign names reject path separators and traversal', () => {
+  for (const name of ['../escape', 'nested/name', 'nested\\name']) {
+    assert.throws(
+      () => normalizeCampaignName(name),
+      (error) => error.statusCode === 400 && /path separators or traversal/.test(error.message),
+    );
+  }
+});
+
+test('campaign creation is exclusive and reports an existing file as 409', async (t) => {
+  const projectPath = await mkdtemp(path.join(tmpdir(), 'campaign-scaffold-'));
+  t.after(() => rm(projectPath, { recursive: true, force: true }));
+
+  const first = await createCampaignScaffold({ name: 'Launch Notes', projectPath });
+  const original = await readFile(first.filePath, 'utf8');
+
+  await assert.rejects(
+    createCampaignScaffold({ name: 'Launch Notes', projectPath }),
+    (error) => error.statusCode === 409,
+  );
+  assert.equal(await readFile(first.filePath, 'utf8'), original);
+});
+
+test('scaffolded markdown follows the normal campaign parser path', async (t) => {
+  const projectPath = await mkdtemp(path.join(tmpdir(), 'campaign-scaffold-parser-'));
+  t.after(() => rm(projectPath, { recursive: true, force: true }));
+
+  const created = await createCampaignScaffold({ name: 'First Campaign', projectPath });
+  const markdown = await readFile(created.filePath, 'utf8');
+  const blocks = parseMarkdown(markdown);
+  const phases = classifyPhases(extractPhases(blocks));
+  const steps = extractStepSections(blocks, markdown);
+
+  assert.equal(phases.length, 1);
+  assert.deepEqual(steps.map((step) => step.number), ['1.1', '1.2']);
+  assert.deepEqual(getProgressStats(blocks), { done: 0, total: 3 });
+  assert.equal(isNewShapeCampaign(blocks), true);
+});

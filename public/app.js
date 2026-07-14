@@ -2,7 +2,12 @@ import { ensureFinalReviewLines, normalizeNewlines } from './lib/parser.mjs';
 import { elements, state } from './modules/state.mjs';
 import { applyCampaignLogo, showToast } from './modules/dom.mjs';
 import { syncThemeColorMeta } from './modules/effects.mjs';
-import { initLibraryFilter, loadLibraryExpandedCollections, renderLibrary } from './modules/library.mjs';
+import {
+  initLibraryFilter,
+  initNewCampaign,
+  loadLibraryExpandedCollections,
+  renderLibrary,
+} from './modules/library.mjs';
 import { initSwitcher } from './modules/switcher.mjs';
 import { loadPrefs } from './modules/prefs-store.mjs';
 import { initSettings } from './modules/settings.mjs';
@@ -26,6 +31,7 @@ initialize();
 async function initialize() {
   await updatePersonalLayerAvailability();
   bindGlobalActions();
+  initNewCampaign();
   state.libraryExpandedCollections = loadLibraryExpandedCollections();
 
   const params = new URLSearchParams(window.location.search);

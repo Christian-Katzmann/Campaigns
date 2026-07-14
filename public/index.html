@@ -109,16 +109,18 @@
             hidden
           />
           <button id="away-all-button" class="button button-quiet away-all-button" type="button" hidden>Away</button>
+          <button id="new-campaign-button" class="button button-primary" type="button">New campaign</button>
         </div>
       </header>
       <div id="library-grid" class="library-grid"></div>
       <div id="library-empty" class="library-empty" hidden>
         <p class="library-empty-title">No campaigns yet.</p>
         <p class="library-empty-body">
-          Campaigns reads a markdown plan as an interactive board — phases, steps, prompts, progress. The simplest way to get one here is to run <code>/campaign-planner</code> in a Claude Code session; it scaffolds the plan and registers it automatically.
+          Campaigns turns a markdown plan into an interactive board — phases, steps, prompts, and progress. Create one here; no coding agent is required.
         </p>
+        <button id="new-campaign-empty-button" class="button button-primary library-empty-action" type="button">New campaign</button>
         <p class="library-empty-aside">
-          Already have a plan file? Start the server with <code>--file &lt;path&gt;</code>.
+          Agent skills can help expand and run a campaign, but they are optional. Already have a plan file? Start the server with <code>--file &lt;path&gt;</code>.
         </p>
       </div>
     </div>

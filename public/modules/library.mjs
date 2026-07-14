@@ -24,6 +24,109 @@ import {
   updateAwayAllButton,
 } from './away.mjs';
 
+export function initNewCampaign() {
+  const buttons = [
+    document.querySelector('#new-campaign-button'),
+    document.querySelector('#new-campaign-empty-button'),
+  ].filter(Boolean);
+
+  for (const button of buttons) {
+    button.addEventListener('click', showNewCampaignDialog);
+  }
+}
+
+export function showNewCampaignDialog() {
+  document.querySelector('#new-campaign-modal')?.remove();
+
+  const overlay = element('div', { className: 'nudge-confirm-modal', id: 'new-campaign-modal' });
+  overlay.setAttribute('role', 'dialog');
+  overlay.setAttribute('aria-modal', 'true');
+  overlay.setAttribute('aria-labelledby', 'new-campaign-title');
+
+  const form = element('form', { className: 'nudge-confirm-card new-campaign-form' });
+  const heading = element('h2', {
+    className: 'nudge-confirm-title',
+    id: 'new-campaign-title',
+    text: 'New campaign',
+  });
+  const description = element('p', {
+    className: 'nudge-confirm-desc',
+    text: 'Campaigns will create a markdown file inside a campaigns folder in your project.',
+  });
+
+  const nameLabel = element('label', { className: 'new-campaign-field' });
+  const nameText = element('span', { text: 'Campaign name' });
+  const nameInput = element('input', { className: 'new-campaign-input', id: 'new-campaign-name', type: 'text' });
+  nameInput.name = 'name';
+  nameInput.required = true;
+  nameInput.maxLength = 120;
+  nameInput.autocomplete = 'off';
+  nameLabel.htmlFor = nameInput.id;
+  nameLabel.append(nameText, nameInput);
+
+  const projectLabel = element('label', { className: 'new-campaign-field' });
+  const projectText = element('span', { text: 'Project folder' });
+  const projectInput = element('input', { className: 'new-campaign-input', id: 'new-campaign-project', type: 'text' });
+  projectInput.name = 'projectPath';
+  projectInput.required = true;
+  projectInput.autocomplete = 'off';
+  projectInput.spellcheck = false;
+  projectInput.placeholder = state.homeDir ? `${state.homeDir}/path/to/project` : '/path/to/project';
+  projectLabel.htmlFor = projectInput.id;
+  projectLabel.append(projectText, projectInput);
+
+  const errorLine = element('p', { className: 'new-campaign-error' });
+  errorLine.setAttribute('role', 'alert');
+  errorLine.hidden = true;
+
+  const footer = element('div', { className: 'nudge-confirm-footer' });
+  const cancelButton = element('button', { className: 'button', text: 'Cancel', type: 'button' });
+  const createButton = element('button', {
+    className: 'button button-primary',
+    text: 'Create campaign',
+    type: 'submit',
+  });
+  footer.append(cancelButton, createButton);
+  form.append(heading, description, nameLabel, projectLabel, errorLine, footer);
+  overlay.append(form);
+  document.body.append(overlay);
+
+  const close = () => overlay.remove();
+  cancelButton.addEventListener('click', close);
+  overlay.addEventListener('click', (event) => {
+    if (event.target === overlay) close();
+  });
+  overlay.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') close();
+  });
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    createButton.disabled = true;
+    cancelButton.disabled = true;
+    createButton.textContent = 'Creating…';
+    errorLine.hidden = true;
+
+    try {
+      const response = await fetch('/api/campaigns/new', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name: nameInput.value, projectPath: projectInput.value }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error || 'Could not create campaign.');
+      window.location.assign(`?id=${encodeURIComponent(payload.id)}`);
+    } catch (error) {
+      errorLine.textContent = error.message || 'Could not create campaign.';
+      errorLine.hidden = false;
+      createButton.disabled = false;
+      cancelButton.disabled = false;
+      createButton.textContent = 'Create campaign';
+    }
+  });
+
+  nameInput.focus();
+}
+
 export async function renderLibrary() {
   document.body.classList.add('view-library');
   applyCampaignLogo(null, false);

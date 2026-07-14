@@ -6,6 +6,7 @@ import { homedir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFile } from 'node:child_process';
+import { createCampaignScaffold } from './lib/campaign-scaffold.mjs';
 import {
   abandonAutomateCampaign,
   getAutomateProviderAvailability,
@@ -158,6 +159,11 @@ const server = createServer(async (request, response) => {
 
     if (url.pathname === '/api/registry' && request.method === 'POST') {
       await registerEndpoint(request, response);
+      return;
+    }
+
+    if (url.pathname === '/api/campaigns/new' && request.method === 'POST') {
+      await newCampaignEndpoint(request, response);
       return;
     }
 
@@ -812,6 +818,16 @@ async function registerEndpoint(request, response) {
   }
 
   sendJson(response, 200, { id, filePath: absolute });
+}
+
+async function newCampaignEndpoint(request, response) {
+  const payload = await readJsonBody(request);
+  const created = await createCampaignScaffold({
+    name: payload?.name,
+    projectPath: payload?.projectPath,
+  });
+  const id = await ensureRegistered(created.filePath);
+  sendJson(response, 201, { ...created, id });
 }
 
 async function sendCampaignIcon(url, response) {
