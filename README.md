@@ -29,11 +29,13 @@ npm run start:sample
 ```
 
 Then open the URL printed by the server. By default it is `http://localhost:4178`.
+The install step also puts the `campaigns` execution CLI on `PATH`.
 
 Open your own campaign file:
 
 ```bash
 npm start -- --file path/to/your-campaign.md
+campaigns run path/to/your-campaign.md
 ```
 
 Useful flags and environment variables:

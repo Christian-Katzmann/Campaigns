@@ -24,10 +24,18 @@ fi
 
 chmod +x "$ROOT_DIR"/scripts/*.sh 2>/dev/null || true
 
+# Expose the package's `campaigns` bin on PATH. `npm link` is intentional here:
+# the app is installed from a local clone and has no registry dependencies.
+(cd "$ROOT_DIR" && npm link --silent)
+
 echo "Campaigns is ready."
+echo "CLI installed: campaigns"
 echo ""
 echo "Try the sample campaign:"
 echo "  npm run start:sample"
 echo ""
 echo "Or open your own campaign file:"
 echo "  npm start -- --file path/to/your-campaign.md"
+echo ""
+echo "Run a campaign:"
+echo "  campaigns run path/to/your-campaign.md"

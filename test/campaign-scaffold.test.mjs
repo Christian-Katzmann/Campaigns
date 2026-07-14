@@ -55,3 +55,15 @@ test('scaffolded markdown follows the normal campaign parser path', async (t) =>
   assert.deepEqual(getProgressStats(blocks), { done: 0, total: 3 });
   assert.equal(isNewShapeCampaign(blocks), true);
 });
+
+test('empty state links the bundled paste-anywhere planner prompt', async () => {
+  const [index, prompt] = await Promise.all([
+    readFile(new URL('../public/index.html', import.meta.url), 'utf8'),
+    readFile(new URL('../docs/paste-anywhere-planner.md', import.meta.url), 'utf8'),
+  ]);
+
+  assert.match(index, /href="\/planner-prompt"/);
+  assert.match(prompt, /^Turn the project description/);
+  assert.match(prompt, /^## Progress checklist$/m);
+  assert.match(prompt, /^## Final review$/m);
+});
