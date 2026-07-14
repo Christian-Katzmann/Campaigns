@@ -12,7 +12,7 @@
 
 ## Step 1.1 — Write the greeting
 
-Model: Claude Opus · Max
+Model: Claude Opus · High
 Parallel: NO
 
 ```text
@@ -24,7 +24,7 @@ Verify the file content, then commit only that file with commit message "Add hel
 
 ## Step 1.2 — Verify the greeting
 
-Model: Claude Opus · Max
+Model: Claude Opus · High
 Parallel: NO
 
 ```text
@@ -38,4 +38,3 @@ Verify both files, then commit only hello-output/verified.txt with commit messag
 ## Final review
 
 Confirm both proof files contain exactly the requested text and the run ledger is awaiting review.
-

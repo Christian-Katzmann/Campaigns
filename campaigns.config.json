@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "_comment": "Effort names are normalized per runner here because the CLIs use different names: extra-high maps to max for Claude and xhigh for Codex.",
+  "_comment": "Effort names are normalized per runner here because the CLIs use different names: extra-high maps to high for Claude subscriptions and xhigh for Codex.",
   "defaultRunner": "claude",
   "watchdog": {
     "minimum_runtime_ms": 3600000,
@@ -32,12 +32,12 @@
       },
       "defaults": {
         "model": "claude-opus-4-8",
-        "effort": "max"
+        "effort": "high"
       },
       "effortMap": {
-        "extra-high": "max",
-        "xhigh": "max",
-        "max": "max",
+        "extra-high": "high",
+        "xhigh": "high",
+        "max": "high",
         "high": "high",
         "medium": "medium",
         "low": "low"

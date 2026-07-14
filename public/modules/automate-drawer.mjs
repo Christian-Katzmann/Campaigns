@@ -15,7 +15,7 @@ import {
   isAutomateScheduled,
   state,
 } from './state.mjs';
-import { element, showToast } from './dom.mjs';
+import { element, relativeTime, showToast } from './dom.mjs';
 import { automateIndicator, formatAutomateUnitLabel, updateLibraryDots } from './library.mjs';
 import { awayBestFitHint, estimateAutomateWait, openAwayMode } from './away.mjs';
 import { playAudioFeedback } from './effects.mjs';
