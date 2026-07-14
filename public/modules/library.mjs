@@ -32,9 +32,12 @@ export async function renderLibrary() {
 
   let registry;
   try {
+    const automateRequest = state.capabilities.automate
+      ? fetch('/api/automate-state').catch(() => null)
+      : Promise.resolve(null);
     const [registryResponse, automateResponse] = await Promise.all([
       fetch('/api/registry'),
-      fetch('/api/automate-state').catch(() => null),
+      automateRequest,
     ]);
     if (!registryResponse.ok) throw new Error('Could not load campaign registry.');
     registry = await registryResponse.json();
@@ -62,7 +65,12 @@ export async function renderLibrary() {
   state.libraryCollections =
     registry.collections && typeof registry.collections === 'object' ? registry.collections : {};
   const campaigns = Array.isArray(registry.campaigns) ? registry.campaigns : [];
-  renderLibraryLessons(await fetchCampaignLessons());
+  if (state.capabilities.lessons) {
+    renderLibraryLessons(await fetchCampaignLessons());
+  } else if (elements.libraryLessons) {
+    elements.libraryLessons.hidden = true;
+    elements.libraryLessons.replaceChildren();
+  }
 
   if (campaigns.length === 0) {
     elements.libraryEmpty.hidden = false;

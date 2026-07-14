@@ -16,6 +16,12 @@ import { defaultPrefs } from '../lib/prefs.mjs';
 export const state = {
   activeStepId: null,
   baseHash: '',
+  capabilities: {
+    automate: false,
+    away: false,
+    companion: false,
+    lessons: false,
+  },
   dirty: false,
   editingCodeKey: null,
   editingValue: '',

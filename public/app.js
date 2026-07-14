@@ -24,6 +24,7 @@ const WORKFLOWS_V2_ASSET_VERSION = '2026-06-22-dedupe';
 initialize();
 
 async function initialize() {
+  await updatePersonalLayerAvailability();
   bindGlobalActions();
   state.libraryExpandedCollections = loadLibraryExpandedCollections();
 
@@ -139,6 +140,37 @@ async function updateWorkflowsAvailability() {
   return available;
 }
 
+async function updatePersonalLayerAvailability() {
+  let personalLayer = {};
+  try {
+    const response = await fetch('/api/capabilities');
+    if (response.ok) {
+      const payload = await response.json();
+      personalLayer = payload.personalLayer ?? {};
+    }
+  } catch {
+    // Optional integrations stay hidden when capability discovery is unavailable.
+  }
+
+  state.capabilities = {
+    automate: personalLayer.automate === true,
+    away: personalLayer.away === true,
+    companion: personalLayer.companion === true,
+    lessons: personalLayer.lessons === true,
+  };
+
+  if (elements.companionButton) {
+    elements.companionButton.hidden = !state.capabilities.companion;
+  }
+  const automateToggle = document.querySelector('#automate-drawer-toggle');
+  if (automateToggle) automateToggle.hidden = !state.capabilities.automate;
+  const awayAll = document.querySelector('#away-all-button');
+  if (awayAll) awayAll.hidden = !state.capabilities.away;
+  if (elements.libraryLessons && !state.capabilities.lessons) {
+    elements.libraryLessons.hidden = true;
+  }
+}
+
 function showLoadError(message) {
   state.serverBacked = false;
   state.markdown = '# Could not load file\n\nCheck the path and restart with `--file <path>`.';
@@ -170,7 +202,11 @@ function handleGlobalKeydown(event) {
     return;
   }
 
-  if ((event.metaKey || event.ctrlKey) && (event.key === '\\' || event.key === '/')) {
+  if (
+    state.capabilities.automate &&
+    (event.metaKey || event.ctrlKey) &&
+    (event.key === '\\' || event.key === '/')
+  ) {
     const target = event.target;
     const isTyping =
       target instanceof HTMLInputElement ||

@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { execFile } from 'node:child_process';
 import {
   abandonAutomateCampaign,
+  getAutomateProviderAvailability,
   getAutomateState,
   nudgeAutomateState,
   rerunAutomateFinalize,
@@ -182,6 +183,11 @@ const server = createServer(async (request, response) => {
 
     if (url.pathname === '/api/registry/icon' && request.method === 'GET') {
       await sendCampaignIcon(url, response);
+      return;
+    }
+
+    if (url.pathname === '/api/capabilities' && request.method === 'GET') {
+      await sendCapabilities(response);
       return;
     }
 
@@ -363,6 +369,22 @@ function defaultPortFilePath() {
 
 function defaultLessonsHelperPath() {
   return path.join(homedir(), '.claude', 'skills', 'campaign-planner', 'bin', 'read-past-campaigns.py');
+}
+
+async function sendCapabilities(response) {
+  const [automation, lessons] = await Promise.all([
+    getAutomateProviderAvailability(),
+    stat(lessonsHelperPath).then((info) => info.isFile()).catch(() => false),
+  ]);
+  sendJson(response, 200, {
+    personalLayer: {
+      automate: automation.available,
+      away: automation.available,
+      companion: automation.available,
+      lessons,
+    },
+    providers: automation.providers,
+  });
 }
 
 async function writeRuntimePort(actualPort) {
