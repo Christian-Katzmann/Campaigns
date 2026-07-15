@@ -145,11 +145,22 @@ test('runnerPaths plugin drives a fixture campaign without core runner configura
 
   const result = await runCampaign(fixture.campaignPath, fixture.options);
   const markdown = await readFile(fixture.campaignPath, 'utf8');
+  const events = (await readFile(result.eventsPath, 'utf8'))
+    .trim()
+    .split('\n')
+    .map((line) => JSON.parse(line));
+  const completed = events.find((event) => event.event === 'step_completed');
 
   assert.equal(result.state.config.runner, 'gemini');
   assert.equal(result.state.run.status, 'completed');
   assert.match(markdown, /- \[x\] Step 1\.1/);
   assert.equal(await readFile(path.join(fixture.repo, 'gemini-plugin-1.1.txt'), 'utf8'), '1.1\n');
+  assert.deepEqual(completed.details.usage, {
+    input_tokens: 120,
+    output_tokens: 30,
+    total_tokens: 150,
+    cost_usd: 0.0042,
+  });
 });
 
 test('final review defaults to another available family and uses that runner defaults', async (t) => {

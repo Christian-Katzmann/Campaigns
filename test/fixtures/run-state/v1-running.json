@@ -1,0 +1,91 @@
+{
+  "schema_version": 1,
+  "run": {
+    "id": "fixture-run-v1",
+    "status": "running",
+    "created_at": "2026-07-01T10:00:00.000Z",
+    "updated_at": "2026-07-01T10:00:01.000Z",
+    "started_at": "2026-07-01T10:00:01.000Z",
+    "ended_at": null,
+    "current_step_id": null,
+    "identity": {
+      "registry_id": null,
+      "source": {
+        "campaign_path": "/fixtures/repo/campaigns/legacy.md",
+        "repo_root": "/fixtures/repo"
+      },
+      "execution": {
+        "campaign_path": "/fixtures/repo/campaigns/legacy.md",
+        "repo_root": "/fixtures/repo",
+        "branch": "campaign/legacy"
+      }
+    }
+  },
+  "config": {
+    "runner": "claude",
+    "model": "legacy-model",
+    "effort": "high",
+    "watchdog": {
+      "minimum_runtime_ms": 60000,
+      "stall_window_ms": 30000
+    },
+    "max_fix_attempts": 2,
+    "force_merge_unreviewed": false
+  },
+  "cursor": {
+    "step_id": null,
+    "phase": null,
+    "attempt": 0
+  },
+  "steps": [
+    {
+      "id": "1.1",
+      "name": "Legacy step",
+      "phase": "1",
+      "status": "pending",
+      "attempt": 0,
+      "started_at": null,
+      "completed_at": null,
+      "receipt_path": null,
+      "failure": null
+    }
+  ],
+  "worker": null,
+  "review": {
+    "status": "not_started",
+    "attempts": 0,
+    "verdict": null,
+    "reasons": [],
+    "raw_tags": [],
+    "review_path": null
+  },
+  "blockers": [],
+  "recovery": null,
+  "artifacts": {
+    "run_dir": "/fixtures/runs/legacy",
+    "receipts_dir": "/fixtures/runs/legacy/receipts",
+    "final_review_path": "/fixtures/runs/legacy/final-review.md"
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "at": "2026-07-01T10:00:00.000Z",
+      "event": "run_created",
+      "from_status": null,
+      "to_status": "pending",
+      "step_id": null,
+      "message": "Run created.",
+      "details": {}
+    },
+    {
+      "sequence": 2,
+      "at": "2026-07-01T10:00:01.000Z",
+      "event": "run_started",
+      "from_status": "pending",
+      "to_status": "running",
+      "step_id": null,
+      "message": "Campaign run started.",
+      "details": {}
+    }
+  ]
+}

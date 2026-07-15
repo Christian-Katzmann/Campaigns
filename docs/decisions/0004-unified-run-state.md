@@ -35,6 +35,12 @@ Schema version 8 adds the configured reviewer snapshot plus the selected
 reviewer runner, family, and ladder tier. Version 7 ledgers migrate as
 same-family review because that was the only previous behavior.
 
+The current structural contract is published at
+`schema/run-state.schema.json`. All ledger readers use the same upgrade,
+validation, and atomic persistence path. A redacted `events.jsonl` beside the
+ledger projects `history` into the documented observability envelope without
+introducing a second state authority.
+
 The campaign markdown remains the progress source of truth. The run state is an
 execution ledger: it records attempts, worker activity, review/recovery state,
 and evidence paths without becoming a second campaign plan.

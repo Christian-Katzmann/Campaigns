@@ -95,6 +95,21 @@
             "field": "result"
           }
         ]
+      },
+      "usage": {
+        "sources": [
+          {
+            "kind": "jsonl",
+            "match": {
+              "type": "result"
+            },
+            "fields": {
+              "input_tokens": "usage.input_tokens",
+              "output_tokens": "usage.output_tokens",
+              "cost_usd": "total_cost_usd"
+            }
+          }
+        ]
       }
     },
     "codex": {
@@ -175,6 +190,20 @@
               "item.type": "agent_message"
             },
             "field": "item.text"
+          }
+        ]
+      },
+      "usage": {
+        "sources": [
+          {
+            "kind": "jsonl",
+            "match": {
+              "type": "turn.completed"
+            },
+            "fields": {
+              "input_tokens": "usage.input_tokens",
+              "output_tokens": "usage.output_tokens"
+            }
           }
         ]
       }

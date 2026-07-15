@@ -127,6 +127,44 @@ test('an explicit runner plugin is validated, family-tagged, and capability-read
   );
 });
 
+test('runner usage normalizes plugin spend and keeps missing metrics explicit', async () => {
+  const config = structuredClone(shippedConfig);
+  config.runnerPaths = [path.resolve('test/fixtures/runner-plugins/gemini')];
+  const registry = await loadConfiguredRunnerRegistry(config);
+  const marker = createRunnerCompletionMarker(registry, 'gemini', expected);
+  const spend = classifyRunnerResult(registry, 'gemini', {
+    exitCode: 0,
+    stdout: `${JSON.stringify({
+      type: 'usage',
+      metrics: { prompt: 120, completion: 30, cost: 0.0042 },
+    })}\n${marker}`,
+    expected,
+    receiptPath,
+  });
+  assert.deepEqual(spend.usage, {
+    input_tokens: 120,
+    output_tokens: 30,
+    total_tokens: 150,
+    cost_usd: 0.0042,
+  });
+  assert.deepEqual(spend.transition.details.usage, spend.usage);
+
+  const noSpendRegistry = createRunnerRegistry(fakeRunnerConfig());
+  const noSpendMarker = createRunnerCompletionMarker(noSpendRegistry, 'echo', expected);
+  const noSpend = classifyRunnerResult(noSpendRegistry, 'echo', {
+    exitCode: 0,
+    stdout: noSpendMarker,
+    expected,
+    receiptPath,
+  });
+  assert.deepEqual(noSpend.usage, {
+    input_tokens: null,
+    output_tokens: null,
+    total_tokens: null,
+    cost_usd: null,
+  });
+});
+
 test('malformed and colliding runner plugins warn, skip, and leave valid runners usable', async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), 'campaigns-runner-plugins-'));
   t.after(() => rm(root, { recursive: true, force: true }));

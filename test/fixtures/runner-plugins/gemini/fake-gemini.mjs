@@ -21,4 +21,7 @@ execFileSync('git', [
   '-m',
   `Complete ${stepId} with Gemini plugin`,
 ]);
-process.stdout.write(prompt);
+process.stdout.write(`${JSON.stringify({
+  type: 'usage',
+  metrics: { prompt: 120, completion: 30, cost: 0.0042 },
+})}\n${prompt}`);

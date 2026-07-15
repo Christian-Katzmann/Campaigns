@@ -36,6 +36,7 @@ The manifest is JSON with these fields:
 | `effortMap` | Required object mapping Campaigns effort aliases to CLI effort values. |
 | `environment.remove` | Required array of inherited environment variable names to remove. Other variables are inherited. |
 | `completion` | Required completion-marker and output-extraction contract described below. |
+| `usage` | Optional normalized token/cost extraction contract described below. |
 
 Argument templates support `{model}`, `{effort}`, `{prompt}`, `{repo}`, and
 `{output}`. A placeholder is resolved only when its argument is built. For
@@ -61,6 +62,15 @@ step.
 
 Every `match` key is a dotted path and every value is compared exactly. Multiple
 sources are checked in manifest order.
+
+## Usage contract
+
+`usage.sources` is optional. Each source reads one matching JSONL event and maps
+CLI-specific dotted paths onto `input_tokens`, `output_tokens`, `total_tokens`,
+and `cost_usd`. Token values must be non-negative integers; cost must be a
+non-negative number. When input and output are present, Campaigns derives a
+missing total. Every runner result event carries all four normalized fields,
+using explicit `null` values when the CLI or plugin does not report them.
 
 ## Complete Gemini example
 
@@ -109,6 +119,19 @@ campaigns-runner-gemini/
     },
     "sources": [
       { "kind": "jsonl", "match": {}, "field": "response" }
+    ]
+  },
+  "usage": {
+    "sources": [
+      {
+        "kind": "jsonl",
+        "match": { "type": "result" },
+        "fields": {
+          "input_tokens": "usage.input_tokens",
+          "output_tokens": "usage.output_tokens",
+          "cost_usd": "usage.cost_usd"
+        }
+      }
     ]
   }
 }
