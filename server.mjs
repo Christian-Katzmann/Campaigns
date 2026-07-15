@@ -13,6 +13,7 @@ import {
   getAutomateState,
   getEngineRunLedger,
   nudgeAutomateState,
+  resolveEngineLiveOutput,
   rerunAutomateFinalize,
 } from './lib/automate-providers.mjs';
 import {
@@ -26,6 +27,7 @@ import {
   statSpritesheet,
 } from './lib/companion-pets.mjs';
 import { httpError, readJsonBody, sendJson, sendStatic } from './lib/http.mjs';
+import { readLiveOutputSnapshot } from './lib/live-output.mjs';
 import { resolveCampaignConfig } from './lib/config.mjs';
 import { estimateCampaign } from './lib/estimate.mjs';
 import { hasUnifiedRunLedgers, loadUnifiedLessons, readUnifiedRunLedgers } from './lib/lessons.mjs';
@@ -260,6 +262,11 @@ const server = createServer(async (request, response) => {
 
     if (url.pathname === '/api/automate-state' && request.method === 'GET') {
       await sendAutomateState(url, response);
+      return;
+    }
+
+    if (url.pathname === '/api/run/live-output' && request.method === 'GET') {
+      await sendRunLiveOutput(url, request, response);
       return;
     }
 
@@ -2134,6 +2141,143 @@ async function sendAutomateState(url, response) {
     }),
   );
   sendJson(response, 200, states);
+}
+
+async function sendRunLiveOutput(url, request, response) {
+  if (!isLoopbackAddress(request.socket.remoteAddress)) {
+    sendJson(response, 403, { error: 'Live output is available on loopback only.' });
+    return;
+  }
+  const id = url.searchParams.get('id');
+  const stepId = url.searchParams.get('step');
+  const invocationId = url.searchParams.get('invocation');
+  if (!id || !stepId || !invocationId) {
+    sendJson(response, 400, { error: 'Expected id, step, and invocation.' });
+    return;
+  }
+
+  const registry = await readRegistry();
+  const entry = registry.campaigns.find((campaign) => campaign.id === id);
+  if (!entry) {
+    sendJson(response, 404, { error: 'Campaign not found.' });
+    return;
+  }
+  const live = await resolveEngineLiveOutput(entry.filePath, {
+    registryId: entry.id,
+    stepId,
+    invocationId,
+  });
+  if (!live) {
+    sendJson(response, 404, { error: 'Live output is not active for this worker.' });
+    return;
+  }
+
+  let initial;
+  try {
+    initial = await readLiveOutputSnapshot(live.path, {
+      runId: live.run_id,
+      stepId,
+      invocationId,
+    });
+  } catch (error) {
+    if (error.code === 'ENOENT') {
+      sendJson(response, 410, { error: 'Live output has ended.' });
+      return;
+    }
+    throw error;
+  }
+
+  response.writeHead(200, {
+    'content-type': 'text/event-stream; charset=utf-8',
+    'cache-control': 'no-cache, no-transform',
+    connection: 'keep-alive',
+    'x-accel-buffering': 'no',
+  });
+  response.flushHeaders?.();
+
+  const requestedCursor = url.searchParams.get('cursor') ?? request.headers['last-event-id'];
+  let cursor = /^\d+$/.test(String(requestedCursor ?? '')) ? Number(requestedCursor) : 0;
+  let lastHeartbeatAt = Date.now();
+  let timer = null;
+  let closed = false;
+  let backpressured = false;
+
+  const writeEvent = (event, data, eventId = null) => {
+    if (closed) return;
+    const frame = `${eventId == null ? '' : `id: ${eventId}\n`}event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+    backpressured = !response.write(frame);
+  };
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    if (timer) clearTimeout(timer);
+  };
+  const finish = (event, data) => {
+    writeEvent(event, data, cursor);
+    close();
+    response.end();
+  };
+  const sendSnapshot = (snapshot) => {
+    let offset = cursor - snapshot.start_cursor;
+    let event = 'chunk';
+    if (cursor < snapshot.start_cursor || cursor > snapshot.end_cursor) {
+      offset = 0;
+      event = 'reset';
+    }
+    if (cursor === snapshot.end_cursor) return;
+    const data = snapshot.data.subarray(Math.max(0, offset));
+    cursor = snapshot.end_cursor;
+    writeEvent(event, { text: data.toString('utf8'), cursor }, cursor);
+  };
+
+  writeEvent('ready', {
+    run_id: live.run_id,
+    step_id: stepId,
+    invocation_id: invocationId,
+    cursor: initial.end_cursor,
+  });
+  sendSnapshot(initial);
+
+  await new Promise((resolve) => {
+    response.once('close', () => {
+      close();
+      resolve();
+    });
+    response.on('drain', () => { backpressured = false; });
+
+    const poll = async () => {
+      if (closed) return;
+      try {
+        if (!backpressured) {
+          const snapshot = await readLiveOutputSnapshot(live.path, {
+            runId: live.run_id,
+            stepId,
+            invocationId,
+          });
+          sendSnapshot(snapshot);
+          if (Date.now() - lastHeartbeatAt >= 10_000) {
+            response.write(': keep-alive\n\n');
+            lastHeartbeatAt = Date.now();
+          }
+        }
+      } catch (error) {
+        if (error.code === 'ENOENT') finish('end', { cursor });
+        else finish('error', { message: 'Live output transport failed.' });
+        resolve();
+        return;
+      }
+      timer = setTimeout(poll, 100);
+      timer.unref?.();
+    };
+    timer = setTimeout(poll, 100);
+    timer.unref?.();
+  });
+}
+
+function isLoopbackAddress(address) {
+  return address === '::1'
+    || address === '127.0.0.1'
+    || String(address ?? '').startsWith('::ffff:127.');
 }
 
 /* ------------------------------ API: companion state ------------------------ */

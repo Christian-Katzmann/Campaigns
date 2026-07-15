@@ -4865,7 +4865,71 @@ h3.drawer-section-title {
   margin: 0;
 }
 
-/* Log tail */
+/* Live runner output */
+.drawer-live-output {
+  margin-bottom: 18px;
+}
+
+.drawer-live-output > summary {
+  list-style: none;
+}
+
+.drawer-live-output > summary::-webkit-details-marker {
+  display: none;
+}
+
+.drawer-live-output-tabs {
+  display: flex;
+  gap: 4px;
+  margin: 0 0 6px;
+  overflow-x: auto;
+}
+
+.drawer-live-output-tab {
+  padding: 4px 8px;
+  border: 1px solid var(--line-soft);
+  border-radius: 6px;
+  background: var(--paper);
+  color: var(--ink-faint);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.drawer-live-output-tab.is-active {
+  border-color: var(--accent);
+  color: var(--ink);
+}
+
+.drawer-live-output-status {
+  margin: 0 0 6px;
+  color: var(--ink-faint);
+  font-size: 11px;
+}
+
+.drawer-live-output-container {
+  position: relative;
+  max-height: 320px;
+  overflow-y: auto;
+  background: var(--paper);
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+}
+
+.drawer-live-output-pre {
+  min-height: 48px;
+  margin: 0;
+  padding: 12px;
+  color: var(--ink);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--font-mono, ui-monospace, 'SF Mono', SFMono-Regular, Menlo, monospace);
+}
+
+/* Persisted redacted log fallback for legacy runners. */
 .drawer-log-tail {
   margin-bottom: 12px;
 }

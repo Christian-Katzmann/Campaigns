@@ -26,10 +26,16 @@ import {
 } from './estimate-ui.mjs';
 
 const DRAWER_WIDTH_KEY = 'campaigns-drawer-width:v1';
+const LIVE_OUTPUT_CLIENT_MAX_CHARS = 64 * 1024;
 
 const drawerState = {
   open: false,
   width: 420,
+};
+
+const liveOutputState = {
+  selectedKey: null,
+  streams: new Map(),
 };
 
 export function initAutomateDrawer() {
@@ -213,6 +219,7 @@ export function handleAutomateVisibility() {
     automateState.libraryTimer = null;
     automateState.campaignTimer = null;
     automateState.elapsedTimer = null;
+    closeLiveOutputStreams();
   } else {
     startAutomatePolling();
   }
@@ -237,6 +244,7 @@ export async function fetchCampaignAutomateState() {
     const prev = automateState.current;
     const next = await response.json();
     automateState.current = next;
+    syncLiveOutputStreams(next);
 
     const prevStatus = automateDisplayStatus(prev);
     const nextStatus = automateDisplayStatus(next);
@@ -456,15 +464,196 @@ export function renderDrawerBody(data) {
     children.push(renderDrawerCurrentStep(data));
   }
 
+  const liveOutput = renderDrawerLiveOutput(data);
+  if (liveOutput) children.push(liveOutput);
+
   children.push(renderDrawerTimeline(data));
   children.push(renderDrawerReceipts(data, isCompleted));
 
   // Raw log: collapsed by default — debugging fallback, not primary signal.
-  if (!isCompleted && isActive && data.current_step_log != null) {
+  if (!isCompleted && isActive && !liveOutput && data.current_step_log != null) {
     children.push(renderDrawerLogTail(data));
   }
 
   body.replaceChildren(...children);
+}
+
+export function syncLiveOutputStreams(data) {
+  const descriptors = Array.isArray(data?.live_outputs) ? data.live_outputs : [];
+  const activeKeys = new Set(descriptors.map(liveOutputKey));
+  for (const [key, stream] of liveOutputState.streams) {
+    if (activeKeys.has(key)) continue;
+    stream.source?.close();
+    liveOutputState.streams.delete(key);
+  }
+  if (!activeKeys.has(liveOutputState.selectedKey)) {
+    liveOutputState.selectedKey = activeKeys.values().next().value ?? null;
+  }
+
+  for (const descriptor of descriptors) {
+    const key = liveOutputKey(descriptor);
+    if (liveOutputState.streams.has(key)) continue;
+    const stream = {
+      descriptor,
+      source: null,
+      text: '',
+      cursor: 0,
+      paused: false,
+      hadOutput: false,
+      status: 'Connecting…',
+      errors: 0,
+    };
+    liveOutputState.streams.set(key, stream);
+    if (typeof EventSource !== 'function') {
+      stream.status = 'Live output is unavailable in this browser.';
+      continue;
+    }
+    const source = new EventSource(descriptor.url);
+    stream.source = source;
+    source.addEventListener('ready', () => {
+      stream.errors = 0;
+      stream.status = stream.hadOutput ? 'Live' : 'No live output for this runner yet.';
+      updateLiveOutputDom(key);
+    });
+    source.addEventListener('chunk', (event) => applyLiveOutputEvent(key, event, false));
+    source.addEventListener('reset', (event) => applyLiveOutputEvent(key, event, true));
+    source.addEventListener('end', () => {
+      source.close();
+      stream.status = stream.hadOutput
+        ? 'Step finished. Loading redacted receipt…'
+        : 'No live output for this runner.';
+      updateLiveOutputDom(key);
+      window.setTimeout(fetchCampaignAutomateState, 250);
+    });
+    source.addEventListener('error', () => {
+      stream.errors += 1;
+      stream.status = 'Reconnecting…';
+      if (stream.errors >= 3) {
+        source.close();
+        stream.status = stream.hadOutput
+          ? 'Live output ended. Loading redacted receipt…'
+          : 'No live output for this runner.';
+        window.setTimeout(fetchCampaignAutomateState, 250);
+      }
+      updateLiveOutputDom(key);
+    });
+  }
+}
+
+function applyLiveOutputEvent(key, event, reset) {
+  const stream = liveOutputState.streams.get(key);
+  if (!stream) return;
+  let payload;
+  try {
+    payload = JSON.parse(event.data);
+  } catch {
+    return;
+  }
+  const incoming = typeof payload.text === 'string' ? payload.text : '';
+  stream.text = reset ? incoming : `${stream.text}${incoming}`;
+  if (stream.text.length > LIVE_OUTPUT_CLIENT_MAX_CHARS) {
+    stream.text = stream.text.slice(-LIVE_OUTPUT_CLIENT_MAX_CHARS);
+  }
+  stream.cursor = Number.isSafeInteger(payload.cursor) ? payload.cursor : stream.cursor;
+  stream.hadOutput ||= incoming.length > 0;
+  stream.status = stream.hadOutput ? 'Live' : 'No live output for this runner yet.';
+  updateLiveOutputDom(key);
+}
+
+function closeLiveOutputStreams() {
+  for (const stream of liveOutputState.streams.values()) stream.source?.close();
+  liveOutputState.streams.clear();
+  liveOutputState.selectedKey = null;
+}
+
+function liveOutputKey(descriptor) {
+  return `${descriptor.step_id}:${descriptor.invocation_id}`;
+}
+
+export function renderDrawerLiveOutput(data) {
+  const descriptors = Array.isArray(data?.live_outputs) ? data.live_outputs : [];
+  if (!isAutomateRunning(data) || descriptors.length === 0) return null;
+  const keys = descriptors.map(liveOutputKey);
+  if (!keys.includes(liveOutputState.selectedKey)) liveOutputState.selectedKey = keys[0];
+  const selectedKey = liveOutputState.selectedKey;
+  const selectedDescriptor = descriptors.find((descriptor) => liveOutputKey(descriptor) === selectedKey);
+  const selected = liveOutputState.streams.get(selectedKey) ?? {
+    descriptor: selectedDescriptor,
+    text: '',
+    paused: false,
+    status: 'Connecting…',
+  };
+
+  const wrapper = element('details', { className: 'drawer-live-output' });
+  wrapper.open = true;
+  wrapper.dataset.liveOutputKey = selectedKey;
+  wrapper.append(element('summary', { className: 'drawer-section-title', text: 'Live output' }));
+
+  const tabs = element('div', { className: 'drawer-live-output-tabs' });
+  tabs.setAttribute('role', 'tablist');
+  for (const descriptor of descriptors) {
+    const key = liveOutputKey(descriptor);
+    const tab = element('button', {
+      className: `drawer-live-output-tab${key === selectedKey ? ' is-active' : ''}`,
+      text: `Step ${descriptor.step_id}`,
+      type: 'button',
+    });
+    tab.setAttribute('role', 'tab');
+    tab.setAttribute('aria-selected', String(key === selectedKey));
+    tab.title = descriptor.runner || '';
+    tab.addEventListener('click', () => {
+      liveOutputState.selectedKey = key;
+      renderDrawerBody(automateState.current);
+    });
+    tabs.append(tab);
+  }
+  wrapper.append(tabs);
+
+  const status = element('p', { className: 'drawer-live-output-status', text: selected.status });
+  const container = element('div', { className: 'drawer-live-output-container' });
+  const pre = element('pre', { className: 'drawer-live-output-pre', text: selected.text });
+  const rejoin = element('button', {
+    className: 'drawer-log-rejoin drawer-live-output-rejoin',
+    text: '↓ new',
+    type: 'button',
+    hidden: !selected.paused,
+  });
+  rejoin.hidden = !selected.paused;
+  rejoin.addEventListener('click', () => {
+    selected.paused = false;
+    container.scrollTop = container.scrollHeight;
+    rejoin.hidden = true;
+  });
+  container.addEventListener('scroll', () => {
+    const atBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 30;
+    selected.paused = !atBottom;
+    if (atBottom) rejoin.hidden = true;
+  });
+  container.append(pre, rejoin);
+  wrapper.append(status, container);
+  requestAnimationFrame(() => {
+    if (!selected.paused) container.scrollTop = container.scrollHeight;
+  });
+  return wrapper;
+}
+
+function updateLiveOutputDom(key) {
+  const wrapper = document.querySelector('.drawer-live-output');
+  if (!wrapper || wrapper.dataset.liveOutputKey !== key) return;
+  const stream = liveOutputState.streams.get(key);
+  if (!stream) return;
+  const pre = wrapper.querySelector('.drawer-live-output-pre');
+  const status = wrapper.querySelector('.drawer-live-output-status');
+  const container = wrapper.querySelector('.drawer-live-output-container');
+  const rejoin = wrapper.querySelector('.drawer-live-output-rejoin');
+  if (pre) pre.textContent = stream.text;
+  if (status) status.textContent = stream.status;
+  if (!container) return;
+  if (!stream.paused) {
+    requestAnimationFrame(() => { container.scrollTop = container.scrollHeight; });
+  } else if (rejoin) {
+    rejoin.hidden = false;
+  }
 }
 
 export function renderDrawerNow(data) {

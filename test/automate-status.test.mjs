@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
@@ -14,6 +14,7 @@ import {
   findEngineStatePath,
   findCodexStatePath,
   getAutomateState,
+  resolveEngineLiveOutput,
 } from '../lib/automate-providers.mjs';
 import { createRunState, transitionRunState } from '../lib/run-state.mjs';
 
@@ -450,8 +451,14 @@ Second prompt.
 `, 'utf8');
   const logOne = path.join(runDir, '1.1.log');
   const logTwo = path.join(runDir, '1.2.log');
+  const liveDir = path.join(runDir, 'live-output');
+  const liveOne = path.join(liveDir, 'parallel-1.json');
+  const liveTwo = path.join(liveDir, 'parallel-2.json');
+  await mkdir(liveDir, { recursive: true });
   await writeFile(logOne, 'first worker log\n', 'utf8');
   await writeFile(logTwo, 'second worker log\n', 'utf8');
+  await writeFile(liveOne, '{}\n', 'utf8');
+  await writeFile(liveTwo, '{}\n', 'utf8');
 
   let state = createRunState({
     id: 'parallel-run',
@@ -476,12 +483,24 @@ Second prompt.
   state = transitionRunState(state, {
     event: 'step_started',
     step_id: '1.1',
-    worker: { runner: 'claude', invocation_id: 'parallel-1', pid: null, log_path: logOne },
+    worker: {
+      runner: 'claude',
+      invocation_id: 'parallel-1',
+      pid: null,
+      log_path: logOne,
+      live_output_path: liveOne,
+    },
   });
   state = transitionRunState(state, {
     event: 'step_started',
     step_id: '1.2',
-    worker: { runner: 'claude', invocation_id: 'parallel-2', pid: null, log_path: logTwo },
+    worker: {
+      runner: 'claude',
+      invocation_id: 'parallel-2',
+      pid: null,
+      log_path: logTwo,
+      live_output_path: liveTwo,
+    },
   });
   await writeFile(path.join(runDir, 'state.json'), `${JSON.stringify(state, null, 2)}\n`, 'utf8');
   await writeFile(path.join(runDir, 'run.lock'), `${JSON.stringify({ pid: process.pid })}\n`, 'utf8');
@@ -492,4 +511,16 @@ Second prompt.
   assert.match(providerState.current_step_logs['1.1'], /first worker log/);
   assert.match(providerState.current_step_logs['1.2'], /second worker log/);
   assert.match(providerState.current_step_log, /Step 1\.1 — First[\s\S]*Step 1\.2 — Second/);
+  assert.deepEqual(providerState.live_outputs.map((output) => output.step_id), ['1.1', '1.2']);
+  assert.notEqual(providerState.live_outputs[0].url, providerState.live_outputs[1].url);
+  assert.doesNotMatch(JSON.stringify(providerState), /live-output\/parallel/);
+  assert.equal(
+    (await resolveEngineLiveOutput(campaignPath, {
+      registryId: 'parallel-registry',
+      stepId: '1.2',
+      invocationId: 'parallel-2',
+      runsDir,
+    })).path,
+    await realpath(liveTwo),
+  );
 });

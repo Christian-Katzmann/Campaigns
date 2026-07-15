@@ -59,6 +59,7 @@ function worker(id = `worker-${clock}`) {
     invocation_id: id,
     pid: 1234,
     log_path: `/state/runs/a/${id}.log`,
+    live_output_path: `/state/runs/a/live-output/${id}.json`,
   };
 }
 
@@ -165,6 +166,18 @@ test('completed steps retain the actual runner, model, and effort', () => {
     (({ runner, model, effort }) => ({ runner, model, effort }))(state.steps[0]),
     { runner: 'codex', model: 'gpt-5.6-sol', effort: 'xhigh' },
   );
+  assertValidRunState(state);
+});
+
+test('active worker metadata carries only the ephemeral live transport path', () => {
+  let state = move(stateWithSteps(), 'run_started');
+  state = move(state, 'step_started', { step_id: '1.1', worker: worker('live-worker') });
+  assert.equal(
+    state.workers[0].live_output_path,
+    '/state/runs/a/live-output/live-worker.json',
+  );
+  assert.equal(state.worker.live_output_path, state.workers[0].live_output_path);
+  assert.doesNotMatch(JSON.stringify(state.workers[0]), /raw-secret|data_base64/);
   assertValidRunState(state);
 });
 
