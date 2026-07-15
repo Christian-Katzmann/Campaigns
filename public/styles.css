@@ -4434,13 +4434,15 @@ body.theme-signal {
 
 .drawer-status-pill--awaiting_human_review,
 .drawer-status-pill--cap_reached,
-.drawer-status-pill--stopped_by_user {
+.drawer-status-pill--stopped_by_user,
+.drawer-status-pill--rollback_conflict {
   background: var(--danger-wash);
   color: var(--danger);
 }
 .drawer-status-pill--awaiting_human_review .automate-indicator,
 .drawer-status-pill--cap_reached .automate-indicator,
-.drawer-status-pill--stopped_by_user .automate-indicator { color: var(--danger); }
+.drawer-status-pill--stopped_by_user .automate-indicator,
+.drawer-status-pill--rollback_conflict .automate-indicator { color: var(--danger); }
 
 /* Current step block — legacy fallback (drawer-now subsumes this for
    campaigns with parsed live_activity). */
@@ -4863,6 +4865,44 @@ h3.drawer-section-title {
   color: var(--ink-faint);
   border-top: 1px solid var(--line-soft);
   margin: 0;
+}
+
+.drawer-step-rollback {
+  display: flex;
+  justify-content: flex-end;
+  padding: 0 14px 12px;
+}
+
+.drawer-step-rollback-button {
+  font-size: 12px;
+}
+
+.drawer-rollback-confirm {
+  border-color: color-mix(in srgb, var(--danger) 35%, var(--line));
+}
+
+.drawer-rollback-hold {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+}
+
+.drawer-rollback-hold::before {
+  position: absolute;
+  z-index: -1;
+  inset: 0;
+  background: color-mix(in srgb, var(--danger) 24%, transparent);
+  content: '';
+  transform: scaleX(0);
+  transform-origin: left;
+}
+
+.drawer-rollback-hold.is-holding::before {
+  animation: drawer-rollback-hold 1.2s linear forwards;
+}
+
+@keyframes drawer-rollback-hold {
+  to { transform: scaleX(1); }
 }
 
 .drawer-step-diff {

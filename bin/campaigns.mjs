@@ -15,6 +15,7 @@ import {
 import { formatConfigDoctor, resolveCampaignConfig } from '../lib/config.mjs';
 import { loadUnifiedLessons } from '../lib/lessons.mjs';
 import { RecoveryError, recoverCampaign } from '../lib/recovery.mjs';
+import { RollbackError, rollbackCampaign } from '../lib/rollback.mjs';
 import {
   analyzePlanHealth,
   resolveAvoidAboveSteps,
@@ -24,6 +25,7 @@ const HELP = `Usage:
   campaigns [--no-open] [--port <number>]
   campaigns run <campaign.md> [options]
   campaigns recover <campaign.md> [options]
+  campaigns rollback <campaign.md> --to <step> [options]
   campaigns stop <campaign.md> [options]
   campaigns lint <campaign.md> [--state-dir <path>]
   campaigns config doctor [campaign.md] [options]
@@ -47,6 +49,7 @@ Options:
   --max-run-minutes <minutes>
                          Stop when the total run-time cap is reached
   --stop-grace-ms <ms>  Grace period before terminating the worker group
+  --to <step>            Keep work through this step and rewind everything after it
   --max-parallel-steps <count>
                          Concurrent same-phase step workers (default 2)
   --force-merge-unreviewed
@@ -73,7 +76,7 @@ async function main(argv) {
   if (argv[0] === 'config') return runConfigCommand(argv.slice(1));
   if (argv[0] === 'lint') return runLintCommand(argv.slice(1));
   const [command, campaignFile, ...rest] = argv;
-  if (!['run', 'recover', 'stop'].includes(command) || !campaignFile) {
+  if (!['run', 'recover', 'rollback', 'stop'].includes(command) || !campaignFile) {
     process.stderr.write(HELP);
     return 2;
   }
@@ -103,6 +106,16 @@ async function main(argv) {
     } catch (error) {
       process.stderr.write(`campaigns: ${error.message}\n`);
       return error instanceof CampaignStopError ? 2 : 1;
+    }
+  }
+  if (command === 'rollback') {
+    try {
+      const result = await rollbackCampaign(campaignFile, options);
+      process.stdout.write(`${result.message}\nReceipt: ${result.receiptPath}\nState: ${result.statePath}\n`);
+      return 0;
+    } catch (error) {
+      process.stderr.write(`campaigns: ${error.message}\n`);
+      return error instanceof RollbackError ? 2 : 1;
     }
   }
 
@@ -258,6 +271,8 @@ function parseOptions(args, command) {
   ];
   const names = new Map(command === 'recover'
     ? [['--state-dir', 'runsDir']]
+    : command === 'rollback'
+      ? [['--state-dir', 'runsDir'], ['--to', 'to']]
     : command === 'stop'
       ? [['--state-dir', 'runsDir'], ['--stop-grace-ms', 'stopGraceMs']]
       : runNames);

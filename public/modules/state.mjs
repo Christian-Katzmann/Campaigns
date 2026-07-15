@@ -118,6 +118,7 @@ export const AUTOMATE_ATTENTION_STATUSES = new Set([
   'awaiting_human_review',
   'cap_reached',
   'stopped_by_user',
+  'rollback_conflict',
 ]);
 export const AUTOMATE_SCHEDULED_STATUSES = new Set(['queued', 'scheduled']);
 

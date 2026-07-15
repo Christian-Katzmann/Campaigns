@@ -42,6 +42,7 @@ import {
   runCampaign,
 } from './lib/pump.mjs';
 import { RecoveryError, recoverCampaign } from './lib/recovery.mjs';
+import { RollbackError, rollbackCampaign } from './lib/rollback.mjs';
 import { createRunnerRegistry, loadRunnerRegistry, runnerCapabilities } from './lib/runners.mjs';
 import {
   normalizeRegistryCollections,
@@ -120,6 +121,7 @@ const COMPANION_STATUS_BY_SOURCE = {
   halted: 'halted',
   abandoned: 'halted',
   stopped_by_user: 'halted',
+  rollback_conflict: 'stalled',
   failed: 'failed',
   completed: 'completed',
   complete: 'completed',
@@ -311,6 +313,11 @@ const server = createServer(async (request, response) => {
 
     if (url.pathname === '/api/run/recover' && request.method === 'POST') {
       await handleRunRecover(request, response);
+      return;
+    }
+
+    if (url.pathname === '/api/run/rollback' && request.method === 'POST') {
+      await handleRunRollback(request, response);
       return;
     }
 
@@ -2747,6 +2754,43 @@ async function handleRunRecover(request, response) {
     });
   } catch (error) {
     if (error instanceof RecoveryError) {
+      sendJson(response, 409, { ok: false, error: error.message });
+      return;
+    }
+    throw error;
+  }
+}
+
+async function handleRunRollback(request, response) {
+  const payload = await readJsonBody(request);
+  if (typeof payload.id !== 'string' || typeof payload.to !== 'string') {
+    sendJson(response, 400, { error: 'Expected { id: string, to: string }.' });
+    return;
+  }
+
+  const registry = await readRegistry();
+  const entry = registry.campaigns.find((campaign) => campaign.id === payload.id);
+  if (!entry) {
+    sendJson(response, 404, { error: 'Campaign not found.' });
+    return;
+  }
+  if (activeCampaignRuns.has(entry.id)) {
+    sendJson(response, 409, { ok: false, error: 'This campaign is still running. Stop it before rolling back.' });
+    return;
+  }
+
+  try {
+    const result = await rollbackCampaign(entry.filePath, { to: payload.to });
+    sendJson(response, 200, {
+      ok: true,
+      message: result.message,
+      to: result.to,
+      boundary: result.boundary,
+      reset_steps: result.resetSteps,
+      receipt_path: result.receiptPath,
+    });
+  } catch (error) {
+    if (error instanceof RollbackError) {
       sendJson(response, 409, { ok: false, error: error.message });
       return;
     }

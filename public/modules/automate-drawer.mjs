@@ -27,6 +27,7 @@ import {
 
 const DRAWER_WIDTH_KEY = 'campaigns-drawer-width:v1';
 const LIVE_OUTPUT_CLIENT_MAX_CHARS = 64 * 1024;
+const ROLLBACK_HOLD_MS = 1_200;
 
 const drawerState = {
   open: false,
@@ -343,6 +344,7 @@ export function renderAutomateStatusContent(el, data) {
     awaiting_human_review: 'Awaiting review',
     cap_reached: 'Cap reached',
     stopped_by_user: 'Stopped by user',
+    rollback_conflict: 'Rollback needs attention',
   }[displayStatus];
 
   const text = prefix ? `${prefix} · ${unitLabel}` : elapsed ? `${unitLabel} · ${elapsed}` : unitLabel;
@@ -785,6 +787,7 @@ export function renderDrawerStatusPill(data) {
     awaiting_human_review: 'Awaiting review',
     cap_reached: 'Cap reached',
     stopped_by_user: 'Stopped by user',
+    rollback_conflict: 'Rollback needs attention',
   }[status] ?? status;
   const pill = element('div', { className: `drawer-status-pill drawer-status-pill--${status}` });
   pill.append(
@@ -1332,10 +1335,122 @@ export function renderDrawerReceipts(data, isCompleted) {
 
     if (step.diff_url) details.append(renderStepDiffExpander(step));
 
+    const rollbackTarget = data.rollback?.available
+      ? data.rollback.targets?.find((target) => target.step_id === step.id)
+      : null;
+    if (rollbackTarget) details.append(renderStepRollbackAction(data, step, rollbackTarget));
+
     wrapper.append(details);
   }
 
   return wrapper;
+}
+
+export function renderStepRollbackAction(data, step, target) {
+  const action = element('div', { className: 'drawer-step-rollback' });
+  const button = element('button', {
+    className: 'button button-danger drawer-step-rollback-button',
+    type: 'button',
+    text: 'Rollback to here',
+  });
+  button.addEventListener?.('click', () => showRollbackConfirmModal(data, step, target));
+  action.append(button);
+  return action;
+}
+
+export function showRollbackConfirmModal(data, step, target) {
+  document.getElementById('nudge-confirm-modal')?.remove();
+  const overlay = element('div', { className: 'nudge-confirm-modal', id: 'nudge-confirm-modal' });
+  const card = element('div', { className: 'nudge-confirm-card drawer-rollback-confirm' });
+  const boundary = target.boundary_step_id;
+  const parallelNote = target.includes_parallel_group
+    ? ` Step ${step.id} belongs to a parallel group, so the whole group through Step ${boundary} stays.`
+    : '';
+  card.append(
+    element('h3', { className: 'nudge-confirm-title', text: `Rollback to Step ${step.id}` }),
+    element('p', {
+      className: 'nudge-confirm-desc',
+      text: `This reverts ${target.reset_steps.map((id) => `Step ${id}`).join(', ')}, unchecks them, and resumes after Step ${boundary}.${parallelNote}`,
+    }),
+  );
+
+  const footer = element('div', { className: 'nudge-confirm-footer' });
+  const cancel = element('button', { className: 'button', type: 'button', text: 'Cancel' });
+  const hold = element('button', {
+    className: 'button button-danger drawer-rollback-hold',
+    type: 'button',
+    text: 'Hold to rollback',
+  });
+  let timer = null;
+  let completed = false;
+
+  const cancelHold = () => {
+    if (completed) return;
+    clearTimeout(timer);
+    timer = null;
+    hold.classList.remove('is-holding');
+  };
+  const confirm = async () => {
+    if (completed) return;
+    completed = true;
+    clearTimeout(timer);
+    hold.classList.remove('is-holding');
+    hold.disabled = true;
+    cancel.disabled = true;
+    hold.textContent = 'Rolling back…';
+    const result = await executeRollback(state.id, step.id);
+    overlay.remove();
+    if (result.ok) {
+      showToast(result.message || `Rolled back to Step ${boundary}.`);
+      playAudioFeedback('tick');
+      await fetchCampaignAutomateState();
+    } else {
+      showToast(result.error || result.message || 'Rollback failed.');
+    }
+  };
+  const beginHold = (event) => {
+    if (completed || hold.disabled || timer) return;
+    event.preventDefault();
+    hold.classList.add('is-holding');
+    timer = window.setTimeout(confirm, ROLLBACK_HOLD_MS);
+  };
+
+  cancel.addEventListener('click', () => overlay.remove());
+  hold.addEventListener('pointerdown', beginHold);
+  hold.addEventListener('pointerup', cancelHold);
+  hold.addEventListener('pointercancel', cancelHold);
+  hold.addEventListener('pointerleave', cancelHold);
+  hold.addEventListener('keydown', (event) => {
+    if (event.key === ' ' || event.key === 'Enter') beginHold(event);
+  });
+  hold.addEventListener('keyup', (event) => {
+    if (event.key === ' ' || event.key === 'Enter') cancelHold();
+  });
+  hold.addEventListener('blur', cancelHold);
+  footer.append(cancel, hold);
+  card.append(footer);
+  overlay.append(card);
+  overlay.addEventListener('click', (event) => {
+    if (event.target === overlay) overlay.remove();
+  });
+  overlay.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') overlay.remove();
+  });
+  document.body.append(overlay);
+  hold.focus();
+}
+
+export async function executeRollback(id, to) {
+  try {
+    const response = await fetch('/api/run/rollback', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id, to }),
+    });
+    return await response.json();
+  } catch (error) {
+    return { ok: false, error: error.message };
+  }
 }
 
 export function renderStepDiffExpander(step) {

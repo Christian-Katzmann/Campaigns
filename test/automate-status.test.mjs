@@ -418,6 +418,13 @@ Second prompt.
     head_oid: '2'.repeat(40),
   });
   assert.deepEqual(providerState.review.findings, []);
+  assert.equal(providerState.rollback.available, true);
+  assert.deepEqual(providerState.rollback.targets, [{
+    step_id: '1.1',
+    boundary_step_id: '1.1',
+    reset_steps: ['1.2'],
+    includes_parallel_group: false,
+  }]);
   assert.equal(providerState.timeline_events.at(-1).event, 'run_reached_final_review');
 });
 

@@ -117,6 +117,7 @@ test('rendered board status DOM exposes attention for human review, caps, and st
       awaiting_human_review: 'Awaiting review',
       cap_reached: 'Cap reached',
       stopped_by_user: 'Stopped by user',
+      rollback_conflict: 'Rollback needs attention',
     };
 
     for (const [status, label] of Object.entries(expectedLabels)) {
@@ -144,9 +145,19 @@ test('rendered board status DOM exposes attention for human review, caps, and st
         receipt: '# Complete',
         diff_url: '/api/run/step-diff?id=campaign-a&step=1.2',
       }],
+      rollback: {
+        available: true,
+        targets: [{
+          step_id: '1.2',
+          boundary_step_id: '1.2',
+          reset_steps: ['1.3'],
+          includes_parallel_group: false,
+        }],
+      },
     }, true);
     assert.match(receipts.outerHTML, /drawer-step-diff/);
     assert.match(receipts.outerHTML, />Diff<\/summary>/);
+    assert.match(receipts.outerHTML, />Rollback to here<\/button>/);
   } finally {
     globalThis.document = originalDocument;
   }

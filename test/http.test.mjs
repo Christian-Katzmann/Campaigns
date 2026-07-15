@@ -741,6 +741,26 @@ Review the diff fixture.
   assert.equal(binary.kind, 'summary');
   assert.equal(binary.reason, 'binary');
   assert.doesNotMatch(binary.html, /step-diff-reason--linked/);
+
+  state = transitionRunState(state, {
+    event: 'final_review_halted',
+    verdict: 'NEEDS WORK',
+    reasons: ['operator rollback'],
+    review_path: paths.finalReviewPath,
+  });
+  await writeFile(paths.statePath, `${JSON.stringify(state, null, 2)}\n`, 'utf8');
+  const rollbackResponse = await fetch(`${baseUrl}/api/run/rollback`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ id: registered.id, to: '1.1' }),
+  });
+  const rollback = await rollbackResponse.json();
+  assert.equal(rollbackResponse.status, 200);
+  assert.equal(rollback.ok, true);
+  assert.equal(rollback.boundary, '1.1');
+  assert.deepEqual(rollback.reset_steps, ['1.2', '1.3']);
+  await assert.rejects(access(path.join(repo, 'huge.txt')), { code: 'ENOENT' });
+  await assert.rejects(access(path.join(repo, 'blob.bin')), { code: 'ENOENT' });
 });
 
 function hash(markdown) {
