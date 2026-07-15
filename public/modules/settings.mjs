@@ -7,6 +7,7 @@ import { state } from './state.mjs';
 import { showToast, trapDialogFocus } from './dom.mjs';
 import { applyTheme, NTFY_TOPIC_REGEX, postRemoteNotification } from './effects.mjs';
 import { buildFeatureRequestUrl } from '../lib/feature-request.mjs';
+import { deviceOnboardingPresentation } from '../lib/device-onboarding.mjs';
 import { normalizeTheme } from '../lib/prefs.mjs';
 import { savePrefs } from './prefs-store.mjs';
 
@@ -112,6 +113,15 @@ export function initSettings(appInfo) {
   const quietHoursStart = document.querySelector('#quiet-hours-start');
   const quietHoursEnd = document.querySelector('#quiet-hours-end');
   const pageAlwaysInputs = [...document.querySelectorAll('[data-page-always]')];
+  const deviceOnboardingButton = document.querySelector('#device-onboarding-button');
+  const deviceOnboardingHint = document.querySelector('#device-onboarding-hint');
+  const deviceOnboardingJob = document.querySelector('#device-onboarding-job');
+  const deviceOnboardingStatus = document.querySelector('#device-onboarding-status');
+  const deviceOnboardingCancel = document.querySelector('#device-onboarding-cancel');
+  const deviceOnboardingCheckpoint = document.querySelector('#device-onboarding-checkpoint');
+  const deviceOnboardingUrl = document.querySelector('#device-onboarding-url');
+  const deviceOnboardingQr = document.querySelector('#device-onboarding-qr');
+  const deviceOnboardingLog = document.querySelector('#device-onboarding-log');
   const featureRequestLink = document.querySelector('#feature-request-link');
 
   if (!settingsBtn || !drawer) return;
@@ -120,6 +130,100 @@ export function initSettings(appInfo) {
     featureRequestLink.href = buildFeatureRequestUrl(appInfo);
     featureRequestLink.hidden = false;
   }
+
+  const onboardingCapability = state.capabilities.deviceOnboarding;
+  const onboardingPresentation = deviceOnboardingPresentation(onboardingCapability);
+  if (deviceOnboardingButton) deviceOnboardingButton.hidden = onboardingPresentation.buttonHidden;
+  if (deviceOnboardingHint) {
+    deviceOnboardingHint.textContent = onboardingPresentation.hint;
+    deviceOnboardingHint.hidden = onboardingPresentation.hintHidden;
+  }
+
+  let onboardingJobId = '';
+  let onboardingPollTimer = null;
+  const onboardingTerminal = new Set(['completed', 'manual_checkpoint', 'cancelled', 'failed']);
+  const renderOnboardingJob = (job) => {
+    if (!job || !deviceOnboardingJob) return;
+    onboardingJobId = job.id || onboardingJobId;
+    deviceOnboardingJob.hidden = false;
+    if (deviceOnboardingStatus) deviceOnboardingStatus.textContent = onboardingStatusLabel(job.status);
+    if (deviceOnboardingLog) deviceOnboardingLog.textContent = job.transcript || '';
+    if (deviceOnboardingCancel) deviceOnboardingCancel.hidden = onboardingTerminal.has(job.status);
+    if (deviceOnboardingCheckpoint) {
+      deviceOnboardingCheckpoint.textContent = job.checkpoint || job.error || '';
+      deviceOnboardingCheckpoint.hidden = !(job.checkpoint || job.error);
+    }
+    if (deviceOnboardingUrl) {
+      deviceOnboardingUrl.href = job.url || '';
+      deviceOnboardingUrl.textContent = job.url ? `Open ${job.url}` : '';
+      deviceOnboardingUrl.hidden = !job.url;
+    }
+    if (deviceOnboardingQr) {
+      deviceOnboardingQr.src = job.qrAvailable
+        ? `/api/device-onboarding/qr?id=${encodeURIComponent(job.id)}`
+        : '';
+      deviceOnboardingQr.hidden = !job.qrAvailable;
+    }
+    if (job.url && onboardingTerminal.has(job.status)) {
+      state.prefs.verifiedPhoneUrl = job.url;
+      savePrefs();
+    }
+    if (deviceOnboardingButton) deviceOnboardingButton.disabled = !onboardingTerminal.has(job.status);
+  };
+  const pollOnboardingJob = async () => {
+    if (!onboardingJobId) return;
+    try {
+      const response = await fetch(`/api/device-onboarding?id=${encodeURIComponent(onboardingJobId)}`);
+      const job = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(job.error || 'Could not read phone onboarding progress.');
+      renderOnboardingJob(job);
+      if (!onboardingTerminal.has(job.status)) {
+        onboardingPollTimer = window.setTimeout(pollOnboardingJob, 750);
+      }
+    } catch (error) {
+      if (deviceOnboardingStatus) deviceOnboardingStatus.textContent = error.message;
+      if (deviceOnboardingButton) deviceOnboardingButton.disabled = false;
+    }
+  };
+
+  deviceOnboardingButton?.addEventListener('click', async () => {
+    clearTimeout(onboardingPollTimer);
+    deviceOnboardingButton.disabled = true;
+    if (deviceOnboardingJob) deviceOnboardingJob.hidden = false;
+    if (deviceOnboardingStatus) deviceOnboardingStatus.textContent = 'Starting agent…';
+    if (deviceOnboardingLog) deviceOnboardingLog.textContent = '';
+    try {
+      const response = await fetch('/api/device-onboarding', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ runnerId: onboardingCapability?.runner?.id || '' }),
+      });
+      const job = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(job.error || 'Could not start phone onboarding.');
+      renderOnboardingJob(job);
+      onboardingPollTimer = window.setTimeout(pollOnboardingJob, 250);
+    } catch (error) {
+      if (deviceOnboardingStatus) deviceOnboardingStatus.textContent = error.message;
+      deviceOnboardingButton.disabled = false;
+    }
+  });
+
+  deviceOnboardingCancel?.addEventListener('click', async () => {
+    if (!onboardingJobId) return;
+    deviceOnboardingCancel.disabled = true;
+    try {
+      const response = await fetch(`/api/device-onboarding?id=${encodeURIComponent(onboardingJobId)}`, {
+        method: 'DELETE',
+      });
+      const job = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(job.error || 'Could not cancel phone onboarding.');
+      renderOnboardingJob(job);
+    } catch (error) {
+      showToast(error.message);
+    } finally {
+      deviceOnboardingCancel.disabled = false;
+    }
+  });
 
   let previouslyFocused = null;
 
@@ -294,4 +398,17 @@ export function initSettings(appInfo) {
   }
 
   syncNotificationSettingsFromServer(syncSettingsControls);
+}
+
+function onboardingStatusLabel(status) {
+  const labels = {
+    starting: 'Preparing private bridge…',
+    running: 'Agent is setting up your phone…',
+    verifying: 'Verifying the private URL…',
+    completed: 'Campaigns is ready on your phone',
+    manual_checkpoint: 'Finish on your phone',
+    cancelled: 'Phone onboarding cancelled',
+    failed: 'Phone onboarding failed',
+  };
+  return labels[status] || 'Phone onboarding';
 }

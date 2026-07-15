@@ -23,6 +23,7 @@ export const state = {
     away: false,
     companion: false,
     defaultRunner: '',
+    deviceOnboarding: null,
     fileDeletionMode: 'permanent',
     lessons: false,
     runners: [],

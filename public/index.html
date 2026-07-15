@@ -210,6 +210,24 @@
           </section>
 
           <section class="settings-section">
+            <h3>Phone</h3>
+            <button id="device-onboarding-button" class="button button-primary button-wide" type="button" hidden>
+              Put Campaigns on your phone
+            </button>
+            <p id="device-onboarding-hint" class="field-desc"></p>
+            <div id="device-onboarding-job" class="device-onboarding-job" hidden>
+              <div class="device-onboarding-job-header">
+                <strong id="device-onboarding-status">Starting…</strong>
+                <button id="device-onboarding-cancel" class="button button-quiet" type="button">Cancel</button>
+              </div>
+              <p id="device-onboarding-checkpoint" class="device-onboarding-checkpoint" hidden></p>
+              <a id="device-onboarding-url" class="device-onboarding-url" target="_blank" rel="noopener noreferrer" hidden></a>
+              <img id="device-onboarding-qr" class="device-onboarding-qr" alt="Scan to open Campaigns on your phone" hidden />
+              <pre id="device-onboarding-log" class="device-onboarding-log" aria-live="polite"></pre>
+            </div>
+          </section>
+
+          <section class="settings-section">
             <h3>Notifications</h3>
 
             <div class="settings-row-toggle">

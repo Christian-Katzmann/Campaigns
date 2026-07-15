@@ -118,6 +118,10 @@ test('document and registry HTTP contracts hold against a real ephemeral server'
   assert.deepEqual(capabilities.runnerWarnings, []);
   assert.ok(Object.hasOwn(capabilities, 'personalLayer'));
   assert.ok(Object.hasOwn(capabilities, 'providers'));
+  assert.equal(typeof capabilities.deviceOnboarding.available, 'boolean');
+  assert.equal(typeof capabilities.deviceOnboarding.runner.ready, 'boolean');
+  assert.equal(typeof capabilities.deviceOnboarding.skill.ready, 'boolean');
+  assert.equal(typeof capabilities.deviceOnboarding.stablePrivateUrl.ready, 'boolean');
 
   const notificationSettingsResponse = await fetch(`${baseUrl}/api/notification-settings`, {
     method: 'PUT',

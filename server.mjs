@@ -32,6 +32,11 @@ import { buildStepDiff } from './lib/step-diff.mjs';
 import { resolveCampaignConfig } from './lib/config.mjs';
 import { estimateCampaign } from './lib/estimate.mjs';
 import { hasUnifiedRunLedgers, loadUnifiedLessons, readUnifiedRunLedgers } from './lib/lessons.mjs';
+import {
+  DeviceOnboardingError,
+  createDeviceOnboardingManager,
+  resolveDeviceOnboardingContext,
+} from './lib/device-onboarding.mjs';
 import { PlannerDraftError, draftCampaign } from './lib/planner.mjs';
 import {
   HumanReviewApprovalError,
@@ -182,6 +187,13 @@ const LOGO_EXTENSIONS = [...LOGO_MIME.keys()];
 
 let defaultCampaignId = null;
 const activeCampaignRuns = new Map();
+let activeServerPort = null;
+const deviceOnboardingManager = createDeviceOnboardingManager({
+  getContext: resolveServerDeviceOnboardingContext,
+  onVerifiedUrl: persistVerifiedPhoneUrl,
+  projectRoot: __dirname,
+  stateDir: registryDir,
+});
 
 const server = createServer(async (request, response) => {
   try {
@@ -244,6 +256,26 @@ const server = createServer(async (request, response) => {
 
     if (url.pathname === '/api/capabilities' && request.method === 'GET') {
       await sendCapabilities(url, response);
+      return;
+    }
+
+    if (url.pathname === '/api/device-onboarding' && request.method === 'POST') {
+      await startDeviceOnboarding(request, response);
+      return;
+    }
+
+    if (url.pathname === '/api/device-onboarding' && request.method === 'GET') {
+      await sendDeviceOnboarding(url, response);
+      return;
+    }
+
+    if (url.pathname === '/api/device-onboarding' && request.method === 'DELETE') {
+      await cancelDeviceOnboarding(url, response);
+      return;
+    }
+
+    if (url.pathname === '/api/device-onboarding/qr' && request.method === 'GET') {
+      await sendDeviceOnboardingQr(url, response);
       return;
     }
 
@@ -388,14 +420,20 @@ const server = createServer(async (request, response) => {
 
 const closeHttpServer = server.close.bind(server);
 server.close = function closeCampaignsServer(callback) {
-  void stopActiveCampaignRuns()
-    .catch(() => abortActiveCampaignRuns())
+  void Promise.all([
+    stopActiveCampaignRuns().catch(() => abortActiveCampaignRuns()),
+    deviceOnboardingManager.stopAll(),
+  ])
     .finally(() => closeHttpServer(callback));
   return server;
 };
 
 server.on('close', stopStopWatcher);
 server.on('close', abortActiveCampaignRuns);
+server.on('close', () => {
+  activeServerPort = null;
+  void deviceOnboardingManager.stopAll();
+});
 
 export async function startServer({
   campaignFile = null,
@@ -428,6 +466,7 @@ export async function startServer({
 
   const address = server.address();
   const actualPort = typeof address === 'object' && address ? address.port : Number(port);
+  activeServerPort = actualPort;
   console.log(`Campaigns: http://localhost:${actualPort}`);
   console.log(`Registry: ${registryPath}`);
   console.log(`Port file: ${portFilePath}`);
@@ -559,11 +598,20 @@ async function sendCapabilities(url, response) {
     if (!/No Git project root found/.test(error.message)) throw error;
     runnerRegistry = await loadRunnerRegistry();
   }
-  const [automation, nativeLessons, legacyLessons, runners] = await Promise.all([
+  const [automation, nativeLessons, legacyLessons, runners, deviceOnboarding] = await Promise.all([
     getAutomateProviderAvailability(),
     hasUnifiedRunLedgers(lessonsRunsDir).catch(() => false),
     stat(lessonsHelperPath).then((info) => info.isFile()).catch(() => false),
     runnerCapabilities(runnerRegistry, { cwd: runnerCwd }),
+    resolveServerDeviceOnboardingContext().catch((error) => ({
+      capability: {
+        available: false,
+        hint: error.message || 'Phone onboarding is unavailable.',
+        runner: { ready: false, id: '', label: '' },
+        skill: { ready: false, path: '' },
+        stablePrivateUrl: { ready: false, kind: '', tool: '', url: '' },
+      },
+    })),
   ]);
   const fileDeletionMode = campaignFileDeletionMode();
   sendJson(response, 200, {
@@ -578,10 +626,63 @@ async function sendCapabilities(url, response) {
       lessons: nativeLessons || legacyLessons,
     },
     providers: automation.providers,
+    deviceOnboarding: deviceOnboarding.capability,
     defaultRunner: runnerRegistry.defaultRunner,
     runnerWarnings: runnerRegistry.warnings,
     runners,
   });
+}
+
+async function resolveServerDeviceOnboardingContext() {
+  if (!Number.isInteger(activeServerPort) || activeServerPort <= 0) {
+    throw new DeviceOnboardingError(409, 'Campaigns must be running before phone onboarding can start.');
+  }
+  let resolved;
+  let runnerRegistry;
+  try {
+    resolved = await resolveCampaignConfig({ cwd: __dirname });
+    runnerRegistry = await loadConfiguredRunnerRegistry(resolved.config);
+  } catch (error) {
+    throw new DeviceOnboardingError(409, `Runner configuration is invalid: ${error.message}`);
+  }
+  const [catalog, settings] = await Promise.all([
+    runnerCapabilities(runnerRegistry, { cwd: __dirname }),
+    readNotificationSettings(),
+  ]);
+  return resolveDeviceOnboardingContext({
+    runnerCatalog: catalog,
+    runnerRegistry,
+    targetPort: activeServerPort,
+    verifiedPhoneUrl: settings.verifiedPhoneUrl,
+  });
+}
+
+async function startDeviceOnboarding(request, response) {
+  const payload = await readJsonBody(request);
+  const job = await deviceOnboardingManager.start({
+    runnerId: typeof payload?.runnerId === 'string' ? payload.runnerId : '',
+  });
+  sendJson(response, 202, job);
+}
+
+async function sendDeviceOnboarding(url, response) {
+  const job = await deviceOnboardingManager.get(url.searchParams.get('id') ?? '');
+  sendJson(response, 200, job);
+}
+
+async function cancelDeviceOnboarding(url, response) {
+  const job = await deviceOnboardingManager.cancel(url.searchParams.get('id') ?? '');
+  sendJson(response, 200, job);
+}
+
+async function sendDeviceOnboardingQr(url, response) {
+  const qr = await deviceOnboardingManager.getQrPath(url.searchParams.get('id') ?? '');
+  response.writeHead(200, {
+    'cache-control': 'private, no-store',
+    'content-length': qr.size,
+    'content-type': 'image/png',
+  });
+  createReadStream(qr.path).pipe(response);
 }
 
 async function sendEstimate(url, response) {
@@ -1796,6 +1897,11 @@ async function writeNotificationSettings(settings) {
     notificationSettingsPath,
     `${JSON.stringify(sanitizeNotificationSettings(settings), null, 2)}\n`,
   );
+}
+
+async function persistVerifiedPhoneUrl(verifiedPhoneUrl) {
+  const settings = await readNotificationSettings();
+  await writeNotificationSettings({ ...settings, verifiedPhoneUrl });
 }
 
 function publicNotificationSettings(settings) {

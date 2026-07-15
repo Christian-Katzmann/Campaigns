@@ -79,6 +79,7 @@ async function initialize() {
     await updateWorkflowsAvailability();
     initLibraryFilter();
     await renderLibrary();
+    initSettings();
     startAutomatePolling();
     return;
   }
@@ -98,6 +99,7 @@ async function initialize() {
     await updateWorkflowsAvailability();
     initLibraryFilter();
     await renderLibrary();
+    initSettings();
     startAutomatePolling();
     return;
   }
@@ -172,6 +174,7 @@ async function updatePersonalLayerAvailability() {
   let fileDeletion = {};
   let runnerCatalog = [];
   let defaultRunner = '';
+  let deviceOnboarding = null;
   try {
     const params = new URLSearchParams(window.location.search);
     const id = params.get('id');
@@ -185,6 +188,9 @@ async function updatePersonalLayerAvailability() {
       fileDeletion = payload.fileDeletion ?? {};
       runnerCatalog = Array.isArray(payload.runners) ? payload.runners : [];
       defaultRunner = typeof payload.defaultRunner === 'string' ? payload.defaultRunner : '';
+      deviceOnboarding = payload.deviceOnboarding && typeof payload.deviceOnboarding === 'object'
+        ? payload.deviceOnboarding
+        : null;
     }
   } catch {
     // Optional integrations stay hidden when capability discovery is unavailable.
@@ -195,6 +201,7 @@ async function updatePersonalLayerAvailability() {
     away: personalLayer.away === true,
     companion: personalLayer.companion === true,
     defaultRunner,
+    deviceOnboarding,
     fileDeletionMode: fileDeletion.mode === 'trash' ? 'trash' : 'permanent',
     lessons: personalLayer.lessons === true,
     runners: runnerCatalog,
