@@ -86,7 +86,12 @@ test('successful terminal histories cannot become halted', () => {
     commit_range: { base_oid: '1'.repeat(40), head_oid: '2'.repeat(40) },
   });
   state = transitionRunState(state, { event: 'run_reached_final_review' });
-  state = transitionRunState(state, { event: 'final_review_started' });
+  state = transitionRunState(state, {
+    event: 'final_review_started',
+    reviewer_runner: 'fake',
+    reviewer_family: 'fake',
+    reviewer_ladder_tier: 'same_family',
+  });
   state = transitionRunState(state, {
     event: 'final_review_approved',
     review_path: '/tmp/chaos-run/final-review.md',
@@ -111,7 +116,12 @@ test('rendered board status DOM exposes attention for human review, caps, and st
   const originalDocument = globalThis.document;
   globalThis.document = fakeDocument();
   try {
-    const { renderAutomateStatusContent, renderDrawerReceipts } = await import('../public/modules/automate-drawer.mjs');
+    const {
+      renderAutomateStatusContent,
+      renderDrawerReceipts,
+      renderDrawerReviewer,
+      reviewerSummary,
+    } = await import('../public/modules/automate-drawer.mjs');
     const { renderLaneChip } = await import('../public/modules/render.mjs');
     const expectedLabels = {
       awaiting_human_review: 'Awaiting review',
@@ -131,6 +141,16 @@ test('rendered board status DOM exposes attention for human review, caps, and st
       assert.match(dump, new RegExp(label));
       assert.match(dump, />!<\/span>/);
     }
+    assert.equal(reviewerSummary({
+      reviewer_runner: 'codex',
+      reviewer_family: 'openai',
+      reviewer_ladder_tier: 'cross_family',
+    }), 'Cross-family reviewer — codex · openai');
+    assert.match(renderDrawerReviewer({ review: {
+      reviewer_runner: 'codex',
+      reviewer_family: 'openai',
+      reviewer_ladder_tier: 'cross_family',
+    } }).outerHTML, /Final review[\s\S]*Cross-family reviewer — codex · openai/);
 
     const lane = renderLaneChip({ globs: ['public/modules/**', 'test/*.test.mjs'] });
     assert.match(lane.outerHTML, /meta-lane/);
@@ -496,7 +516,7 @@ function fakeRunnerConfig() {
       max_run_minutes: 10,
       stop_grace_ms: 50,
     },
-    review: { maxFixAttempts: 2, forceMergeUnreviewed: false },
+    review: { reviewer: 'fake', maxFixAttempts: 2, forceMergeUnreviewed: false },
     runners: {
       fake: {
         binary: process.execPath,

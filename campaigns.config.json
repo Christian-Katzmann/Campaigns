@@ -16,6 +16,7 @@
     "max_parallel_steps": 2
   },
   "review": {
+    "reviewer": "auto",
     "maxFixAttempts": 2,
     "forceMergeUnreviewed": false
   },

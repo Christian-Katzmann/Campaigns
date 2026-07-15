@@ -451,6 +451,9 @@ export function renderDrawerBody(data) {
 
   children.push(renderDrawerStatusPill(data));
 
+  const reviewer = renderDrawerReviewer(data);
+  if (reviewer) children.push(reviewer);
+
   const nudge = renderDrawerNudge(data);
   if (nudge) children.push(nudge);
 
@@ -795,6 +798,31 @@ export function renderDrawerStatusPill(data) {
     element('span', { className: 'drawer-status-label', text: label }),
   );
   return pill;
+}
+
+export function reviewerSummary(review) {
+  if (!review?.reviewer_ladder_tier) return null;
+  const identity = review.reviewer_runner
+    ? `${review.reviewer_runner}${review.reviewer_family ? ` · ${review.reviewer_family}` : ''}`
+    : 'No automated runner';
+  const tier = {
+    cross_family: 'Cross-family reviewer',
+    same_family: 'Fresh same-family reviewer',
+    explicit: 'Configured reviewer',
+    human: 'Human review required',
+  }[review.reviewer_ladder_tier] ?? 'Reviewer';
+  return `${tier} — ${identity}`;
+}
+
+export function renderDrawerReviewer(data) {
+  const summary = reviewerSummary(data.review);
+  if (!summary) return null;
+  const section = element('section', { className: 'drawer-reviewer' });
+  section.append(
+    element('h3', { className: 'drawer-section-title', text: 'Final review' }),
+    element('p', { className: 'drawer-reviewer-summary', text: summary }),
+  );
+  return section;
 }
 
 export function renderDrawerNudge(data) {

@@ -330,6 +330,7 @@ async function writeRunningState(fixture, { runningStep = false, worktree = fals
     steps: [{ id: '1.1', name: 'Recoverable task', phase: '1' }],
     config: {
       runner: 'fake',
+      reviewer: 'fake',
       model: 'fake-model',
       effort: 'none',
       watchdog: { minimum_runtime_ms: 0, stall_window_ms: 1_000 },
@@ -376,6 +377,7 @@ function fakeRunnerConfig(reviewOutput = null) {
     defaultRunner: 'fake',
     watchdog: { minimum_runtime_ms: 0, stall_window_ms: 1_000 },
     run: { repoRoot: null, branch: null },
+    review: { reviewer: 'fake' },
     runners: {
       fake: {
         binary: process.execPath,

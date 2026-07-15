@@ -140,6 +140,7 @@ test('runnerPaths plugin drives a fixture campaign without core runner configura
     defaultRunner: 'gemini',
     runnerPaths: [path.resolve('test/fixtures/runner-plugins/gemini')],
     watchdog: { minimum_runtime_ms: 0, stall_window_ms: 1_000 },
+    review: { reviewer: 'gemini' },
   }, null, 2)}\n`, 'utf8');
 
   const result = await runCampaign(fixture.campaignPath, fixture.options);
@@ -149,6 +150,81 @@ test('runnerPaths plugin drives a fixture campaign without core runner configura
   assert.equal(result.state.run.status, 'completed');
   assert.match(markdown, /- \[x\] Step 1\.1/);
   assert.equal(await readFile(path.join(fixture.repo, 'gemini-plugin-1.1.txt'), 'utf8'), '1.1\n');
+});
+
+test('final review defaults to another available family and uses that runner defaults', async (t) => {
+  const fixture = await makeFixture(t, {
+    reviewer: 'auto',
+    additionalRunners: {
+      claude: missingRunner('anthropic'),
+      codex: missingRunner('openai'),
+      critic: {
+        family: 'critic-family',
+        binary: process.execPath,
+        args: [
+          '-e',
+          `const fs=require('node:fs');fs.writeFileSync('review-defaults.json',JSON.stringify({model:process.argv[1],effort:process.argv[2]}));process.stdout.write('Verdict: APPROVED\\nReasons:')`,
+          '{model}',
+          '{effort}',
+        ],
+        prompt: { delivery: 'stdin' },
+        defaults: { model: 'critic-default-model', effort: 'critic-default-effort' },
+        effortMap: { 'critic-default-effort': 'critic-default-effort' },
+        environment: { remove: [] },
+        completion: {
+          marker: { type: 'campaigns.step_completed', version: 1, status: 'completed' },
+          sources: [{ kind: 'text' }],
+        },
+      },
+    },
+  });
+
+  const result = await runCampaign(fixture.campaignPath, fixture.options);
+
+  assert.equal(result.state.review.reviewer_runner, 'critic');
+  assert.equal(result.state.review.reviewer_family, 'critic-family');
+  assert.equal(result.state.review.reviewer_ladder_tier, 'cross_family');
+  assert.deepEqual(
+    JSON.parse(await readFile(path.join(fixture.repo, 'review-defaults.json'), 'utf8')),
+    { model: 'critic-default-model', effort: 'critic-default-effort' },
+  );
+});
+
+test('an unavailable explicit reviewer waits for a human without spawning review', async (t) => {
+  const fixture = await makeFixture(t, {
+    reviewer: 'missing-reviewer',
+    additionalRunners: {
+      'missing-reviewer': {
+        family: 'missing-family',
+        binary: path.join(tmpdir(), 'campaigns-missing-reviewer'),
+        args: [],
+        prompt: { delivery: 'stdin' },
+        defaults: { model: 'missing-model', effort: 'none' },
+        effortMap: { none: 'none' },
+        environment: { remove: [] },
+        completion: {
+          marker: { type: 'campaigns.step_completed', version: 1, status: 'completed' },
+          sources: [{ kind: 'text' }],
+        },
+      },
+    },
+  });
+  const notifications = [];
+
+  const result = await runCampaign(fixture.campaignPath, {
+    ...fixture.options,
+    notifyAwaitingHumanReview: async (state) => notifications.push(state.run.status),
+  });
+  const logNames = await readdir(result.logsDir);
+
+  assert.equal(result.state.run.status, 'awaiting_human_review');
+  assert.equal(result.state.review.attempts, 0);
+  assert.equal(result.state.review.reviewer_runner, 'missing-reviewer');
+  assert.equal(result.state.review.reviewer_family, 'missing-family');
+  assert.equal(result.state.review.reviewer_ladder_tier, 'human');
+  assert.equal(result.state.history.at(-1).event, 'reviewer_unavailable');
+  assert.deepEqual(notifications, ['awaiting_human_review']);
+  assert.equal(logNames.some((name) => name.startsWith('review-')), false);
 });
 
 test('executable checks enforce their own timeout', async () => {
@@ -292,6 +368,9 @@ test('fake success runner ticks every step, runs final review, and merges', asyn
   assert.deepEqual(validateRunState(state), { valid: true, errors: [] });
   assert.equal(state.run.status, 'merged');
   assert.equal(state.history.at(-1).event, 'campaign_merged');
+  assert.equal(state.review.reviewer_runner, 'fake');
+  assert.equal(state.review.reviewer_family, 'fake');
+  assert.equal(state.review.reviewer_ladder_tier, 'explicit');
   assert.equal(await git(fixture.repo, ['branch', '--show-current']), 'campaign/fixture');
   const status = await git(fixture.repo, ['status', '--short']);
   assert.equal(status, '');
@@ -1092,6 +1171,8 @@ async function makeFixture(t, {
   maxRunMinutes = 360,
   stopGraceMs = 3_000,
   maxParallelSteps = 2,
+  reviewer = 'fake',
+  additionalRunners = {},
   divergeTarget = false,
   runnerOutputFile = false,
   worktree = false,
@@ -1124,6 +1205,8 @@ async function makeFixture(t, {
     maxRunMinutes,
     stopGraceMs,
     maxParallelSteps,
+    reviewer,
+    additionalRunners,
     runnerOutputFile,
   });
   await git(repo, ['add', gitignoredCampaign ? '.gitignore' : 'campaign.md']);
@@ -1271,6 +1354,22 @@ Review the fixture.
 `;
 }
 
+function missingRunner(family) {
+  return {
+    family,
+    binary: path.join(tmpdir(), `campaigns-unavailable-${family}-runner`),
+    args: [],
+    prompt: { delivery: 'stdin' },
+    defaults: { model: `${family}-model`, effort: 'none' },
+    effortMap: { none: 'none' },
+    environment: { remove: [] },
+    completion: {
+      marker: { type: 'campaigns.step_completed', version: 1, status: 'completed' },
+      sources: [{ kind: 'text' }],
+    },
+  };
+}
+
 async function writeConfig(configPath, {
   branch = null,
   delayMs = 0,
@@ -1285,6 +1384,8 @@ async function writeConfig(configPath, {
   maxRunMinutes = 360,
   stopGraceMs = 3_000,
   maxParallelSteps = 2,
+  reviewer = 'fake',
+  additionalRunners = {},
   runnerOutputFile = false,
 } = {}) {
   const stepScript = runnerScript ?? (delayMs > 0
@@ -1318,7 +1419,7 @@ async function writeConfig(configPath, {
       stop_grace_ms: stopGraceMs,
       max_parallel_steps: maxParallelSteps,
     },
-    review: { maxFixAttempts, forceMergeUnreviewed },
+    review: { reviewer, maxFixAttempts, forceMergeUnreviewed },
     runners: {
       fake: {
         binary: process.execPath,
@@ -1334,6 +1435,7 @@ async function writeConfig(configPath, {
           sources: [{ kind: 'text' }],
         },
       },
+      ...additionalRunners,
     },
   };
   await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, 'utf8');

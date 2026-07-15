@@ -198,7 +198,12 @@ function fixtureLedger({ id, runner = 'codex', stepCount = 1, outcome }) {
     });
   }
   state = transitionRunState(state, { event: 'run_reached_final_review' });
-  state = transitionRunState(state, { event: 'final_review_started' });
+  state = transitionRunState(state, {
+    event: 'final_review_started',
+    reviewer_runner: runner,
+    reviewer_family: runner,
+    reviewer_ladder_tier: 'same_family',
+  });
 
   if (outcome === 'reworked') {
     state = transitionRunState(state, {
@@ -213,7 +218,12 @@ function fixtureLedger({ id, runner = 'codex', stepCount = 1, outcome }) {
       attempt: 1,
       commit_sha: 'abc123',
     });
-    state = transitionRunState(state, { event: 'final_review_started' });
+    state = transitionRunState(state, {
+      event: 'final_review_started',
+      reviewer_runner: runner,
+      reviewer_family: runner,
+      reviewer_ladder_tier: 'same_family',
+    });
   }
 
   return transitionRunState(state, {

@@ -67,6 +67,11 @@ function move(state, event, fields = {}) {
   return transitionRunState(state, {
     event,
     at: at(),
+    ...(event === 'final_review_started' ? {
+      reviewer_runner: 'test-reviewer',
+      reviewer_family: 'test-family',
+      reviewer_ladder_tier: 'cross_family',
+    } : {}),
     ...(event === 'step_completed' ? {
       commit_range: {
         base_oid: '1'.repeat(40),
@@ -124,7 +129,8 @@ test('version-1 ledgers upgrade with cap defaults and the explicit stop status',
   }
 
   const upgraded = upgradeRunState(old);
-  assert.equal(upgraded.schema_version, 7);
+  assert.equal(upgraded.schema_version, 8);
+  assert.equal(upgraded.config.reviewer, 'auto');
   assert.equal(upgraded.config.worktree_enabled, false);
   assert.equal(upgraded.config.max_parallel_steps, 2);
   assert.equal(upgraded.artifacts.worktree, null);
@@ -141,6 +147,7 @@ test('version-1 ledgers upgrade with cap defaults and the explicit stop status',
   assert.equal(upgraded.steps[0].commit_range, null);
   assert.equal(upgraded.steps[0].parallel_group, null);
   assert.deepEqual(upgraded.review.findings, []);
+  assert.equal(upgraded.review.reviewer_runner, null);
   assert.equal(upgraded.rollback, null);
   assert.deepEqual(upgraded.rollbacks, []);
   assertValidRunState(upgraded);
@@ -162,6 +169,23 @@ test('version-4 single-worker ledgers migrate to the active worker collection', 
   assert.equal(upgraded.workers[0].step_id, '1.1');
   assert.equal(upgraded.workers[0].invocation_id, 'legacy-worker');
   assert.deepEqual(validateRunState(upgraded), { valid: true, errors: [] });
+});
+
+test('version-7 review records migrate as the historical same-family behavior', () => {
+  const old = structuredClone(reviewingState());
+  old.schema_version = 7;
+  delete old.config.reviewer;
+  delete old.review.reviewer_runner;
+  delete old.review.reviewer_family;
+  delete old.review.reviewer_ladder_tier;
+
+  const upgraded = upgradeRunState(old);
+  assert.equal(upgraded.schema_version, 8);
+  assert.equal(upgraded.config.reviewer, 'auto');
+  assert.equal(upgraded.review.reviewer_runner, old.config.runner);
+  assert.equal(upgraded.review.reviewer_family, old.config.runner);
+  assert.equal(upgraded.review.reviewer_ladder_tier, 'same_family');
+  assertValidRunState(upgraded);
 });
 
 test('completed steps retain the actual runner, model, and effort', () => {
@@ -270,6 +294,22 @@ test('an unparseable review waits for a human without inventing a status name', 
   assert.equal(state.review.status, 'awaiting_human');
   assert.equal(state.review.attempts, 2);
   assert.equal(state.history.at(-1).event, 'review_unparseable');
+  assertValidRunState(state);
+});
+
+test('an unavailable reviewer waits for a human without starting a review attempt', () => {
+  const state = move(completeSteps(stateWithSteps()), 'reviewer_unavailable', {
+    reviewer_runner: 'missing-reviewer',
+    reviewer_family: 'other-family',
+    reviewer_ladder_tier: 'human',
+  });
+
+  assert.equal(state.run.status, 'awaiting_human_review');
+  assert.equal(state.review.status, 'awaiting_human');
+  assert.equal(state.review.attempts, 0);
+  assert.equal(state.review.reviewer_runner, 'missing-reviewer');
+  assert.equal(state.review.reviewer_ladder_tier, 'human');
+  assert.equal(state.history.at(-1).event, 'reviewer_unavailable');
   assertValidRunState(state);
 });
 

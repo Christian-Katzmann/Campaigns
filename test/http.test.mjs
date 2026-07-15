@@ -722,7 +722,12 @@ Review the diff fixture.
     });
   }
   state = transitionRunState(state, { event: 'run_reached_final_review' });
-  state = transitionRunState(state, { event: 'final_review_started' });
+  state = transitionRunState(state, {
+    event: 'final_review_started',
+    reviewer_runner: 'fake',
+    reviewer_family: 'fake',
+    reviewer_ladder_tier: 'same_family',
+  });
   state = transitionRunState(state, {
     event: 'final_review_needs_work',
     reasons: ['acceptance-miss'],
@@ -853,7 +858,7 @@ function fakeRunnerConfig() {
       max_run_minutes: 1,
       stop_grace_ms: 1_000,
     },
-    review: { maxFixAttempts: 1, forceMergeUnreviewed: false },
+    review: { reviewer: 'fake', maxFixAttempts: 1, forceMergeUnreviewed: false },
     runners: {
       fake: {
         binary: process.execPath,
@@ -874,6 +879,7 @@ function fakeRunnerConfig() {
 function fakePlannerConfig(scriptPath) {
   return {
     defaultRunner: 'fake',
+    review: { reviewer: 'fake' },
     watchdog: { minimum_runtime_ms: 10_000, stall_window_ms: 10_000 },
     run: { max_run_minutes: 1 },
     runners: {

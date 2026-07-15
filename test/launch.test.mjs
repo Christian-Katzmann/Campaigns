@@ -215,7 +215,7 @@ function fakeRunnerConfig(delayMs) {
       max_run_minutes: 1,
       stop_grace_ms: 100,
     },
-    review: { maxFixAttempts: 1, forceMergeUnreviewed: false },
+    review: { reviewer: 'fake', maxFixAttempts: 1, forceMergeUnreviewed: false },
     runners: {
       fake: {
         label: 'Fake',

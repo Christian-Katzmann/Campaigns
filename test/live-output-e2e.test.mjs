@@ -330,7 +330,7 @@ function fakeRunnerConfig() {
     defaultRunner: 'fake',
     watchdog: { minimum_runtime_ms: 0, stall_window_ms: 3_000 },
     run: { max_run_minutes: 1, stop_grace_ms: 1_000 },
-    review: { maxFixAttempts: 1, forceMergeUnreviewed: false },
+    review: { reviewer: 'fake', maxFixAttempts: 1, forceMergeUnreviewed: false },
     runners: {
       fake: {
         binary: process.execPath,

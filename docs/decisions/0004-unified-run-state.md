@@ -31,6 +31,10 @@ worktree metadata: path, branch, campaign base branch, creation time, optional
 human-review cleanup deadline, and prune time. Older ledgers upgrade as direct
 mode with no worktree metadata.
 
+Schema version 8 adds the configured reviewer snapshot plus the selected
+reviewer runner, family, and ladder tier. Version 7 ledgers migrate as
+same-family review because that was the only previous behavior.
+
 The campaign markdown remains the progress source of truth. The run state is an
 execution ledger: it records attempts, worker activity, review/recovery state,
 and evidence paths without becoming a second campaign plan.
@@ -60,7 +64,7 @@ providers must not infer identity from a run-directory slug.
 | `cursor` | Last/current step, phase, and attempt |
 | `steps` | Runner-neutral step status, receipt reference, and failure |
 | `worker` | Current invocation id, process/activity timestamps, and log path |
-| `review` | Review attempts, verdict, reason tags, and evidence path |
+| `review` | Review attempts, selected runner/family/tier, verdict, reason tags, and evidence path |
 | `blockers` | Structured preflight blockers with remedies in their messages |
 | `recovery` | The interrupted status and step while recovery is active |
 | `artifacts` | Run, receipt, and final-review locations |
@@ -101,6 +105,7 @@ preflight `blocked` run may start after the next preflight passes.
 | `step_started/completed/skipped` | `running -> running` |
 | `step_failed` | `running -> failed` |
 | `run_reached_final_review` | `running -> awaiting_review` |
+| `reviewer_unavailable` | `awaiting_review -> awaiting_human_review` |
 | `final_review_started` | `awaiting_review -> reviewing` |
 | `final_review_needs_work` | `reviewing -> reworking` |
 | `final_rework_completed` | `reworking -> awaiting_review` |

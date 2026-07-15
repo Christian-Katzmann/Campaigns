@@ -126,6 +126,7 @@ test('doctor attributes sources, warns on unknown and dead paths, and masks secr
   const fixture = await makeFixture(t);
   await writeJson(path.join(fixture.repo, '.campaigns.json'), {
     run: { repoRoot: './missing-repo' },
+    review: { reviewer: 'codex' },
     mystery: { authToken: 'doctor-secret' },
   });
 
@@ -138,6 +139,7 @@ test('doctor attributes sources, warns on unknown and dead paths, and masks secr
 
   assert.match(output, new RegExp(`Project root: ${escapeRegex(fixture.repo)}`));
   assert.match(output, /runner: "codex" \[cli:--runner\]/);
+  assert.match(output, /reviewer: "codex" \[project:/);
   assert.match(output, /Unknown key "mystery"/);
   assert.match(output, /Path "run\.repoRoot" does not exist/);
   assert.match(output, /\[REDACTED\]/);

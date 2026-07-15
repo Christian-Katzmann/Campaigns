@@ -7,6 +7,7 @@ import {
   buildFixPrompt,
   isValidReviewPath,
   parseReviewOutput,
+  selectReviewRunner,
 } from '../lib/review.mjs';
 
 const EXPECTED_TAGS = [
@@ -39,6 +40,70 @@ const EXPECTED_ALIASES = {
   'data-gap': 'data-quality-gap',
   'doc-gap': 'documentation-gap',
 };
+
+const CAPABILITIES = [
+  {
+    id: 'claude',
+    family: 'anthropic',
+    available: true,
+    defaults: { model: 'claude-default', effort: 'high' },
+  },
+  {
+    id: 'codex',
+    family: 'openai',
+    available: true,
+    defaults: { model: 'codex-default', effort: 'xhigh' },
+  },
+];
+
+test('reviewer selection follows cross-family, same-family, human, and explicit tiers', () => {
+  assert.deepEqual(selectReviewRunner({
+    capabilities: CAPABILITIES,
+    workerRunner: 'claude',
+  }), {
+    available: true,
+    runner: 'codex',
+    family: 'openai',
+    ladder_tier: 'cross_family',
+    defaults: { model: 'codex-default', effort: 'xhigh' },
+  });
+
+  assert.equal(selectReviewRunner({
+    capabilities: CAPABILITIES.slice(0, 1),
+    workerRunner: 'claude',
+  }).ladder_tier, 'same_family');
+
+  assert.deepEqual(selectReviewRunner({
+    capabilities: CAPABILITIES.map((runner) => ({ ...runner, available: false })),
+    workerRunner: 'claude',
+  }), {
+    available: false,
+    runner: null,
+    family: null,
+    ladder_tier: 'human',
+    defaults: null,
+  });
+
+  assert.equal(selectReviewRunner({
+    capabilities: CAPABILITIES,
+    workerRunner: 'claude',
+    reviewer: 'claude',
+  }).ladder_tier, 'explicit');
+
+  assert.deepEqual(selectReviewRunner({
+    capabilities: CAPABILITIES.map((runner) => (
+      runner.id === 'codex' ? { ...runner, available: false } : runner
+    )),
+    workerRunner: 'claude',
+    reviewer: 'codex',
+  }), {
+    available: false,
+    runner: 'codex',
+    family: 'openai',
+    ladder_tier: 'human',
+    defaults: null,
+  });
+});
 
 test('clean APPROVED and NEEDS WORK verdicts parse into structured results', () => {
   assert.deepEqual(parseReviewOutput('Verdict: APPROVED\nReasons:\n\nEverything landed.'), {
