@@ -47,6 +47,8 @@ Options:
   --max-run-minutes <minutes>
                          Stop when the total run-time cap is reached
   --stop-grace-ms <ms>  Grace period before terminating the worker group
+  --max-parallel-steps <count>
+                         Concurrent same-phase step workers (default 2)
   --force-merge-unreviewed
                          Merge after review failure (explicit escape hatch)
   -h, --help            Show this help
@@ -252,6 +254,7 @@ function parseOptions(args, command) {
     ['--max-steps-per-run', 'maxStepsPerRun'],
     ['--max-run-minutes', 'maxRunMinutes'],
     ['--stop-grace-ms', 'stopGraceMs'],
+    ['--max-parallel-steps', 'maxParallelSteps'],
   ];
   const names = new Map(command === 'recover'
     ? [['--state-dir', 'runsDir']]

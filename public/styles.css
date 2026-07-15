@@ -4515,6 +4515,24 @@ body.theme-signal {
   margin-bottom: 10px;
 }
 
+.drawer-now--parallel > .drawer-section-title {
+  margin-bottom: 10px;
+}
+
+.drawer-now-parallel-step {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 8px;
+  padding: 9px 0;
+  border-top: 1px solid var(--line-soft);
+}
+
+.drawer-now-parallel-step .drawer-now-voice {
+  grid-column: 1 / -1;
+  margin: 2px 0 0;
+}
+
 .drawer-now-step-id {
   font-size: 12px;
   font-weight: 700;
