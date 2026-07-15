@@ -84,6 +84,44 @@ test('a higher config layer replaces a same-named runner wholesale', async (t) =
   assert.equal(resolved.sources['runners.claude.defaults.model'], undefined);
 });
 
+test('the winning runnerPaths layer replaces earlier arrays and resolves from its config file', async (t) => {
+  const fixture = await makeFixture(t);
+  const explicitPath = path.join(fixture.root, 'configs', 'extra.json');
+  await mkdir(path.dirname(explicitPath), { recursive: true });
+  await writeJson(path.join(fixture.repo, '.campaigns.json'), {
+    runnerPaths: ['./project-plugin'],
+  });
+  await writeJson(path.join(fixture.userConfigDir, 'config.json'), {
+    runnerPaths: ['./user-plugin'],
+  });
+  await writeJson(explicitPath, {
+    runnerPaths: ['./explicit-plugin'],
+  });
+
+  const withoutExplicit = await resolveCampaignConfig({
+    campaignPath: fixture.campaignPath,
+    env: { CAMPAIGNS_CONFIG_DIR: fixture.userConfigDir },
+  });
+  const resolved = await resolveCampaignConfig({
+    campaignPath: fixture.campaignPath,
+    explicitConfigPath: explicitPath,
+    env: { CAMPAIGNS_CONFIG_DIR: fixture.userConfigDir },
+  });
+
+  assert.deepEqual(withoutExplicit.config.runnerPaths, [
+    path.join(fixture.userConfigDir, 'user-plugin'),
+  ]);
+  assert.match(withoutExplicit.sources.runnerPaths, /^user:/);
+  assert.deepEqual(resolved.config.runnerPaths, [
+    path.join(path.dirname(explicitPath), 'explicit-plugin'),
+  ]);
+  assert.match(resolved.sources.runnerPaths, /^explicit:/);
+  assert.ok(resolved.warnings.some((warning) => (
+    warning.includes('runnerPaths[0]') && warning.includes('explicit-plugin')
+  )));
+  assert.match(formatConfigDoctor(resolved), /runnerPaths:/);
+});
+
 test('doctor attributes sources, warns on unknown and dead paths, and masks secrets', async (t) => {
   const fixture = await makeFixture(t);
   await writeJson(path.join(fixture.repo, '.campaigns.json'), {

@@ -28,6 +28,7 @@
     "lib/",
     "public/",
     "docs/paste-anywhere-planner.md",
+    "docs/runner-api.md",
     "examples/sample-campaign.md",
     "campaigns.config.json",
     "server.mjs"

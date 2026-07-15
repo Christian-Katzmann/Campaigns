@@ -134,6 +134,23 @@ test('primary chip segment selects the runner, model, and effort at the invocati
   );
 });
 
+test('runnerPaths plugin drives a fixture campaign without core runner configuration', async (t) => {
+  const fixture = await makeFixture(t, { campaignText: runnerPluginCampaignMarkdown() });
+  await writeFile(fixture.configPath, `${JSON.stringify({
+    defaultRunner: 'gemini',
+    runnerPaths: [path.resolve('test/fixtures/runner-plugins/gemini')],
+    watchdog: { minimum_runtime_ms: 0, stall_window_ms: 1_000 },
+  }, null, 2)}\n`, 'utf8');
+
+  const result = await runCampaign(fixture.campaignPath, fixture.options);
+  const markdown = await readFile(fixture.campaignPath, 'utf8');
+
+  assert.equal(result.state.config.runner, 'gemini');
+  assert.equal(result.state.run.status, 'completed');
+  assert.match(markdown, /- \[x\] Step 1\.1/);
+  assert.equal(await readFile(path.join(fixture.repo, 'gemini-plugin-1.1.txt'), 'utf8'), '1.1\n');
+});
+
 test('executable checks enforce their own timeout', async () => {
   const startedAt = Date.now();
   const [result] = await runExecutableChecks([{
@@ -1162,6 +1179,30 @@ Create the second fixture result.
 
 \`\`\`text
 Review the fixture.
+\`\`\`
+`;
+}
+
+function runnerPluginCampaignMarkdown() {
+  return `# Runner plugin fixture
+
+## Progress checklist
+
+### Phase 1 — Build
+
+- [ ] Step 1.1 — Plugin step
+- [ ] Final review
+
+## Step 1.1 — Plugin step
+
+\`\`\`text
+Complete the plugin fixture.
+\`\`\`
+
+## Final review
+
+\`\`\`text
+Review the plugin fixture.
 \`\`\`
 `;
 }

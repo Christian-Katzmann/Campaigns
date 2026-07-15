@@ -1,0 +1,47 @@
+{
+  "schemaVersion": 1,
+  "id": "gemini",
+  "family": "google",
+  "label": "Gemini Test",
+  "binary": "./fake-gemini.mjs",
+  "args": [
+    "{prompt}"
+  ],
+  "prompt": {
+    "delivery": "arg"
+  },
+  "defaults": {
+    "model": "gemini-test",
+    "effort": "none"
+  },
+  "models": [
+    {
+      "id": "gemini-test",
+      "label": "Gemini Test"
+    }
+  ],
+  "efforts": [
+    {
+      "id": "none",
+      "label": "None"
+    }
+  ],
+  "effortMap": {
+    "none": "none"
+  },
+  "environment": {
+    "remove": []
+  },
+  "completion": {
+    "marker": {
+      "type": "campaigns.step_completed",
+      "version": 1,
+      "status": "completed"
+    },
+    "sources": [
+      {
+        "kind": "text"
+      }
+    ]
+  }
+}

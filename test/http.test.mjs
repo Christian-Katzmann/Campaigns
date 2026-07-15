@@ -79,8 +79,12 @@ test('document and registry HTTP contracts hold against a real ephemeral server'
   const registeredPath = path.join(fixtureDir, 'registered.md');
   const originalMarkdown = '# HTTP fixture\n\nOriginal.\n';
   await mkdir(fixtureDir, { recursive: true });
+  await execFileAsync('git', ['init', '-b', 'main'], { cwd: fixtureDir });
   await writeFile(campaignPath, originalMarkdown, 'utf8');
   await writeFile(registeredPath, '# Registered fixture\n', 'utf8');
+  await writeFile(path.join(fixtureDir, '.campaigns.json'), `${JSON.stringify({
+    runnerPaths: [path.resolve('test/fixtures/runner-plugins/gemini')],
+  }, null, 2)}\n`, 'utf8');
 
   const server = await startServer({
     campaignFile: campaignPath,
@@ -105,6 +109,13 @@ test('document and registry HTTP contracts hold against a real ephemeral server'
   assert.equal(typeof capabilities.defaultRunner, 'string');
   assert.ok(Array.isArray(capabilities.runners));
   assert.ok(capabilities.runners.every((runner) => typeof runner.available === 'boolean'));
+  assert.deepEqual(
+    (({ id, family, available }) => ({ id, family, available }))(
+      capabilities.runners.find((runner) => runner.id === 'gemini'),
+    ),
+    { id: 'gemini', family: 'google', available: true },
+  );
+  assert.deepEqual(capabilities.runnerWarnings, []);
   assert.ok(Object.hasOwn(capabilities, 'personalLayer'));
   assert.ok(Object.hasOwn(capabilities, 'providers'));
 

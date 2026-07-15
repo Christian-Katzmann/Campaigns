@@ -2,6 +2,7 @@
   "schemaVersion": 1,
   "_comment": "Effort names are normalized per runner here because the CLIs use different names: extra-high maps to high for Claude subscriptions and xhigh for Codex.",
   "defaultRunner": "claude",
+  "runnerPaths": [],
   "watchdog": {
     "minimum_runtime_ms": 3600000,
     "stall_window_ms": 1200000
@@ -20,6 +21,7 @@
   },
   "runners": {
     "claude": {
+      "family": "anthropic",
       "label": "Claude Code",
       "binary": "claude",
       "args": [
@@ -95,6 +97,7 @@
       }
     },
     "codex": {
+      "family": "openai",
       "label": "Codex",
       "binary": "codex",
       "args": [
