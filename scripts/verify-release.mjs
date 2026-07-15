@@ -40,6 +40,24 @@ const pack = JSON.parse((await execFileAsync(
 assert.equal(pack.name, packageJson.name);
 assert.equal(pack.version, version);
 const packed = new Set(pack.files.map((file) => file.path));
+const tracked = new Set((await execFileAsync(
+  'git', ['ls-files', '-z'], { cwd: root, maxBuffer: 20 * 1024 * 1024 },
+)).stdout.split('\0').filter(Boolean));
+const untrackedPacked = [...packed].filter((file) => !tracked.has(file)).sort();
+assert.deepEqual(
+  untrackedPacked,
+  [],
+  `package contains untracked files: ${untrackedPacked.join(', ')}`,
+);
+
+const changedPacked = (await execFileAsync(
+  'git', ['diff', '--name-only', 'HEAD', '--', ...packed], { cwd: root, maxBuffer: 20 * 1024 * 1024 },
+)).stdout.trim().split('\n').filter(Boolean).sort();
+assert.deepEqual(
+  changedPacked,
+  [],
+  `package contains files changed since HEAD: ${changedPacked.join(', ')}`,
+);
 for (const required of [
   'README.md',
   'LICENSE',
