@@ -9,6 +9,7 @@ import {
   applyStandardCampaignSettings,
   defaultPrefs,
   LEGACY_THEME_MAP,
+  NOTIFICATION_DIGEST_MODES,
   normalizeTheme,
   sanitizePrefs,
   STANDARD_CAMPAIGN_SETTINGS,
@@ -23,6 +24,10 @@ test('defaultPrefs matches the standard campaign settings baseline', () => {
   assert.equal(d.macNotificationsEnabled, STANDARD_CAMPAIGN_SETTINGS.macNotificationsEnabled);
   assert.equal(d.ntfyTopic, STANDARD_CAMPAIGN_SETTINGS.ntfyTopic);
   assert.equal(d.webhookUrl, '');
+  assert.equal(d.digestMode, 'immediate');
+  assert.equal(d.quietHoursStart, '22:00');
+  assert.equal(d.quietHoursEnd, '08:00');
+  assert.deepEqual(d.pageAlways, ['awaiting_human_review']);
   assert.deepEqual(d.filters, { todo: true, flight: true, done: true });
 });
 
@@ -44,6 +49,9 @@ test('sanitizePrefs coerces bad types back to defaults and normalizes theme', ()
     focusMode: 'yes', // not a boolean -> default false
     filters: { todo: false }, // partial -> merged over defaults
     ntfyTopic: 123, // not a string -> default ''
+    digestMode: 'later',
+    quietHoursStart: '25:00',
+    pageAlways: ['failed', 'unknown', 'failed'],
     docSections: null, // -> {}
     extra: 'kept-by-spread',
   });
@@ -51,8 +59,15 @@ test('sanitizePrefs coerces bad types back to defaults and normalizes theme', ()
   assert.equal(cleaned.focusMode, false);
   assert.deepEqual(cleaned.filters, { todo: false, flight: true, done: true });
   assert.equal(cleaned.ntfyTopic, '');
+  assert.equal(cleaned.digestMode, 'immediate');
+  assert.equal(cleaned.quietHoursStart, '22:00');
+  assert.deepEqual(cleaned.pageAlways, ['failed']);
   assert.deepEqual(cleaned.docSections, {});
   assert.equal(cleaned.extra, 'kept-by-spread');
+});
+
+test('notification digest modes are intentionally small', () => {
+  assert.deepEqual([...NOTIFICATION_DIGEST_MODES], ['immediate', 'quiet-hours']);
 });
 
 test('applyStandardCampaignSettings converges values and reports whether it changed', () => {

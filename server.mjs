@@ -34,6 +34,8 @@ import { estimateCampaign } from './lib/estimate.mjs';
 import { hasUnifiedRunLedgers, loadUnifiedLessons, readUnifiedRunLedgers } from './lib/lessons.mjs';
 import { PlannerDraftError, draftCampaign } from './lib/planner.mjs';
 import {
+  HumanReviewApprovalError,
+  approveCampaignHumanReview,
   CampaignStopError,
   defaultCampaignsRunsDir,
   parseCampaignPlan,
@@ -56,17 +58,34 @@ import {
   writeRegistry as writeRegistryTo,
 } from './lib/registry.mjs';
 import {
+  NTFY_TOPIC_REGEX,
+  buildNotificationDigest,
+  buildNtfyRunActions,
   classifyStopWatcherAlerts,
   defaultNotificationSettings,
   deliverRemoteNotification,
   displayNativeNotification,
+  enqueueNotificationDigest,
+  fetchWithTimeout,
   hashString,
+  isWithinQuietHours,
   nextStopWatcherRecord,
+  notificationPolicyDecision,
   normalizeStopWatcherStatus,
   notificationText,
+  sanitizeNotificationDigestState,
   sanitizeNotificationSettings,
   stopWatcherFingerprint,
 } from './lib/notifications.mjs';
+import {
+  NTFY_COMMAND_TTL_MS,
+  NotificationCommandError,
+  advanceNotificationCommandCursor,
+  consumeNotificationCommand,
+  createNotificationCommand,
+  ensureNotificationCommandInfrastructure,
+  readNotificationCommandState,
+} from './lib/notification-commands.mjs';
 import {
   WorktreeOperationError,
   cleanupOrphanWorktrees,
@@ -83,6 +102,7 @@ const APP_SLUG = 'campaigns';
 const registryDir = process.env.CAMPAIGNS_REGISTRY_DIR || defaultRegistryDir();
 const registryPath = path.join(registryDir, 'registry.json');
 const notificationSettingsPath = path.join(registryDir, 'notification-settings.json');
+const notificationDigestPath = path.join(registryDir, 'notification-digest.json');
 const stopWatcherStatePath = path.join(registryDir, 'stop-watcher-state.json');
 const portFilePath = process.env.CAMPAIGNS_PORT_FILE || defaultPortFilePath();
 const lessonsHelperPath = process.env.CAMPAIGNS_LESSONS_HELPER || defaultLessonsHelperPath();
@@ -332,6 +352,11 @@ const server = createServer(async (request, response) => {
 
     if (url.pathname === '/api/run/stop' && request.method === 'POST') {
       await handleRunStop(request, response);
+      return;
+    }
+
+    if (url.pathname === '/api/run/approve-review' && request.method === 'POST') {
+      await handleRunApproveReview(request, response);
       return;
     }
 
@@ -1726,14 +1751,25 @@ async function deleteMissingRegistryEndpoint(request, response) {
 
 async function sendNotificationSettings(response) {
   const { settings, configured } = await readNotificationSettingsWithMeta();
-  sendJson(response, 200, { ...settings, configured });
+  sendJson(response, 200, { ...publicNotificationSettings(settings), configured });
 }
 
 async function saveNotificationSettingsEndpoint(request, response) {
   const payload = await readJsonBody(request);
-  const settings = sanitizeNotificationSettings(payload);
+  const current = await readNotificationSettings();
+  let settings = sanitizeNotificationSettings({
+    ...current,
+    ...payload,
+    ntfyCommandTopic: current.ntfyCommandTopic,
+    verifiedPhoneUrl: Object.hasOwn(payload, 'verifiedPhoneUrl')
+      ? payload.verifiedPhoneUrl
+      : current.verifiedPhoneUrl,
+  });
   await writeNotificationSettings(settings);
-  sendJson(response, 200, { ok: true, ...settings, configured: true });
+  if (NTFY_TOPIC_REGEX.test(settings.ntfyTopic)) {
+    settings = (await ensureNotificationCommandInfrastructure(registryDir, settings)).settings;
+  }
+  sendJson(response, 200, { ok: true, ...publicNotificationSettings(settings), configured: true });
 }
 
 async function readNotificationSettingsWithMeta() {
@@ -1756,7 +1792,15 @@ async function readNotificationSettings() {
 
 async function writeNotificationSettings(settings) {
   await mkdir(path.dirname(notificationSettingsPath), { recursive: true });
-  await writeFile(notificationSettingsPath, `${JSON.stringify(sanitizeNotificationSettings(settings), null, 2)}\n`, 'utf8');
+  await writeFileAtomic(
+    notificationSettingsPath,
+    `${JSON.stringify(sanitizeNotificationSettings(settings), null, 2)}\n`,
+  );
+}
+
+function publicNotificationSettings(settings) {
+  const { ntfyCommandTopic: _commandTopic, ...publicSettings } = sanitizeNotificationSettings(settings);
+  return publicSettings;
 }
 
 async function sendNotification(request, response) {
@@ -1817,12 +1861,40 @@ async function sendRemoteNotification(request, response) {
   sendJson(response, 200, { ok: true });
 }
 
-async function sendConfiguredServerNotification(title, message, { kind = 'stopped' } = {}) {
+async function sendConfiguredServerNotification(title, message, {
+  kind = 'stopped',
+  category = kind,
+  eventKey = null,
+  ntfyActions = [],
+  now = Date.now(),
+  settings: providedSettings = null,
+} = {}) {
   const cleanTitle = notificationText(title, 'Campaigns', NOTIFICATION_TITLE_MAX);
   const cleanMessage = notificationText(message, '', NOTIFICATION_MESSAGE_MAX);
   if (!cleanMessage) return false;
 
-  const settings = await readNotificationSettings();
+  const settings = providedSettings ?? await readNotificationSettings();
+  if (notificationPolicyDecision(settings, category, new Date(now)) === 'digest') {
+    const digestState = enqueueNotificationDigest(
+      await readNotificationDigestState(),
+      { title: cleanTitle, message: cleanMessage, category, eventKey },
+      now,
+    );
+    await writeNotificationDigestState(digestState);
+    return true;
+  }
+  return deliverConfiguredNotificationNow(cleanTitle, cleanMessage, {
+    kind,
+    ntfyActions,
+    settings,
+  });
+}
+
+async function deliverConfiguredNotificationNow(cleanTitle, cleanMessage, {
+  kind = 'stopped',
+  ntfyActions = [],
+  settings,
+} = {}) {
   const deliveries = [];
   const sound = kind === 'finished' ? 'Glass' : 'Basso';
 
@@ -1836,6 +1908,7 @@ async function sendConfiguredServerNotification(title, message, { kind = 'stoppe
         title: cleanTitle,
         message: cleanMessage,
         ntfyTopic: settings.ntfyTopic,
+        ntfyActions,
         webhookUrl: settings.webhookUrl,
         strict: false,
       }).then((result) => {
@@ -1855,6 +1928,35 @@ async function sendConfiguredServerNotification(title, message, { kind = 'stoppe
     }
   }
   return settled.some((result) => result.status === 'fulfilled');
+}
+
+async function readNotificationDigestState() {
+  try {
+    return sanitizeNotificationDigestState(JSON.parse(await readFile(notificationDigestPath, 'utf8')));
+  } catch (error) {
+    if (error.code === 'ENOENT' || error instanceof SyntaxError) {
+      return sanitizeNotificationDigestState(null);
+    }
+    throw error;
+  }
+}
+
+async function writeNotificationDigestState(state) {
+  await mkdir(path.dirname(notificationDigestPath), { recursive: true });
+  await writeFileAtomic(notificationDigestPath, `${JSON.stringify(state, null, 2)}\n`);
+}
+
+async function flushNotificationDigest(settings, now) {
+  const state = await readNotificationDigestState();
+  if (!state.pending.length) return false;
+  if (settings.digestMode === 'quiet-hours' && isWithinQuietHours(settings, new Date(now))) return false;
+  const digest = buildNotificationDigest(state);
+  const delivered = await deliverConfiguredNotificationNow(digest.title, digest.message, {
+    kind: 'finished',
+    settings,
+  });
+  if (delivered) await writeNotificationDigestState({ version: 1, pending: [] });
+  return delivered;
 }
 
 /* ------------------------------ Stop watcher -------------------------------- */
@@ -1888,6 +1990,12 @@ async function runStopWatcherPass() {
     const registry = await readRegistry();
     const state = await getStopWatcherState();
     const now = Date.now();
+    let settings = await readNotificationSettings();
+    if (NTFY_TOPIC_REGEX.test(settings.ntfyTopic)) {
+      settings = (await ensureNotificationCommandInfrastructure(registryDir, settings)).settings;
+      await runNotificationCommandPass(settings, now);
+    }
+    await flushNotificationDigest(settings, now);
     const nextCampaigns = {};
 
     for (const entry of registry.campaigns) {
@@ -1897,7 +2005,17 @@ async function runStopWatcherPass() {
 
       for (const alert of alerts) {
         if (alert.type === 'stop' && previous?.notifiedEventKey === alert.eventKey) continue;
-        await sendConfiguredServerNotification(alert.title, alert.message, { kind: alert.kind });
+        const ntfyActions = alert.type === 'stop'
+          ? await buildStopWatcherNtfyActions(settings, snapshot, now)
+          : [];
+        await sendConfiguredServerNotification(alert.title, alert.message, {
+          kind: alert.kind,
+          category: alert.category ?? snapshot.status,
+          eventKey: alert.eventKey,
+          ntfyActions,
+          now,
+          settings,
+        });
       }
 
       nextCampaigns[entry.id] = nextStopWatcherRecord(previous, snapshot, now, alerts);
@@ -1908,6 +2026,95 @@ async function runStopWatcherPass() {
   } finally {
     stopWatcherRunning = false;
   }
+}
+
+async function buildStopWatcherNtfyActions(settings, snapshot, now) {
+  if (!NTFY_TOPIC_REGEX.test(settings.ntfyTopic) || snapshot.backend !== 'engine' || !snapshot.runId) return [];
+  const command = await ensureNotificationCommandInfrastructure(registryDir, settings);
+  const stopToken = createNotificationCommand({
+    action: 'stop',
+    runId: snapshot.runId,
+    secret: command.secret,
+    now,
+  });
+  const approveToken = snapshot.status === 'awaiting_human_review'
+    && snapshot.latestCause === 'reviewer_unavailable'
+    ? createNotificationCommand({
+      action: 'approve',
+      runId: snapshot.runId,
+      secret: command.secret,
+      now,
+    })
+    : '';
+  return buildNtfyRunActions({
+    commandTopic: command.settings.ntfyCommandTopic,
+    stopToken,
+    approveToken,
+    openUrl: command.settings.verifiedPhoneUrl,
+  });
+}
+
+async function runNotificationCommandPass(settings, now) {
+  const command = await ensureNotificationCommandInfrastructure(registryDir, settings);
+  const state = await readNotificationCommandState(command.paths.statePath, now);
+  const since = state.lastMessageId ?? `${Math.ceil(NTFY_COMMAND_TTL_MS / 60_000)}m`;
+  const url = `https://ntfy.sh/${encodeURIComponent(command.settings.ntfyCommandTopic)}/json?poll=1&since=${encodeURIComponent(since)}`;
+  let response;
+  try {
+    response = await fetchWithTimeout(url, { method: 'GET' }, 8_000);
+  } catch (error) {
+    console.error(`Notification command poll failed: ${error.message}`);
+    return;
+  }
+  if (!response.ok) {
+    console.error(`Notification command poll failed: HTTP ${response.status}`);
+    return;
+  }
+
+  const messages = (await response.text()).split('\n').filter(Boolean);
+  for (const line of messages) {
+    let message;
+    try {
+      message = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (message.event !== 'message' || !message.id || message.id === state.lastMessageId) continue;
+    try {
+      await consumeNotificationCommand(message.message, {
+        dataDir: registryDir,
+        messageId: message.id,
+        now,
+        dispatch: dispatchNotificationCommand,
+      });
+    } catch (error) {
+      if (!(error instanceof NotificationCommandError)) {
+        console.error(`Notification command failed: ${error.message}`);
+      }
+      await advanceNotificationCommandCursor(registryDir, message.id, now);
+    }
+  }
+}
+
+async function dispatchNotificationCommand(command) {
+  const registry = await readRegistry();
+  let match = null;
+  for (const entry of registry.campaigns) {
+    const automation = await getAutomateState(entry.filePath, { summary: true, registryId: entry.id });
+    if (automation?.backend === 'engine' && automation.run_id === command.runId) {
+      match = entry;
+      break;
+    }
+  }
+  if (!match) throw new Error('Notification command run is no longer current.');
+  if (command.action === 'stop') return requestCampaignStop(match.filePath);
+  if (command.action === 'approve') {
+    return approveCampaignHumanReview(match.filePath, {
+      runId: command.runId,
+      approvedVia: 'ntfy',
+    });
+  }
+  throw new Error(`Unsupported notification command: ${command.action}`);
 }
 
 async function getStopWatcherState() {
@@ -1966,6 +2173,9 @@ async function buildStopWatcherSnapshot(entry) {
 
   const status = normalizeStopWatcherStatus(automation);
   const currentStep = automation?.current_step ?? null;
+  const latestCause = automation?.backend === 'engine'
+    ? automation.timeline_events?.at(-1)?.event ?? null
+    : null;
   const fingerprint = stopWatcherFingerprint({
     status,
     automation,
@@ -1982,6 +2192,8 @@ async function buildStopWatcherSnapshot(entry) {
     missing,
     status,
     backend: automation?.backend ?? null,
+    runId: automation?.run_id ?? null,
+    latestCause,
     hasAutomationState: Boolean(automation),
     hasActiveRun: automation?.has_active_run === true,
     isActive: automation?.is_active === true,
@@ -2826,6 +3038,39 @@ async function handleRunStop(request, response) {
     });
   } catch (error) {
     if (error instanceof CampaignStopError) {
+      sendJson(response, 409, { ok: false, error: error.message });
+      return;
+    }
+    throw error;
+  }
+}
+
+async function handleRunApproveReview(request, response) {
+  const payload = await readJsonBody(request);
+  if (typeof payload.id !== 'string' || typeof payload.runId !== 'string') {
+    sendJson(response, 400, { error: 'Expected { id: string, runId: string }.' });
+    return;
+  }
+
+  const registry = await readRegistry();
+  const entry = registry.campaigns.find((campaign) => campaign.id === payload.id);
+  if (!entry) {
+    sendJson(response, 404, { error: 'Campaign not found.' });
+    return;
+  }
+
+  try {
+    const result = await approveCampaignHumanReview(entry.filePath, {
+      runId: payload.runId,
+      approvedVia: 'api',
+    });
+    sendJson(response, 200, {
+      ok: true,
+      status: result.state.run.status,
+      event: 'human_review_approved',
+    });
+  } catch (error) {
+    if (error instanceof HumanReviewApprovalError) {
       sendJson(response, 409, { ok: false, error: error.message });
       return;
     }

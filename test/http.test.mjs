@@ -119,6 +119,32 @@ test('document and registry HTTP contracts hold against a real ephemeral server'
   assert.ok(Object.hasOwn(capabilities, 'personalLayer'));
   assert.ok(Object.hasOwn(capabilities, 'providers'));
 
+  const notificationSettingsResponse = await fetch(`${baseUrl}/api/notification-settings`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      ntfyTopic: 'attention-fixture',
+      digestMode: 'quiet-hours',
+      quietHoursStart: '21:30',
+      quietHoursEnd: '07:15',
+      pageAlways: ['awaiting_human_review', 'failed'],
+    }),
+  });
+  const notificationSettings = await notificationSettingsResponse.json();
+  assert.equal(notificationSettingsResponse.status, 200);
+  assert.equal(notificationSettings.digestMode, 'quiet-hours');
+  assert.deepEqual(notificationSettings.pageAlways, ['awaiting_human_review', 'failed']);
+  assert.equal(Object.hasOwn(notificationSettings, 'ntfyCommandTopic'), false);
+  const persistedNotificationSettings = JSON.parse(
+    await readFile(path.join(registryDir, 'notification-settings.json'), 'utf8'),
+  );
+  assert.match(persistedNotificationSettings.ntfyCommandTopic, /^campaigns-cmd-/);
+  await access(path.join(registryDir, 'notification-command-secret'));
+  const reloadedNotificationSettings = await fetch(`${baseUrl}/api/notification-settings`)
+    .then((response) => response.json());
+  assert.equal(reloadedNotificationSettings.quietHoursStart, '21:30');
+  assert.equal(reloadedNotificationSettings.quietHoursEnd, '07:15');
+
   const documentResponse = await fetch(`${baseUrl}/api/document`);
   const document = await documentResponse.json();
   assert.equal(documentResponse.status, 200);

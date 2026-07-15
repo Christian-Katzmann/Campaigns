@@ -244,6 +244,40 @@
                 <button id="test-webhook-button" class="button button-quiet" type="button" aria-label="Test team webhook">Test</button>
               </div>
             </div>
+
+            <div class="settings-field-group">
+              <label for="digest-mode-select">
+                <strong>Delivery</strong>
+                <span class="field-desc">Send now or collect a quiet-hours digest</span>
+              </label>
+              <select id="digest-mode-select" class="settings-select">
+                <option value="immediate">Immediate</option>
+                <option value="quiet-hours">Digest during quiet hours</option>
+              </select>
+            </div>
+
+            <div class="settings-time-row">
+              <label for="quiet-hours-start">
+                <span class="field-desc">Quiet from</span>
+                <input id="quiet-hours-start" type="time" value="22:00" />
+              </label>
+              <label for="quiet-hours-end">
+                <span class="field-desc">Until</span>
+                <input id="quiet-hours-end" type="time" value="08:00" />
+              </label>
+            </div>
+
+            <fieldset class="settings-choice-list">
+              <legend>
+                <strong>Always page</strong>
+                <span class="field-desc">Bypass the digest for selected attention states</span>
+              </legend>
+              <label><input type="checkbox" value="awaiting_human_review" data-page-always /> Human review</label>
+              <label><input type="checkbox" value="failed" data-page-always /> Failed</label>
+              <label><input type="checkbox" value="blocked" data-page-always /> Blocked</label>
+              <label><input type="checkbox" value="cap_reached" data-page-always /> Run cap</label>
+              <label><input type="checkbox" value="stopped_by_user" data-page-always /> User stop</label>
+            </fieldset>
           </section>
 
           <section class="settings-section">

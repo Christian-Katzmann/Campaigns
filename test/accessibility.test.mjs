@@ -33,6 +33,16 @@ test('primary controls have restrained live regions, names, and keyboard resize 
   assert.match(html, /class="automate-drawer-resize"[^>]+tabindex="0"[^>]+aria-orientation="vertical"/);
 });
 
+test('notification escalation policy controls have explicit labels', async () => {
+  const html = await read('public/index.html');
+  for (const id of ['digest-mode-select', 'quiet-hours-start', 'quiet-hours-end']) {
+    assert.match(html, new RegExp(`<label[^>]+for="${id}"`));
+    assert.match(html, new RegExp(`id="${id}"`));
+  }
+  assert.match(html, /<legend>[\s\S]*Always page[\s\S]*<\/legend>/);
+  assert.equal((html.match(/data-page-always/g) ?? []).length, 5);
+});
+
 test('reduced motion skips celebrations and removes interface animation', async () => {
   const [effects, styles] = await Promise.all([
     read('public/modules/effects.mjs'),

@@ -116,6 +116,7 @@ preflight `blocked` run may start after the next preflight passes.
 | `final_review_needs_work` | `reviewing -> reworking` |
 | `final_rework_completed` | `reworking -> awaiting_review` |
 | `final_review_approved` / `campaign_completed` | `reviewing -> completed` |
+| `human_review_approved` | `awaiting_human_review -> completed` (only after `reviewer_unavailable`) |
 | `final_review_halted` | review states `-> halted` |
 | `campaign_merged` | `completed -> merged` |
 | `force_merged_unreviewed` | review/halted states `-> force_merged`, only with `explicit: true` |

@@ -17,6 +17,11 @@ export function notificationSettingsPayload() {
     macNotificationsEnabled: !!state.prefs.macNotificationsEnabled,
     ntfyTopic: state.prefs.ntfyTopic || '',
     webhookUrl: state.prefs.webhookUrl || '',
+    digestMode: state.prefs.digestMode || 'immediate',
+    quietHoursStart: state.prefs.quietHoursStart || '22:00',
+    quietHoursEnd: state.prefs.quietHoursEnd || '08:00',
+    pageAlways: Array.isArray(state.prefs.pageAlways) ? state.prefs.pageAlways : ['awaiting_human_review'],
+    verifiedPhoneUrl: state.prefs.verifiedPhoneUrl || '',
   };
 }
 
@@ -31,10 +36,18 @@ export function applyNotificationSettings(settings) {
     macNotificationsEnabled: settings.macNotificationsEnabled === true,
     ntfyTopic: typeof settings.ntfyTopic === 'string' ? settings.ntfyTopic : '',
     webhookUrl: typeof settings.webhookUrl === 'string' ? settings.webhookUrl : '',
+    digestMode: settings.digestMode === 'quiet-hours' ? 'quiet-hours' : 'immediate',
+    quietHoursStart: typeof settings.quietHoursStart === 'string' ? settings.quietHoursStart : '22:00',
+    quietHoursEnd: typeof settings.quietHoursEnd === 'string' ? settings.quietHoursEnd : '08:00',
+    pageAlways: Array.isArray(settings.pageAlways) ? settings.pageAlways : ['awaiting_human_review'],
+    verifiedPhoneUrl: typeof settings.verifiedPhoneUrl === 'string' ? settings.verifiedPhoneUrl : '',
   };
 
   for (const [key, value] of Object.entries(next)) {
-    if (state.prefs[key] !== value) {
+    const unchanged = Array.isArray(value)
+      ? JSON.stringify(state.prefs[key]) === JSON.stringify(value)
+      : state.prefs[key] === value;
+    if (!unchanged) {
       state.prefs[key] = value;
       changed = true;
     }
@@ -95,6 +108,10 @@ export function initSettings(appInfo) {
   const testNtfyBtn = document.querySelector('#test-ntfy-button');
   const webhookInput = document.querySelector('#webhook-url-input');
   const testWebhookBtn = document.querySelector('#test-webhook-button');
+  const digestModeSelect = document.querySelector('#digest-mode-select');
+  const quietHoursStart = document.querySelector('#quiet-hours-start');
+  const quietHoursEnd = document.querySelector('#quiet-hours-end');
+  const pageAlwaysInputs = [...document.querySelectorAll('[data-page-always]')];
   const featureRequestLink = document.querySelector('#feature-request-link');
 
   if (!settingsBtn || !drawer) return;
@@ -113,6 +130,11 @@ export function initSettings(appInfo) {
     if (macToggle) macToggle.checked = !!state.prefs.macNotificationsEnabled;
     if (ntfyInput) ntfyInput.value = state.prefs.ntfyTopic || '';
     if (webhookInput) webhookInput.value = state.prefs.webhookUrl || '';
+    if (digestModeSelect) digestModeSelect.value = state.prefs.digestMode || 'immediate';
+    if (quietHoursStart) quietHoursStart.value = state.prefs.quietHoursStart || '22:00';
+    if (quietHoursEnd) quietHoursEnd.value = state.prefs.quietHoursEnd || '08:00';
+    const pageAlways = new Set(state.prefs.pageAlways || ['awaiting_human_review']);
+    pageAlwaysInputs.forEach((input) => { input.checked = pageAlways.has(input.value); });
   };
 
   const openDrawer = () => {
@@ -198,6 +220,28 @@ export function initSettings(appInfo) {
       saveNotificationPrefs();
     });
   }
+
+  if (digestModeSelect) {
+    digestModeSelect.addEventListener('change', () => {
+      state.prefs.digestMode = digestModeSelect.value === 'quiet-hours' ? 'quiet-hours' : 'immediate';
+      saveNotificationPrefs();
+    });
+  }
+
+  for (const input of [quietHoursStart, quietHoursEnd]) {
+    input?.addEventListener('change', () => {
+      state.prefs.quietHoursStart = quietHoursStart?.value || '22:00';
+      state.prefs.quietHoursEnd = quietHoursEnd?.value || '08:00';
+      saveNotificationPrefs();
+    });
+  }
+
+  pageAlwaysInputs.forEach((input) => {
+    input.addEventListener('change', () => {
+      state.prefs.pageAlways = pageAlwaysInputs.filter((row) => row.checked).map((row) => row.value);
+      saveNotificationPrefs();
+    });
+  });
 
   if (testNtfyBtn) {
     testNtfyBtn.addEventListener('click', async () => {

@@ -154,6 +154,7 @@
         "review_merge_failed",
         "final_rework_completed",
         "final_review_approved",
+        "human_review_approved",
         "final_review_halted",
         "campaign_completed",
         "campaign_merged",

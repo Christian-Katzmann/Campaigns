@@ -8,6 +8,7 @@ import { promisify } from 'node:util';
 import { test } from 'node:test';
 
 import {
+  approveCampaignHumanReview,
   runCampaign,
   runPathsForCampaign,
   sweepExpiredExecutionWorktree,
@@ -202,6 +203,114 @@ test('POST /api/run/stop records the explicit user-stop status', async (t) => {
   assert.equal(state.history.at(-1).event, 'stopped_by_user');
 });
 
+test('human review approval is single-use and limited to reviewer_unavailable', async (t) => {
+  const allowed = await makeFixture(t);
+  const allowedPaths = await writeAwaitingHumanReviewState(allowed, 'reviewer_unavailable');
+  const approved = await approveCampaignHumanReview(allowed.campaignPath, {
+    runsDir: allowed.runsDir,
+    runId: 'recovery-fixture-run',
+  });
+
+  assert.equal(approved.state.run.status, 'completed');
+  assert.equal(approved.state.history.at(-1).event, 'human_review_approved');
+  assert.deepEqual(approved.state.history.at(-1).details, {
+    approved_by: 'human',
+    approved_via: 'api',
+    cause: 'reviewer_unavailable',
+    verdict: 'APPROVED',
+    reasons: [],
+    raw_tags: [],
+    findings: [],
+    review_path: null,
+  });
+  await assert.rejects(
+    approveCampaignHumanReview(allowed.campaignPath, {
+      runsDir: allowed.runsDir,
+      runId: 'recovery-fixture-run',
+    }),
+    /not awaiting human review/,
+  );
+  assert.equal(JSON.parse(await readFile(allowedPaths.statePath, 'utf8')).run.status, 'completed');
+
+  for (const cause of ['review_unparseable', 'review_fix_attempts_exhausted', 'review_merge_failed']) {
+    const rejected = await makeFixture(t);
+    await writeAwaitingHumanReviewState(rejected, cause);
+    await assert.rejects(
+      approveCampaignHumanReview(rejected.campaignPath, {
+        runsDir: rejected.runsDir,
+        runId: 'recovery-fixture-run',
+      }),
+      new RegExp(cause),
+    );
+  }
+});
+
+test('human approval reuses the normal worktree finalize and merge path', async (t) => {
+  const fixture = await makeFixture(t);
+  const config = JSON.parse(await readFile(fixture.configPath, 'utf8'));
+  config.review.reviewer = 'missing-reviewer';
+  await writeFile(fixture.configPath, `${JSON.stringify(config, null, 2)}\n`, 'utf8');
+  const mainBefore = await git(fixture.repo, ['rev-parse', 'main']);
+  const waiting = await runCampaign(fixture.campaignPath, {
+    ...fixture.runOptions,
+    noWorktree: false,
+  });
+
+  assert.equal(waiting.state.run.status, 'awaiting_human_review');
+  assert.equal(waiting.state.history.at(-1).event, 'reviewer_unavailable');
+  const approved = await approveCampaignHumanReview(fixture.campaignPath, {
+    runsDir: fixture.runsDir,
+    runId: waiting.state.run.id,
+  });
+
+  assert.equal(approved.state.run.status, 'completed');
+  assert.equal(approved.merge.reason, 'source_is_target');
+  assert.ok(approved.merge.execution_branch);
+  assert.notEqual(await git(fixture.repo, ['rev-parse', 'main']), mainBefore);
+  assert.match(await readFile(fixture.campaignPath, 'utf8'), /- \[x\] Step 1\.1/);
+  assert.ok(approved.state.artifacts.worktree.pruned_at);
+});
+
+test('POST /api/run/approve-review records approval and rejects a second tap', async (t) => {
+  const fixture = await makeFixture(t);
+  const paths = await writeAwaitingHumanReviewState(fixture, 'reviewer_unavailable');
+  const registryDir = path.join(fixture.root, 'registry');
+  await mkdir(registryDir, { recursive: true });
+  await writeFile(path.join(registryDir, 'registry.json'), `${JSON.stringify({
+    campaigns: [{ id: 'fixture-campaign', filePath: fixture.campaignPath }],
+  }, null, 2)}\n`, 'utf8');
+
+  const child = spawn(process.execPath, ['server.mjs', '--port', '0'], {
+    cwd: path.resolve('.'),
+    env: {
+      ...process.env,
+      CAMPAIGNS_REGISTRY_DIR: registryDir,
+      CAMPAIGNS_RUNS_DIR: fixture.runsDir,
+      CAMPAIGNS_PORT_FILE: path.join(fixture.root, 'server.port'),
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  t.after(() => stopChild(child));
+  const port = await waitForServerPort(child);
+  const request = () => fetch(`http://127.0.0.1:${port}/api/run/approve-review`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ id: 'fixture-campaign', runId: 'recovery-fixture-run' }),
+  });
+
+  const approved = await request();
+  assert.equal(approved.status, 200);
+  assert.deepEqual(await approved.json(), {
+    ok: true,
+    status: 'completed',
+    event: 'human_review_approved',
+  });
+  const repeated = await request();
+  assert.equal(repeated.status, 409);
+  assert.match((await repeated.json()).error, /not awaiting human review/);
+  assert.equal(JSON.parse(await readFile(paths.statePath, 'utf8')).history.at(-1).event, 'human_review_approved');
+});
+
 test('awaiting-human cleanup holds until its deadline, then prunes and retains the branch', async (t) => {
   const now = Date.parse('2026-07-15T12:00:00.000Z');
   const fixture = await makeFixture(t, { reviewOutput: 'missing verdict' });
@@ -355,6 +464,68 @@ async function writeRunningState(fixture, { runningStep = false, worktree = fals
         log_path: path.join(paths.logsDir, '1.1-1.log'),
       },
     });
+  }
+  await writeFile(paths.statePath, `${JSON.stringify(state, null, 2)}\n`, 'utf8');
+  return paths;
+}
+
+async function writeAwaitingHumanReviewState(fixture, cause) {
+  const paths = await writeRunningState(fixture);
+  let state = JSON.parse(await readFile(paths.statePath, 'utf8'));
+  const receiptPath = path.join(paths.receiptsDir, '1.1.md');
+  const reviewPath = paths.finalReviewPath;
+  await writeFile(receiptPath, '# Completed\n', 'utf8');
+  await writeFile(reviewPath, 'Verdict: NEEDS WORK\nReasons: fixture\n', 'utf8');
+  state = transitionRunState(state, {
+    event: 'step_started',
+    step_id: '1.1',
+    worker: {
+      runner: 'fake',
+      invocation_id: 'review-fixture-worker',
+      pid: deadPid,
+      log_path: path.join(paths.logsDir, 'review-fixture.log'),
+    },
+  });
+  state = transitionRunState(state, {
+    event: 'step_completed',
+    step_id: '1.1',
+    receipt_path: receiptPath,
+    commit_range: { base_oid: '1'.repeat(40), head_oid: '2'.repeat(40) },
+  });
+  state = transitionRunState(state, { event: 'run_reached_final_review' });
+
+  if (cause === 'reviewer_unavailable') {
+    state = transitionRunState(state, {
+      event: cause,
+      reviewer_runner: 'missing-reviewer',
+      reviewer_family: 'missing-family',
+      reviewer_ladder_tier: 'human',
+    });
+  } else {
+    state = transitionRunState(state, {
+      event: 'final_review_started',
+      reviewer_runner: 'fake',
+      reviewer_family: 'fake-family',
+      reviewer_ladder_tier: 'cross_family',
+    });
+    if (cause === 'review_unparseable') {
+      state = transitionRunState(state, { event: cause, review_path: reviewPath });
+    } else {
+      state = transitionRunState(state, {
+        event: 'final_review_needs_work',
+        reasons: ['fixture'],
+        review_path: reviewPath,
+      });
+      if (cause === 'review_fix_attempts_exhausted') {
+        state = transitionRunState(state, { event: cause, attempts: 1 });
+      } else {
+        state = transitionRunState(state, {
+          event: cause,
+          error: 'fixture merge failed',
+          review_path: reviewPath,
+        });
+      }
+    }
   }
   await writeFile(paths.statePath, `${JSON.stringify(state, null, 2)}\n`, 'utf8');
   return paths;
