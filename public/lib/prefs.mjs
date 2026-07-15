@@ -17,6 +17,14 @@ export const LEGACY_THEME_MAP = {
   obsidian: 'graphite',
   sunset: 'signal',
 };
+export const NOTIFICATION_DIGEST_MODES = new Set(['immediate', 'quiet-hours']);
+export const NOTIFICATION_PAGE_ALWAYS_VALUES = new Set([
+  'awaiting_human_review',
+  'blocked',
+  'failed',
+  'cap_reached',
+  'stopped_by_user',
+]);
 
 // The baseline every campaign starts from. Migrations converge stored prefs on
 // these values (see applyStandardCampaignSettings).
@@ -26,6 +34,10 @@ export const STANDARD_CAMPAIGN_SETTINGS = Object.freeze({
   celebrationsEnabled: true,
   macNotificationsEnabled: false,
   ntfyTopic: '',
+  digestMode: 'immediate',
+  quietHoursStart: '22:00',
+  quietHoursEnd: '08:00',
+  pageAlways: Object.freeze(['awaiting_human_review']),
 });
 
 export function defaultPrefs() {
@@ -42,6 +54,12 @@ export function defaultPrefs() {
     macNotificationsEnabled: STANDARD_CAMPAIGN_SETTINGS.macNotificationsEnabled,
     ntfyTopic: STANDARD_CAMPAIGN_SETTINGS.ntfyTopic,
     webhookUrl: '',
+    digestMode: STANDARD_CAMPAIGN_SETTINGS.digestMode,
+    quietHoursStart: STANDARD_CAMPAIGN_SETTINGS.quietHoursStart,
+    quietHoursEnd: STANDARD_CAMPAIGN_SETTINGS.quietHoursEnd,
+    pageAlways: [...STANDARD_CAMPAIGN_SETTINGS.pageAlways],
+    verifiedPhoneUrl: '',
+    fleetAsDefault: false,
     theme: STANDARD_CAMPAIGN_SETTINGS.theme,
   };
 }
@@ -75,6 +93,16 @@ export function sanitizePrefs(parsed) {
     macNotificationsEnabled: typeof parsed.macNotificationsEnabled === 'boolean' ? parsed.macNotificationsEnabled : defaults.macNotificationsEnabled,
     ntfyTopic: typeof parsed.ntfyTopic === 'string' ? parsed.ntfyTopic : defaults.ntfyTopic,
     webhookUrl: typeof parsed.webhookUrl === 'string' ? parsed.webhookUrl : defaults.webhookUrl,
+    digestMode: NOTIFICATION_DIGEST_MODES.has(parsed.digestMode)
+      ? parsed.digestMode
+      : defaults.digestMode,
+    quietHoursStart: normalizeClockTime(parsed.quietHoursStart, defaults.quietHoursStart),
+    quietHoursEnd: normalizeClockTime(parsed.quietHoursEnd, defaults.quietHoursEnd),
+    pageAlways: Array.isArray(parsed.pageAlways)
+      ? [...new Set(parsed.pageAlways.filter((item) => NOTIFICATION_PAGE_ALWAYS_VALUES.has(item)))]
+      : defaults.pageAlways,
+    verifiedPhoneUrl: typeof parsed.verifiedPhoneUrl === 'string' ? parsed.verifiedPhoneUrl : '',
+    fleetAsDefault: typeof parsed.fleetAsDefault === 'boolean' ? parsed.fleetAsDefault : false,
     theme: normalizeTheme(parsed.theme),
   };
 }
@@ -83,6 +111,12 @@ export function normalizeTheme(theme) {
   if (typeof theme !== 'string') return 'default';
   const normalized = LEGACY_THEME_MAP[theme] ?? theme;
   return THEME_KEYS.has(normalized) ? normalized : 'default';
+}
+
+function normalizeClockTime(value, fallback) {
+  return typeof value === 'string' && /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(value)
+    ? value
+    : fallback;
 }
 
 export function applyStandardCampaignSettings(prefs) {

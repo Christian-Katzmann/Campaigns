@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 104" role="img" aria-labelledby="title">
+  <title id="title">Kro resting</title>
+  <path fill="#1d2024" d="M23 46c0-20 12-34 31-34 17 0 29 12 29 29v36c0 10-8 18-18 18H42c-11 0-19-8-19-19V46Z"/>
+  <path fill="#31363c" d="M26 55c9-9 22-10 34-2-4 19-15 29-32 29-4-8-5-17-2-27Z"/>
+  <path fill="#d8a746" d="m80 39 13 6-13 6Z"/>
+  <circle cx="68" cy="34" r="7" fill="#f7f3e8"/>
+  <circle cx="70" cy="34" r="2.5" fill="#1d2024"/>
+  <path fill="none" stroke="#876b35" stroke-linecap="round" stroke-width="3" d="M45 94v7m17-7v7m-22 0h10m7 0h10"/>
+  <path fill="none" stroke="#858078" stroke-linecap="round" stroke-width="2" d="M11 27h9m-6-8 7 4"/>
+</svg>

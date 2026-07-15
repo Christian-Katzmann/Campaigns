@@ -23,6 +23,7 @@ export const state = {
     away: false,
     companion: false,
     defaultRunner: '',
+    deviceOnboarding: null,
     fileDeletionMode: 'permanent',
     lessons: false,
     runners: [],
@@ -93,6 +94,10 @@ export const elements = {
   libraryEmpty: document.querySelector('#library-empty'),
   libraryFilter: document.querySelector('#library-filter'),
   libraryFilterCount: document.querySelector('#library-filter-count'),
+  fleet: document.querySelector('#fleet'),
+  fleetSummary: document.querySelector('#fleet-summary'),
+  fleetGroups: document.querySelector('#fleet-groups'),
+  fleetEmpty: document.querySelector('#fleet-empty'),
   toast: document.querySelector('#toast'),
 };
 

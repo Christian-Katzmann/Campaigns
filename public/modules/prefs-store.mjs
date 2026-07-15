@@ -11,6 +11,7 @@ const LEGACY_PREFS_KEY = 'campaign-guide-prefs:v1';
 const MIGRATION_FLAG_KEY = 'campaigns-migrated:v1';
 const DOC_SECTIONS_RESET_FLAG_KEY = 'campaigns-doc-sections-reset:v1';
 const STANDARD_SETTINGS_MIGRATION_FLAG_KEY = 'campaigns-standard-settings-2026-05-24:v1';
+const FLEET_DEFAULT_KEY = 'campaigns-fleet-default:v1';
 const TODAY_INACTIVITY_MS = 12 * 60 * 60 * 1000;
 
 export function migrateStandardCampaignSettings(allPrefs) {
@@ -94,6 +95,22 @@ export function loadPrefs(filePath) {
     return defaults;
   } catch {
     return defaults;
+  }
+}
+
+export function loadFleetAsDefault() {
+  try {
+    return localStorage.getItem(FLEET_DEFAULT_KEY) === 'true';
+  } catch {
+    return false;
+  }
+}
+
+export function saveFleetAsDefault(enabled) {
+  try {
+    localStorage.setItem(FLEET_DEFAULT_KEY, enabled ? 'true' : 'false');
+  } catch {
+    /* ignore */
   }
 }
 

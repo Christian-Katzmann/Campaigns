@@ -44,7 +44,7 @@
             </svg>
             <span>Companion</span>
           </button>
-          <button id="settings-button" class="button button-quiet button-icon" type="button" aria-label="Preferences" aria-controls="settings-drawer" aria-expanded="false" title="Preferences">
+          <button id="settings-button" class="button button-quiet button-icon" type="button" aria-label="Preferences" aria-controls="settings-drawer" aria-expanded="false" title="Preferences" data-settings-trigger>
             <svg class="icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:18px;height:18px;vertical-align:middle;display:inline-block;">
               <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.1a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"></path>
               <circle cx="12" cy="12" r="3"></circle>
@@ -97,7 +97,8 @@
     <div id="library" class="library" hidden>
       <nav class="topbar-tabs" aria-label="Views">
         <a class="button button-quiet" href="?library" aria-current="page">Campaigns</a>
-        <a id="workflows-tab" class="button button-quiet" href="?view=workflows" hidden>Workflows</a>
+        <a class="button button-quiet" href="?view=fleet">Fleet</a>
+        <a id="workflows-tab" class="button button-quiet" href="?view=workflows" data-workflows-tab hidden>Workflows</a>
       </nav>
       <header class="library-header">
         <div class="library-header-text">
@@ -117,6 +118,7 @@
             hidden
           />
           <button id="away-all-button" class="button button-quiet away-all-button" type="button" hidden>Away</button>
+          <button id="library-settings-button" class="button button-quiet" type="button" aria-controls="settings-drawer" aria-expanded="false" data-settings-trigger>Preferences</button>
           <button id="new-campaign-button" class="button button-primary" type="button">New campaign</button>
         </div>
       </header>
@@ -133,6 +135,43 @@
       </div>
     </div>
 
+    <div id="fleet" class="fleet" hidden>
+      <nav class="topbar-tabs" aria-label="Views">
+        <a class="button button-quiet" href="?library">Campaigns</a>
+        <a class="button button-quiet" href="?view=fleet" aria-current="page">Fleet</a>
+        <a class="button button-quiet" href="?view=workflows" data-workflows-tab hidden>Workflows</a>
+        <button id="fleet-settings-button" class="button button-quiet fleet-settings-button" type="button" aria-controls="settings-drawer" aria-expanded="false" data-settings-trigger>Preferences</button>
+      </nav>
+      <header class="fleet-header">
+        <div>
+          <p class="library-eyebrow">Across every repo</p>
+          <h1 class="library-title">Fleet</h1>
+          <p id="fleet-summary" class="fleet-summary" aria-live="polite">Loading the fleet…</p>
+        </div>
+        <img id="fleet-kro" class="fleet-kro" src="/assets/kro/idle.svg" alt="Kro is resting" />
+      </header>
+      <section class="fleet-metrics" aria-label="Fleet summary">
+        <div class="fleet-metric">
+          <span class="fleet-metric-label">Running</span>
+          <strong id="fleet-running-count">0</strong>
+        </div>
+        <div class="fleet-metric">
+          <span class="fleet-metric-label">Need you</span>
+          <strong id="fleet-attention-count">0</strong>
+        </div>
+        <div class="fleet-metric fleet-metric--wide">
+          <span class="fleet-metric-label">Babysitting index</span>
+          <strong id="fleet-babysitting-index">Not tracked yet</strong>
+        </div>
+      </section>
+      <div id="fleet-groups" class="fleet-groups" aria-live="polite"></div>
+      <div id="fleet-empty" class="fleet-empty" hidden>
+        <p class="library-empty-title">No campaigns registered yet.</p>
+        <p class="library-empty-body">Open a campaign file and it will join the fleet here.</p>
+      </div>
+      <p id="fleet-updated" class="fleet-updated"></p>
+    </div>
+
     <!-- Workflows: a full-bleed, self-contained DëvSec-style fragility-map browser,
          wired to GET /api/workflows. Filled imperatively by /workflows-v2.js when
          ?view=workflows (or the ?view=workflows-v2 alias). -->
@@ -140,6 +179,7 @@
       <div id="workflows-empty" class="library" hidden>
         <nav class="topbar-tabs" aria-label="Views">
           <a class="button button-quiet" href="?library">Campaigns</a>
+          <a class="button button-quiet" href="?view=fleet">Fleet</a>
         </nav>
         <div class="library-empty">
           <p class="library-empty-title">No workflow maps yet.</p>
@@ -183,6 +223,16 @@
                 <option value="signal">Signal Paper</option>
               </select>
             </div>
+            <div class="settings-row-toggle">
+              <div class="toggle-label-wrap">
+                <strong>Start in Fleet</strong>
+                <span class="field-desc">When more than one campaign is running</span>
+              </div>
+              <label class="switch">
+                <input id="fleet-default-toggle" type="checkbox" aria-label="Start in Fleet" />
+                <span class="slider"></span>
+              </label>
+            </div>
           </section>
 
           <section class="settings-section">
@@ -206,6 +256,24 @@
                 <input id="celebration-toggle" type="checkbox" aria-label="Completion burst" />
                 <span class="slider"></span>
               </label>
+            </div>
+          </section>
+
+          <section class="settings-section">
+            <h3>Phone</h3>
+            <button id="device-onboarding-button" class="button button-primary button-wide" type="button" hidden>
+              Put Campaigns on your phone
+            </button>
+            <p id="device-onboarding-hint" class="field-desc"></p>
+            <div id="device-onboarding-job" class="device-onboarding-job" hidden>
+              <div class="device-onboarding-job-header">
+                <strong id="device-onboarding-status">Starting…</strong>
+                <button id="device-onboarding-cancel" class="button button-quiet" type="button">Cancel</button>
+              </div>
+              <p id="device-onboarding-checkpoint" class="device-onboarding-checkpoint" hidden></p>
+              <a id="device-onboarding-url" class="device-onboarding-url" target="_blank" rel="noopener noreferrer" hidden></a>
+              <img id="device-onboarding-qr" class="device-onboarding-qr" alt="Scan to open Campaigns on your phone" hidden />
+              <pre id="device-onboarding-log" class="device-onboarding-log" aria-live="polite"></pre>
             </div>
           </section>
 
@@ -244,6 +312,40 @@
                 <button id="test-webhook-button" class="button button-quiet" type="button" aria-label="Test team webhook">Test</button>
               </div>
             </div>
+
+            <div class="settings-field-group">
+              <label for="digest-mode-select">
+                <strong>Delivery</strong>
+                <span class="field-desc">Send now or collect a quiet-hours digest</span>
+              </label>
+              <select id="digest-mode-select" class="settings-select">
+                <option value="immediate">Immediate</option>
+                <option value="quiet-hours">Digest during quiet hours</option>
+              </select>
+            </div>
+
+            <div class="settings-time-row">
+              <label for="quiet-hours-start">
+                <span class="field-desc">Quiet from</span>
+                <input id="quiet-hours-start" type="time" value="22:00" />
+              </label>
+              <label for="quiet-hours-end">
+                <span class="field-desc">Until</span>
+                <input id="quiet-hours-end" type="time" value="08:00" />
+              </label>
+            </div>
+
+            <fieldset class="settings-choice-list">
+              <legend>
+                <strong>Always page</strong>
+                <span class="field-desc">Bypass the digest for selected attention states</span>
+              </legend>
+              <label><input type="checkbox" value="awaiting_human_review" data-page-always /> Human review</label>
+              <label><input type="checkbox" value="failed" data-page-always /> Failed</label>
+              <label><input type="checkbox" value="blocked" data-page-always /> Blocked</label>
+              <label><input type="checkbox" value="cap_reached" data-page-always /> Run cap</label>
+              <label><input type="checkbox" value="stopped_by_user" data-page-always /> User stop</label>
+            </fieldset>
           </section>
 
           <section class="settings-section">

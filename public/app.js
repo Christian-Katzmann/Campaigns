@@ -11,8 +11,9 @@ import {
   renderLibrary,
 } from './modules/library.mjs';
 import { initSwitcher } from './modules/switcher.mjs';
-import { loadPrefs } from './modules/prefs-store.mjs';
+import { loadFleetAsDefault, loadPrefs } from './modules/prefs-store.mjs';
 import { initSettings } from './modules/settings.mjs';
+import { renderFleet } from './modules/fleet.mjs';
 import { initWorktreesPanel } from './modules/worktrees.mjs';
 import {
   fetchCampaignAutomateState,
@@ -43,9 +44,16 @@ async function initialize() {
   bindGlobalActions();
   initNewCampaign();
   state.libraryExpandedCollections = loadLibraryExpandedCollections();
+  state.prefs.fleetAsDefault = loadFleetAsDefault();
 
   const params = new URLSearchParams(window.location.search);
   const view = params.get('view');
+  if (view === 'fleet') {
+    await updateWorkflowsAvailability();
+    await renderFleet();
+    initSettings();
+    return;
+  }
   if (view === 'workflows' || view === 'workflows-v2') {
     const hasWorkflows = await updateWorkflowsAvailability();
     if (!hasWorkflows) {
@@ -79,8 +87,20 @@ async function initialize() {
     await updateWorkflowsAvailability();
     initLibraryFilter();
     await renderLibrary();
+    initSettings();
     startAutomatePolling();
     return;
+  }
+
+  if (!view && !params.has('id') && state.prefs.fleetAsDefault) {
+    const fleetPayload = await fleetDefaultPayload();
+    if (fleetPayload) {
+      window.history.replaceState(null, '', '?view=fleet');
+      await updateWorkflowsAvailability();
+      await renderFleet(fleetPayload);
+      initSettings();
+      return;
+    }
   }
 
   const id = params.get('id');
@@ -98,6 +118,7 @@ async function initialize() {
     await updateWorkflowsAvailability();
     initLibraryFilter();
     await renderLibrary();
+    initSettings();
     startAutomatePolling();
     return;
   }
@@ -121,6 +142,7 @@ async function initialize() {
   state.dirty = false;
   state.saveStatus = 'idle';
   state.prefs = loadPrefs(state.filePath);
+  state.prefs.fleetAsDefault = loadFleetAsDefault();
   if (state.prefs.focusMode) document.body.classList.add('focus-mode');
   applyCampaignLogo(state.id, Boolean(payload.hasLogo));
 
@@ -159,12 +181,24 @@ async function updateWorkflowsAvailability() {
     // Discovery unavailable is equivalent to no maps: keep the optional view gated.
   }
 
-  const tab = document.querySelector('#workflows-tab');
-  if (tab) {
-    if (available) tab.hidden = false;
-    else tab.remove();
+  for (const tab of document.querySelectorAll('[data-workflows-tab]')) {
+    tab.hidden = !available;
   }
   return available;
+}
+
+async function fleetDefaultPayload() {
+  try {
+    const response = await fetch('/api/companion-state', { cache: 'no-store' });
+    if (!response.ok) return null;
+    const payload = await response.json();
+    const active = Array.isArray(payload.campaigns)
+      ? payload.campaigns.filter((campaign) => campaign.is_active === true).length
+      : 0;
+    return active > 1 ? payload : null;
+  } catch {
+    return null;
+  }
 }
 
 async function updatePersonalLayerAvailability() {
@@ -172,6 +206,7 @@ async function updatePersonalLayerAvailability() {
   let fileDeletion = {};
   let runnerCatalog = [];
   let defaultRunner = '';
+  let deviceOnboarding = null;
   try {
     const params = new URLSearchParams(window.location.search);
     const id = params.get('id');
@@ -185,6 +220,9 @@ async function updatePersonalLayerAvailability() {
       fileDeletion = payload.fileDeletion ?? {};
       runnerCatalog = Array.isArray(payload.runners) ? payload.runners : [];
       defaultRunner = typeof payload.defaultRunner === 'string' ? payload.defaultRunner : '';
+      deviceOnboarding = payload.deviceOnboarding && typeof payload.deviceOnboarding === 'object'
+        ? payload.deviceOnboarding
+        : null;
     }
   } catch {
     // Optional integrations stay hidden when capability discovery is unavailable.
@@ -195,6 +233,7 @@ async function updatePersonalLayerAvailability() {
     away: personalLayer.away === true,
     companion: personalLayer.companion === true,
     defaultRunner,
+    deviceOnboarding,
     fileDeletionMode: fileDeletion.mode === 'trash' ? 'trash' : 'permanent',
     lessons: personalLayer.lessons === true,
     runners: runnerCatalog,

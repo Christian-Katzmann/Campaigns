@@ -7,8 +7,9 @@ import { state } from './state.mjs';
 import { showToast, trapDialogFocus } from './dom.mjs';
 import { applyTheme, NTFY_TOPIC_REGEX, postRemoteNotification } from './effects.mjs';
 import { buildFeatureRequestUrl } from '../lib/feature-request.mjs';
+import { deviceOnboardingPresentation } from '../lib/device-onboarding.mjs';
 import { normalizeTheme } from '../lib/prefs.mjs';
-import { savePrefs } from './prefs-store.mjs';
+import { saveFleetAsDefault, savePrefs } from './prefs-store.mjs';
 
 let notificationSettingsSaveTimer = null;
 
@@ -17,6 +18,11 @@ export function notificationSettingsPayload() {
     macNotificationsEnabled: !!state.prefs.macNotificationsEnabled,
     ntfyTopic: state.prefs.ntfyTopic || '',
     webhookUrl: state.prefs.webhookUrl || '',
+    digestMode: state.prefs.digestMode || 'immediate',
+    quietHoursStart: state.prefs.quietHoursStart || '22:00',
+    quietHoursEnd: state.prefs.quietHoursEnd || '08:00',
+    pageAlways: Array.isArray(state.prefs.pageAlways) ? state.prefs.pageAlways : ['awaiting_human_review'],
+    verifiedPhoneUrl: state.prefs.verifiedPhoneUrl || '',
   };
 }
 
@@ -31,10 +37,18 @@ export function applyNotificationSettings(settings) {
     macNotificationsEnabled: settings.macNotificationsEnabled === true,
     ntfyTopic: typeof settings.ntfyTopic === 'string' ? settings.ntfyTopic : '',
     webhookUrl: typeof settings.webhookUrl === 'string' ? settings.webhookUrl : '',
+    digestMode: settings.digestMode === 'quiet-hours' ? 'quiet-hours' : 'immediate',
+    quietHoursStart: typeof settings.quietHoursStart === 'string' ? settings.quietHoursStart : '22:00',
+    quietHoursEnd: typeof settings.quietHoursEnd === 'string' ? settings.quietHoursEnd : '08:00',
+    pageAlways: Array.isArray(settings.pageAlways) ? settings.pageAlways : ['awaiting_human_review'],
+    verifiedPhoneUrl: typeof settings.verifiedPhoneUrl === 'string' ? settings.verifiedPhoneUrl : '',
   };
 
   for (const [key, value] of Object.entries(next)) {
-    if (state.prefs[key] !== value) {
+    const unchanged = Array.isArray(value)
+      ? JSON.stringify(state.prefs[key]) === JSON.stringify(value)
+      : state.prefs[key] === value;
+    if (!unchanged) {
       state.prefs[key] = value;
       changed = true;
     }
@@ -84,17 +98,32 @@ export async function persistNotificationSettings() {
 /* ---------- Custom Vibe Coder Extensions ---------- */
 
 export function initSettings(appInfo) {
-  const settingsBtn = document.querySelector('#settings-button');
+  const settingsButtons = [...document.querySelectorAll('[data-settings-trigger]')];
+  const settingsBtn = settingsButtons[0];
   const drawer = document.querySelector('#settings-drawer');
   const drawerContent = drawer?.querySelector('.settings-drawer-content');
   const themeSelect = document.querySelector('#theme-select');
   const soundToggle = document.querySelector('#sound-toggle');
   const celebrationToggle = document.querySelector('#celebration-toggle');
+  const fleetDefaultToggle = document.querySelector('#fleet-default-toggle');
   const macToggle = document.querySelector('#mac-notify-toggle');
   const ntfyInput = document.querySelector('#ntfy-topic-input');
   const testNtfyBtn = document.querySelector('#test-ntfy-button');
   const webhookInput = document.querySelector('#webhook-url-input');
   const testWebhookBtn = document.querySelector('#test-webhook-button');
+  const digestModeSelect = document.querySelector('#digest-mode-select');
+  const quietHoursStart = document.querySelector('#quiet-hours-start');
+  const quietHoursEnd = document.querySelector('#quiet-hours-end');
+  const pageAlwaysInputs = [...document.querySelectorAll('[data-page-always]')];
+  const deviceOnboardingButton = document.querySelector('#device-onboarding-button');
+  const deviceOnboardingHint = document.querySelector('#device-onboarding-hint');
+  const deviceOnboardingJob = document.querySelector('#device-onboarding-job');
+  const deviceOnboardingStatus = document.querySelector('#device-onboarding-status');
+  const deviceOnboardingCancel = document.querySelector('#device-onboarding-cancel');
+  const deviceOnboardingCheckpoint = document.querySelector('#device-onboarding-checkpoint');
+  const deviceOnboardingUrl = document.querySelector('#device-onboarding-url');
+  const deviceOnboardingQr = document.querySelector('#device-onboarding-qr');
+  const deviceOnboardingLog = document.querySelector('#device-onboarding-log');
   const featureRequestLink = document.querySelector('#feature-request-link');
 
   if (!settingsBtn || !drawer) return;
@@ -104,28 +133,128 @@ export function initSettings(appInfo) {
     featureRequestLink.hidden = false;
   }
 
+  const onboardingCapability = state.capabilities.deviceOnboarding;
+  const onboardingPresentation = deviceOnboardingPresentation(onboardingCapability);
+  if (deviceOnboardingButton) deviceOnboardingButton.hidden = onboardingPresentation.buttonHidden;
+  if (deviceOnboardingHint) {
+    deviceOnboardingHint.textContent = onboardingPresentation.hint;
+    deviceOnboardingHint.hidden = onboardingPresentation.hintHidden;
+  }
+
+  let onboardingJobId = '';
+  let onboardingPollTimer = null;
+  const onboardingTerminal = new Set(['completed', 'manual_checkpoint', 'cancelled', 'failed']);
+  const renderOnboardingJob = (job) => {
+    if (!job || !deviceOnboardingJob) return;
+    onboardingJobId = job.id || onboardingJobId;
+    deviceOnboardingJob.hidden = false;
+    if (deviceOnboardingStatus) deviceOnboardingStatus.textContent = onboardingStatusLabel(job.status);
+    if (deviceOnboardingLog) deviceOnboardingLog.textContent = job.transcript || '';
+    if (deviceOnboardingCancel) deviceOnboardingCancel.hidden = onboardingTerminal.has(job.status);
+    if (deviceOnboardingCheckpoint) {
+      deviceOnboardingCheckpoint.textContent = job.checkpoint || job.error || '';
+      deviceOnboardingCheckpoint.hidden = !(job.checkpoint || job.error);
+    }
+    if (deviceOnboardingUrl) {
+      deviceOnboardingUrl.href = job.url || '';
+      deviceOnboardingUrl.textContent = job.url ? `Open ${job.url}` : '';
+      deviceOnboardingUrl.hidden = !job.url;
+    }
+    if (deviceOnboardingQr) {
+      deviceOnboardingQr.src = job.qrAvailable
+        ? `/api/device-onboarding/qr?id=${encodeURIComponent(job.id)}`
+        : '';
+      deviceOnboardingQr.hidden = !job.qrAvailable;
+    }
+    if (job.url && onboardingTerminal.has(job.status)) {
+      state.prefs.verifiedPhoneUrl = job.url;
+      savePrefs();
+    }
+    if (deviceOnboardingButton) deviceOnboardingButton.disabled = !onboardingTerminal.has(job.status);
+  };
+  const pollOnboardingJob = async () => {
+    if (!onboardingJobId) return;
+    try {
+      const response = await fetch(`/api/device-onboarding?id=${encodeURIComponent(onboardingJobId)}`);
+      const job = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(job.error || 'Could not read phone onboarding progress.');
+      renderOnboardingJob(job);
+      if (!onboardingTerminal.has(job.status)) {
+        onboardingPollTimer = window.setTimeout(pollOnboardingJob, 750);
+      }
+    } catch (error) {
+      if (deviceOnboardingStatus) deviceOnboardingStatus.textContent = error.message;
+      if (deviceOnboardingButton) deviceOnboardingButton.disabled = false;
+    }
+  };
+
+  deviceOnboardingButton?.addEventListener('click', async () => {
+    clearTimeout(onboardingPollTimer);
+    deviceOnboardingButton.disabled = true;
+    if (deviceOnboardingJob) deviceOnboardingJob.hidden = false;
+    if (deviceOnboardingStatus) deviceOnboardingStatus.textContent = 'Starting agent…';
+    if (deviceOnboardingLog) deviceOnboardingLog.textContent = '';
+    try {
+      const response = await fetch('/api/device-onboarding', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ runnerId: onboardingCapability?.runner?.id || '' }),
+      });
+      const job = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(job.error || 'Could not start phone onboarding.');
+      renderOnboardingJob(job);
+      onboardingPollTimer = window.setTimeout(pollOnboardingJob, 250);
+    } catch (error) {
+      if (deviceOnboardingStatus) deviceOnboardingStatus.textContent = error.message;
+      deviceOnboardingButton.disabled = false;
+    }
+  });
+
+  deviceOnboardingCancel?.addEventListener('click', async () => {
+    if (!onboardingJobId) return;
+    deviceOnboardingCancel.disabled = true;
+    try {
+      const response = await fetch(`/api/device-onboarding?id=${encodeURIComponent(onboardingJobId)}`, {
+        method: 'DELETE',
+      });
+      const job = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(job.error || 'Could not cancel phone onboarding.');
+      renderOnboardingJob(job);
+    } catch (error) {
+      showToast(error.message);
+    } finally {
+      deviceOnboardingCancel.disabled = false;
+    }
+  });
+
   let previouslyFocused = null;
 
   const syncSettingsControls = () => {
     if (themeSelect) themeSelect.value = normalizeTheme(state.prefs.theme);
     if (soundToggle) soundToggle.checked = !!state.prefs.soundEffectsEnabled;
     if (celebrationToggle) celebrationToggle.checked = !!state.prefs.celebrationsEnabled;
+    if (fleetDefaultToggle) fleetDefaultToggle.checked = !!state.prefs.fleetAsDefault;
     if (macToggle) macToggle.checked = !!state.prefs.macNotificationsEnabled;
     if (ntfyInput) ntfyInput.value = state.prefs.ntfyTopic || '';
     if (webhookInput) webhookInput.value = state.prefs.webhookUrl || '';
+    if (digestModeSelect) digestModeSelect.value = state.prefs.digestMode || 'immediate';
+    if (quietHoursStart) quietHoursStart.value = state.prefs.quietHoursStart || '22:00';
+    if (quietHoursEnd) quietHoursEnd.value = state.prefs.quietHoursEnd || '08:00';
+    const pageAlways = new Set(state.prefs.pageAlways || ['awaiting_human_review']);
+    pageAlwaysInputs.forEach((input) => { input.checked = pageAlways.has(input.value); });
   };
 
   const openDrawer = () => {
     syncSettingsControls();
     previouslyFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     drawer.removeAttribute('hidden');
-    settingsBtn.setAttribute('aria-expanded', 'true');
+    settingsButtons.forEach((button) => button.setAttribute('aria-expanded', 'true'));
     drawerContent?.querySelector('[data-action="close-settings"]')?.focus();
   };
 
   const closeDrawer = () => {
     drawer.setAttribute('hidden', '');
-    settingsBtn.setAttribute('aria-expanded', 'false');
+    settingsButtons.forEach((button) => button.setAttribute('aria-expanded', 'false'));
     if (previouslyFocused && document.contains(previouslyFocused)) {
       previouslyFocused.focus();
     } else {
@@ -133,7 +262,7 @@ export function initSettings(appInfo) {
     }
   };
 
-  settingsBtn.addEventListener('click', openDrawer);
+  settingsButtons.forEach((button) => button.addEventListener('click', openDrawer));
 
   drawer.querySelectorAll('[data-action="close-settings"]').forEach(btn => {
     btn.addEventListener('click', closeDrawer);
@@ -178,6 +307,13 @@ export function initSettings(appInfo) {
     });
   }
 
+  if (fleetDefaultToggle) {
+    fleetDefaultToggle.addEventListener('change', () => {
+      state.prefs.fleetAsDefault = fleetDefaultToggle.checked;
+      saveFleetAsDefault(fleetDefaultToggle.checked);
+    });
+  }
+
   if (macToggle) {
     macToggle.addEventListener('change', () => {
       state.prefs.macNotificationsEnabled = macToggle.checked;
@@ -198,6 +334,28 @@ export function initSettings(appInfo) {
       saveNotificationPrefs();
     });
   }
+
+  if (digestModeSelect) {
+    digestModeSelect.addEventListener('change', () => {
+      state.prefs.digestMode = digestModeSelect.value === 'quiet-hours' ? 'quiet-hours' : 'immediate';
+      saveNotificationPrefs();
+    });
+  }
+
+  for (const input of [quietHoursStart, quietHoursEnd]) {
+    input?.addEventListener('change', () => {
+      state.prefs.quietHoursStart = quietHoursStart?.value || '22:00';
+      state.prefs.quietHoursEnd = quietHoursEnd?.value || '08:00';
+      saveNotificationPrefs();
+    });
+  }
+
+  pageAlwaysInputs.forEach((input) => {
+    input.addEventListener('change', () => {
+      state.prefs.pageAlways = pageAlwaysInputs.filter((row) => row.checked).map((row) => row.value);
+      saveNotificationPrefs();
+    });
+  });
 
   if (testNtfyBtn) {
     testNtfyBtn.addEventListener('click', async () => {
@@ -250,4 +408,17 @@ export function initSettings(appInfo) {
   }
 
   syncNotificationSettingsFromServer(syncSettingsControls);
+}
+
+function onboardingStatusLabel(status) {
+  const labels = {
+    starting: 'Preparing private bridge…',
+    running: 'Agent is setting up your phone…',
+    verifying: 'Verifying the private URL…',
+    completed: 'Campaigns is ready on your phone',
+    manual_checkpoint: 'Finish on your phone',
+    cancelled: 'Phone onboarding cancelled',
+    failed: 'Phone onboarding failed',
+  };
+  return labels[status] || 'Phone onboarding';
 }

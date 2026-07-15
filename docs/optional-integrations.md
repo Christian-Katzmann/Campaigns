@@ -25,6 +25,19 @@ editing.
 
 - Native desktop alerts use `osascript` and are available on macOS only.
 - ntfy, Slack, and Discord notifications use HTTP and work on every supported platform.
+- ntfy attention alerts can carry Stop and eligible human-approval actions. The
+  phone posts a short-lived signed command to a separate random command topic;
+  the local Campaigns server polls that topic outbound, rejects expired or
+  replayed commands, and never exposes an inbound control port.
+- Approve appears only when a run awaits human review because its configured
+  reviewer was unavailable. Slack and Discord remain message/link channels;
+  they do not receive command actions.
+- Open appears only after phone onboarding has stored a verified, phone-reachable
+  HTTPS URL. Loopback URLs are never published as actions.
+- ntfy topics are public by default. Use unguessable topic names and treat the
+  topic as notification data, not as an authorization boundary.
+- Quiet-hours digest settings persist suppressed alerts locally and page the
+  selected attention states immediately (human review by default).
 - No remote topic or webhook is configured by default.
 
 ## Workflow maps

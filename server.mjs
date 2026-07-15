@@ -17,13 +17,13 @@ import {
   rerunAutomateFinalize,
 } from './lib/automate-providers.mjs';
 import {
-  PET_SPRITE,
   PET_SPRITE_MIME,
   isValidPetId,
   listPetIds,
   readPetManifest,
   resolvePetsDir,
   selectPet,
+  spriteGridForVersion,
   statSpritesheet,
 } from './lib/companion-pets.mjs';
 import { httpError, readJsonBody, sendJson, sendStatic } from './lib/http.mjs';
@@ -32,8 +32,15 @@ import { buildStepDiff } from './lib/step-diff.mjs';
 import { resolveCampaignConfig } from './lib/config.mjs';
 import { estimateCampaign } from './lib/estimate.mjs';
 import { hasUnifiedRunLedgers, loadUnifiedLessons, readUnifiedRunLedgers } from './lib/lessons.mjs';
+import {
+  DeviceOnboardingError,
+  createDeviceOnboardingManager,
+  resolveDeviceOnboardingContext,
+} from './lib/device-onboarding.mjs';
 import { PlannerDraftError, draftCampaign } from './lib/planner.mjs';
 import {
+  HumanReviewApprovalError,
+  approveCampaignHumanReview,
   CampaignStopError,
   defaultCampaignsRunsDir,
   parseCampaignPlan,
@@ -56,17 +63,34 @@ import {
   writeRegistry as writeRegistryTo,
 } from './lib/registry.mjs';
 import {
+  NTFY_TOPIC_REGEX,
+  buildNotificationDigest,
+  buildNtfyRunActions,
   classifyStopWatcherAlerts,
   defaultNotificationSettings,
   deliverRemoteNotification,
   displayNativeNotification,
+  enqueueNotificationDigest,
+  fetchWithTimeout,
   hashString,
+  isWithinQuietHours,
   nextStopWatcherRecord,
+  notificationPolicyDecision,
   normalizeStopWatcherStatus,
   notificationText,
+  sanitizeNotificationDigestState,
   sanitizeNotificationSettings,
   stopWatcherFingerprint,
 } from './lib/notifications.mjs';
+import {
+  NTFY_COMMAND_TTL_MS,
+  NotificationCommandError,
+  advanceNotificationCommandCursor,
+  consumeNotificationCommand,
+  createNotificationCommand,
+  ensureNotificationCommandInfrastructure,
+  readNotificationCommandState,
+} from './lib/notification-commands.mjs';
 import {
   WorktreeOperationError,
   cleanupOrphanWorktrees,
@@ -83,6 +107,7 @@ const APP_SLUG = 'campaigns';
 const registryDir = process.env.CAMPAIGNS_REGISTRY_DIR || defaultRegistryDir();
 const registryPath = path.join(registryDir, 'registry.json');
 const notificationSettingsPath = path.join(registryDir, 'notification-settings.json');
+const notificationDigestPath = path.join(registryDir, 'notification-digest.json');
 const stopWatcherStatePath = path.join(registryDir, 'stop-watcher-state.json');
 const portFilePath = process.env.CAMPAIGNS_PORT_FILE || defaultPortFilePath();
 const lessonsHelperPath = process.env.CAMPAIGNS_LESSONS_HELPER || defaultLessonsHelperPath();
@@ -142,6 +167,25 @@ const COMPANION_STATUS_LABELS = {
   completed: 'Completed',
   idle: 'Idle',
 };
+const COMPANION_ATTENTION_STATUSES = new Set(['stalled', 'failed', 'halted']);
+const FLEET_ATTENTION_LABELS = {
+  awaiting_human_review: 'Human review',
+  blocked: 'Blocked',
+  cap_reached: 'Run cap',
+  failed: 'Failed',
+  halted: 'Halted',
+  rollback_conflict: 'Rollback conflict',
+  stopped_by_user: 'Stopped',
+};
+const TERMINAL_RUN_STATUSES = new Set(['completed', 'merged', 'force_merged']);
+const COMPANION_ASSET_PATHS = [
+  'companion.html',
+  'companion.js',
+  'companion.css',
+  'assets/kro/idle.svg',
+  'assets/kro/working.svg',
+  'assets/kro/attention.svg',
+];
 const NOTIFICATION_TITLE_MAX = 80;
 const NOTIFICATION_MESSAGE_MAX = 500;
 const STOP_WATCH_INTERVAL_MS = positiveDuration(process.env.CAMPAIGNS_STOP_WATCH_INTERVAL_MS, 30_000);
@@ -162,6 +206,13 @@ const LOGO_EXTENSIONS = [...LOGO_MIME.keys()];
 
 let defaultCampaignId = null;
 const activeCampaignRuns = new Map();
+let activeServerPort = null;
+const deviceOnboardingManager = createDeviceOnboardingManager({
+  getContext: resolveServerDeviceOnboardingContext,
+  onVerifiedUrl: persistVerifiedPhoneUrl,
+  projectRoot: __dirname,
+  stateDir: registryDir,
+});
 
 const server = createServer(async (request, response) => {
   try {
@@ -224,6 +275,26 @@ const server = createServer(async (request, response) => {
 
     if (url.pathname === '/api/capabilities' && request.method === 'GET') {
       await sendCapabilities(url, response);
+      return;
+    }
+
+    if (url.pathname === '/api/device-onboarding' && request.method === 'POST') {
+      await startDeviceOnboarding(request, response);
+      return;
+    }
+
+    if (url.pathname === '/api/device-onboarding' && request.method === 'GET') {
+      await sendDeviceOnboarding(url, response);
+      return;
+    }
+
+    if (url.pathname === '/api/device-onboarding' && request.method === 'DELETE') {
+      await cancelDeviceOnboarding(url, response);
+      return;
+    }
+
+    if (url.pathname === '/api/device-onboarding/qr' && request.method === 'GET') {
+      await sendDeviceOnboardingQr(url, response);
       return;
     }
 
@@ -335,6 +406,11 @@ const server = createServer(async (request, response) => {
       return;
     }
 
+    if (url.pathname === '/api/run/approve-review' && request.method === 'POST') {
+      await handleRunApproveReview(request, response);
+      return;
+    }
+
     if (url.pathname === '/api/automate-finalize' && request.method === 'POST') {
       await handleAutomateFinalize(request, response);
       return;
@@ -363,14 +439,20 @@ const server = createServer(async (request, response) => {
 
 const closeHttpServer = server.close.bind(server);
 server.close = function closeCampaignsServer(callback) {
-  void stopActiveCampaignRuns()
-    .catch(() => abortActiveCampaignRuns())
+  void Promise.all([
+    stopActiveCampaignRuns().catch(() => abortActiveCampaignRuns()),
+    deviceOnboardingManager.stopAll(),
+  ])
     .finally(() => closeHttpServer(callback));
   return server;
 };
 
 server.on('close', stopStopWatcher);
 server.on('close', abortActiveCampaignRuns);
+server.on('close', () => {
+  activeServerPort = null;
+  void deviceOnboardingManager.stopAll();
+});
 
 export async function startServer({
   campaignFile = null,
@@ -403,6 +485,7 @@ export async function startServer({
 
   const address = server.address();
   const actualPort = typeof address === 'object' && address ? address.port : Number(port);
+  activeServerPort = actualPort;
   console.log(`Campaigns: http://localhost:${actualPort}`);
   console.log(`Registry: ${registryPath}`);
   console.log(`Port file: ${portFilePath}`);
@@ -534,12 +617,23 @@ async function sendCapabilities(url, response) {
     if (!/No Git project root found/.test(error.message)) throw error;
     runnerRegistry = await loadRunnerRegistry();
   }
-  const [automation, nativeLessons, legacyLessons, runners] = await Promise.all([
-    getAutomateProviderAvailability(),
-    hasUnifiedRunLedgers(lessonsRunsDir).catch(() => false),
-    stat(lessonsHelperPath).then((info) => info.isFile()).catch(() => false),
-    runnerCapabilities(runnerRegistry, { cwd: runnerCwd }),
-  ]);
+  const [automation, nativeLessons, legacyLessons, runners, deviceOnboarding, companion] =
+    await Promise.all([
+      getAutomateProviderAvailability(),
+      hasUnifiedRunLedgers(lessonsRunsDir).catch(() => false),
+      stat(lessonsHelperPath).then((info) => info.isFile()).catch(() => false),
+      runnerCapabilities(runnerRegistry, { cwd: runnerCwd }),
+      resolveServerDeviceOnboardingContext().catch((error) => ({
+        capability: {
+          available: false,
+          hint: error.message || 'Phone onboarding is unavailable.',
+          runner: { ready: false, id: '', label: '' },
+          skill: { ready: false, path: '' },
+          stablePrivateUrl: { ready: false, kind: '', tool: '', url: '' },
+        },
+      })),
+      companionAssetsAvailable(),
+    ]);
   const fileDeletionMode = campaignFileDeletionMode();
   sendJson(response, 200, {
     fileDeletion: {
@@ -549,14 +643,78 @@ async function sendCapabilities(url, response) {
     personalLayer: {
       automate: automation.available,
       away: automation.available,
-      companion: automation.available,
+      companion,
       lessons: nativeLessons || legacyLessons,
     },
     providers: automation.providers,
+    deviceOnboarding: deviceOnboarding.capability,
     defaultRunner: runnerRegistry.defaultRunner,
     runnerWarnings: runnerRegistry.warnings,
     runners,
   });
+}
+
+async function companionAssetsAvailable() {
+  try {
+    const details = await Promise.all(
+      COMPANION_ASSET_PATHS.map((assetPath) => stat(path.join(publicDir, assetPath))),
+    );
+    return details.every((entry) => entry.isFile());
+  } catch {
+    return false;
+  }
+}
+
+async function resolveServerDeviceOnboardingContext() {
+  if (!Number.isInteger(activeServerPort) || activeServerPort <= 0) {
+    throw new DeviceOnboardingError(409, 'Campaigns must be running before phone onboarding can start.');
+  }
+  let resolved;
+  let runnerRegistry;
+  try {
+    resolved = await resolveCampaignConfig({ cwd: __dirname });
+    runnerRegistry = await loadConfiguredRunnerRegistry(resolved.config);
+  } catch (error) {
+    throw new DeviceOnboardingError(409, `Runner configuration is invalid: ${error.message}`);
+  }
+  const [catalog, settings] = await Promise.all([
+    runnerCapabilities(runnerRegistry, { cwd: __dirname }),
+    readNotificationSettings(),
+  ]);
+  return resolveDeviceOnboardingContext({
+    runnerCatalog: catalog,
+    runnerRegistry,
+    targetPort: activeServerPort,
+    verifiedPhoneUrl: settings.verifiedPhoneUrl,
+  });
+}
+
+async function startDeviceOnboarding(request, response) {
+  const payload = await readJsonBody(request);
+  const job = await deviceOnboardingManager.start({
+    runnerId: typeof payload?.runnerId === 'string' ? payload.runnerId : '',
+  });
+  sendJson(response, 202, job);
+}
+
+async function sendDeviceOnboarding(url, response) {
+  const job = await deviceOnboardingManager.get(url.searchParams.get('id') ?? '');
+  sendJson(response, 200, job);
+}
+
+async function cancelDeviceOnboarding(url, response) {
+  const job = await deviceOnboardingManager.cancel(url.searchParams.get('id') ?? '');
+  sendJson(response, 200, job);
+}
+
+async function sendDeviceOnboardingQr(url, response) {
+  const qr = await deviceOnboardingManager.getQrPath(url.searchParams.get('id') ?? '');
+  response.writeHead(200, {
+    'cache-control': 'private, no-store',
+    'content-length': qr.size,
+    'content-type': 'image/png',
+  });
+  createReadStream(qr.path).pipe(response);
 }
 
 async function sendEstimate(url, response) {
@@ -1726,14 +1884,25 @@ async function deleteMissingRegistryEndpoint(request, response) {
 
 async function sendNotificationSettings(response) {
   const { settings, configured } = await readNotificationSettingsWithMeta();
-  sendJson(response, 200, { ...settings, configured });
+  sendJson(response, 200, { ...publicNotificationSettings(settings), configured });
 }
 
 async function saveNotificationSettingsEndpoint(request, response) {
   const payload = await readJsonBody(request);
-  const settings = sanitizeNotificationSettings(payload);
+  const current = await readNotificationSettings();
+  let settings = sanitizeNotificationSettings({
+    ...current,
+    ...payload,
+    ntfyCommandTopic: current.ntfyCommandTopic,
+    verifiedPhoneUrl: Object.hasOwn(payload, 'verifiedPhoneUrl')
+      ? payload.verifiedPhoneUrl
+      : current.verifiedPhoneUrl,
+  });
   await writeNotificationSettings(settings);
-  sendJson(response, 200, { ok: true, ...settings, configured: true });
+  if (NTFY_TOPIC_REGEX.test(settings.ntfyTopic)) {
+    settings = (await ensureNotificationCommandInfrastructure(registryDir, settings)).settings;
+  }
+  sendJson(response, 200, { ok: true, ...publicNotificationSettings(settings), configured: true });
 }
 
 async function readNotificationSettingsWithMeta() {
@@ -1756,7 +1925,20 @@ async function readNotificationSettings() {
 
 async function writeNotificationSettings(settings) {
   await mkdir(path.dirname(notificationSettingsPath), { recursive: true });
-  await writeFile(notificationSettingsPath, `${JSON.stringify(sanitizeNotificationSettings(settings), null, 2)}\n`, 'utf8');
+  await writeFileAtomic(
+    notificationSettingsPath,
+    `${JSON.stringify(sanitizeNotificationSettings(settings), null, 2)}\n`,
+  );
+}
+
+async function persistVerifiedPhoneUrl(verifiedPhoneUrl) {
+  const settings = await readNotificationSettings();
+  await writeNotificationSettings({ ...settings, verifiedPhoneUrl });
+}
+
+function publicNotificationSettings(settings) {
+  const { ntfyCommandTopic: _commandTopic, ...publicSettings } = sanitizeNotificationSettings(settings);
+  return publicSettings;
 }
 
 async function sendNotification(request, response) {
@@ -1817,12 +1999,40 @@ async function sendRemoteNotification(request, response) {
   sendJson(response, 200, { ok: true });
 }
 
-async function sendConfiguredServerNotification(title, message, { kind = 'stopped' } = {}) {
+async function sendConfiguredServerNotification(title, message, {
+  kind = 'stopped',
+  category = kind,
+  eventKey = null,
+  ntfyActions = [],
+  now = Date.now(),
+  settings: providedSettings = null,
+} = {}) {
   const cleanTitle = notificationText(title, 'Campaigns', NOTIFICATION_TITLE_MAX);
   const cleanMessage = notificationText(message, '', NOTIFICATION_MESSAGE_MAX);
   if (!cleanMessage) return false;
 
-  const settings = await readNotificationSettings();
+  const settings = providedSettings ?? await readNotificationSettings();
+  if (notificationPolicyDecision(settings, category, new Date(now)) === 'digest') {
+    const digestState = enqueueNotificationDigest(
+      await readNotificationDigestState(),
+      { title: cleanTitle, message: cleanMessage, category, eventKey },
+      now,
+    );
+    await writeNotificationDigestState(digestState);
+    return true;
+  }
+  return deliverConfiguredNotificationNow(cleanTitle, cleanMessage, {
+    kind,
+    ntfyActions,
+    settings,
+  });
+}
+
+async function deliverConfiguredNotificationNow(cleanTitle, cleanMessage, {
+  kind = 'stopped',
+  ntfyActions = [],
+  settings,
+} = {}) {
   const deliveries = [];
   const sound = kind === 'finished' ? 'Glass' : 'Basso';
 
@@ -1836,6 +2046,7 @@ async function sendConfiguredServerNotification(title, message, { kind = 'stoppe
         title: cleanTitle,
         message: cleanMessage,
         ntfyTopic: settings.ntfyTopic,
+        ntfyActions,
         webhookUrl: settings.webhookUrl,
         strict: false,
       }).then((result) => {
@@ -1855,6 +2066,35 @@ async function sendConfiguredServerNotification(title, message, { kind = 'stoppe
     }
   }
   return settled.some((result) => result.status === 'fulfilled');
+}
+
+async function readNotificationDigestState() {
+  try {
+    return sanitizeNotificationDigestState(JSON.parse(await readFile(notificationDigestPath, 'utf8')));
+  } catch (error) {
+    if (error.code === 'ENOENT' || error instanceof SyntaxError) {
+      return sanitizeNotificationDigestState(null);
+    }
+    throw error;
+  }
+}
+
+async function writeNotificationDigestState(state) {
+  await mkdir(path.dirname(notificationDigestPath), { recursive: true });
+  await writeFileAtomic(notificationDigestPath, `${JSON.stringify(state, null, 2)}\n`);
+}
+
+async function flushNotificationDigest(settings, now) {
+  const state = await readNotificationDigestState();
+  if (!state.pending.length) return false;
+  if (settings.digestMode === 'quiet-hours' && isWithinQuietHours(settings, new Date(now))) return false;
+  const digest = buildNotificationDigest(state);
+  const delivered = await deliverConfiguredNotificationNow(digest.title, digest.message, {
+    kind: 'finished',
+    settings,
+  });
+  if (delivered) await writeNotificationDigestState({ version: 1, pending: [] });
+  return delivered;
 }
 
 /* ------------------------------ Stop watcher -------------------------------- */
@@ -1888,6 +2128,12 @@ async function runStopWatcherPass() {
     const registry = await readRegistry();
     const state = await getStopWatcherState();
     const now = Date.now();
+    let settings = await readNotificationSettings();
+    if (NTFY_TOPIC_REGEX.test(settings.ntfyTopic)) {
+      settings = (await ensureNotificationCommandInfrastructure(registryDir, settings)).settings;
+      await runNotificationCommandPass(settings, now);
+    }
+    await flushNotificationDigest(settings, now);
     const nextCampaigns = {};
 
     for (const entry of registry.campaigns) {
@@ -1897,7 +2143,17 @@ async function runStopWatcherPass() {
 
       for (const alert of alerts) {
         if (alert.type === 'stop' && previous?.notifiedEventKey === alert.eventKey) continue;
-        await sendConfiguredServerNotification(alert.title, alert.message, { kind: alert.kind });
+        const ntfyActions = alert.type === 'stop'
+          ? await buildStopWatcherNtfyActions(settings, snapshot, now)
+          : [];
+        await sendConfiguredServerNotification(alert.title, alert.message, {
+          kind: alert.kind,
+          category: alert.category ?? snapshot.status,
+          eventKey: alert.eventKey,
+          ntfyActions,
+          now,
+          settings,
+        });
       }
 
       nextCampaigns[entry.id] = nextStopWatcherRecord(previous, snapshot, now, alerts);
@@ -1908,6 +2164,95 @@ async function runStopWatcherPass() {
   } finally {
     stopWatcherRunning = false;
   }
+}
+
+async function buildStopWatcherNtfyActions(settings, snapshot, now) {
+  if (!NTFY_TOPIC_REGEX.test(settings.ntfyTopic) || snapshot.backend !== 'engine' || !snapshot.runId) return [];
+  const command = await ensureNotificationCommandInfrastructure(registryDir, settings);
+  const stopToken = createNotificationCommand({
+    action: 'stop',
+    runId: snapshot.runId,
+    secret: command.secret,
+    now,
+  });
+  const approveToken = snapshot.status === 'awaiting_human_review'
+    && snapshot.latestCause === 'reviewer_unavailable'
+    ? createNotificationCommand({
+      action: 'approve',
+      runId: snapshot.runId,
+      secret: command.secret,
+      now,
+    })
+    : '';
+  return buildNtfyRunActions({
+    commandTopic: command.settings.ntfyCommandTopic,
+    stopToken,
+    approveToken,
+    openUrl: command.settings.verifiedPhoneUrl,
+  });
+}
+
+async function runNotificationCommandPass(settings, now) {
+  const command = await ensureNotificationCommandInfrastructure(registryDir, settings);
+  const state = await readNotificationCommandState(command.paths.statePath, now);
+  const since = state.lastMessageId ?? `${Math.ceil(NTFY_COMMAND_TTL_MS / 60_000)}m`;
+  const url = `https://ntfy.sh/${encodeURIComponent(command.settings.ntfyCommandTopic)}/json?poll=1&since=${encodeURIComponent(since)}`;
+  let response;
+  try {
+    response = await fetchWithTimeout(url, { method: 'GET' }, 8_000);
+  } catch (error) {
+    console.error(`Notification command poll failed: ${error.message}`);
+    return;
+  }
+  if (!response.ok) {
+    console.error(`Notification command poll failed: HTTP ${response.status}`);
+    return;
+  }
+
+  const messages = (await response.text()).split('\n').filter(Boolean);
+  for (const line of messages) {
+    let message;
+    try {
+      message = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (message.event !== 'message' || !message.id || message.id === state.lastMessageId) continue;
+    try {
+      await consumeNotificationCommand(message.message, {
+        dataDir: registryDir,
+        messageId: message.id,
+        now,
+        dispatch: dispatchNotificationCommand,
+      });
+    } catch (error) {
+      if (!(error instanceof NotificationCommandError)) {
+        console.error(`Notification command failed: ${error.message}`);
+      }
+      await advanceNotificationCommandCursor(registryDir, message.id, now);
+    }
+  }
+}
+
+async function dispatchNotificationCommand(command) {
+  const registry = await readRegistry();
+  let match = null;
+  for (const entry of registry.campaigns) {
+    const automation = await getAutomateState(entry.filePath, { summary: true, registryId: entry.id });
+    if (automation?.backend === 'engine' && automation.run_id === command.runId) {
+      match = entry;
+      break;
+    }
+  }
+  if (!match) throw new Error('Notification command run is no longer current.');
+  if (command.action === 'stop') return requestCampaignStop(match.filePath);
+  if (command.action === 'approve') {
+    return approveCampaignHumanReview(match.filePath, {
+      runId: command.runId,
+      approvedVia: 'ntfy',
+    });
+  }
+  throw new Error(`Unsupported notification command: ${command.action}`);
 }
 
 async function getStopWatcherState() {
@@ -1966,6 +2311,9 @@ async function buildStopWatcherSnapshot(entry) {
 
   const status = normalizeStopWatcherStatus(automation);
   const currentStep = automation?.current_step ?? null;
+  const latestCause = automation?.backend === 'engine'
+    ? automation.timeline_events?.at(-1)?.event ?? null
+    : null;
   const fingerprint = stopWatcherFingerprint({
     status,
     automation,
@@ -1982,6 +2330,8 @@ async function buildStopWatcherSnapshot(entry) {
     missing,
     status,
     backend: automation?.backend ?? null,
+    runId: automation?.run_id ?? null,
+    latestCause,
     hasAutomationState: Boolean(automation),
     hasActiveRun: automation?.has_active_run === true,
     isActive: automation?.is_active === true,
@@ -2344,23 +2694,44 @@ function isLoopbackAddress(address) {
 // endpoint must not mutate the registry, markdown, or automation state — unlike
 // sendRegistry it never writes back.
 async function sendCompanionState(response) {
-  const registry = await readRegistry();
+  const [registry, ledgers] = await Promise.all([
+    readRegistry(),
+    readUnifiedRunLedgers(lessonsRunsDir),
+  ]);
   const now = Date.now();
+  const lessons = await loadUnifiedLessons(lessonsRunsDir, { ledgers });
 
   const campaigns = (
     await Promise.all(
-      registry.campaigns.map((entry) => buildCompanionCampaign(entry, now).catch(() => null)),
+      registry.campaigns.map((entry) => (
+        buildCompanionCampaign(entry, now, ledgers).catch((error) => {
+          console.error(`companion-state: aggregate failed for ${entry.id}:`, error.message);
+          return null;
+        })
+      )),
     )
   ).filter(Boolean);
+  const babysitting = buildFleetBabysitting(lessons);
 
   sendJson(response, 200, {
     generatedAt: new Date(now).toISOString(),
     counts: tallyCompanionCounts(campaigns),
+    worstStatus: deriveCompanionWorstStatus(campaigns),
+    babysitting,
+    lessons: babysitting
+      ? {
+          source: lessons.source,
+          overall: {
+            manualStopRate: babysitting.manualStopRate,
+            manualStops: babysitting.manualStops,
+          },
+        }
+      : null,
     campaigns,
   });
 }
 
-async function buildCompanionCampaign(entry, now) {
+async function buildCompanionCampaign(entry, now, ledgers = []) {
   const parked = Boolean(entry.parkedAt);
   const lastActivityAt = entry.lastActivityAt ?? entry.lastOpenedAt ?? entry.createdAt ?? null;
 
@@ -2405,6 +2776,15 @@ async function buildCompanionCampaign(entry, now) {
         path: currentStepLine ? `${entry.filePath}:${currentStepLine}` : entry.filePath,
       }
     : null;
+  const matchingLedgers = ledgers.filter((ledger) => fleetLedgerMatchesCampaign(ledger, entry));
+  const liveLedger = latestFleetLedger(matchingLedgers.filter((ledger) => (
+    !TERMINAL_RUN_STATUSES.has(ledger.run.status)
+  )));
+  const [repo, eta] = await Promise.all([
+    buildFleetRepo(entry, liveLedger),
+    missing ? null : buildFleetEstimate(entry, markdown, ledgers, liveLedger, now),
+  ]);
+  const sourceStatus = summary?.run_status ?? summary?.status ?? null;
 
   return {
     id: entry.id,
@@ -2412,14 +2792,124 @@ async function buildCompanionCampaign(entry, now) {
     filePath: entry.filePath,
     referencePath: currentStep?.path ?? entry.filePath,
     backend,
+    repo,
     status,
+    sourceStatus,
     label: COMPANION_STATUS_LABELS[status] ?? COMPANION_STATUS_LABELS.idle,
     is_active: status === 'running',
     current_step: currentStep,
+    eta,
+    attention: buildFleetAttention(summary, status, sourceStatus),
+    actions: buildFleetActions(summary, status),
     progress,
     lastActivityAt,
     parked,
     missing,
+  };
+}
+
+function fleetLedgerMatchesCampaign(ledger, entry) {
+  const identity = ledger?.run?.identity;
+  if (identity?.registry_id && identity.registry_id === entry.id) return true;
+  const campaignPath = identity?.source?.campaign_path;
+  return typeof campaignPath === 'string' && path.resolve(campaignPath) === path.resolve(entry.filePath);
+}
+
+function latestFleetLedger(ledgers) {
+  return [...ledgers].sort((left, right) => (
+    String(right?.run?.updated_at ?? '').localeCompare(String(left?.run?.updated_at ?? ''))
+  ))[0] ?? null;
+}
+
+async function buildFleetRepo(entry, liveLedger) {
+  const sourceRoot = liveLedger?.run?.identity?.source?.repo_root;
+  const discoveredRoot = typeof sourceRoot === 'string' && sourceRoot
+    ? sourceRoot
+    : await findRepoRoot(path.dirname(entry.filePath));
+  const root = await canonicalPath(discoveredRoot ?? path.dirname(entry.filePath));
+  return {
+    id: `repo-${hashMarkdown(root).slice(0, 16)}`,
+    label: path.basename(root) || 'Local files',
+  };
+}
+
+async function buildFleetEstimate(entry, markdown, ledgers, liveLedger, now) {
+  try {
+    const plan = parseCampaignPlan(markdown);
+    let runnerRegistry;
+    try {
+      const resolved = await resolveCampaignConfig({ campaignPath: entry.filePath, cwd: __dirname });
+      runnerRegistry = await loadConfiguredRunnerRegistry(resolved.config);
+    } catch (error) {
+      if (!/No Git project root found/.test(error.message)) throw error;
+      runnerRegistry = await loadRunnerRegistry();
+    }
+    const steps = plan.steps.map((step) => ({
+      id: step.id,
+      checked: step.checked,
+      runner: resolveStepRunnerSelection(runnerRegistry, step).runner,
+    }));
+    const historicalLedgers = liveLedger
+      ? ledgers.filter((ledger) => ledger.run.id !== liveLedger.run.id)
+      : ledgers;
+    const estimate = estimateCampaign({
+      steps,
+      ledgers: historicalLedgers,
+      liveLedger,
+      seed: `${entry.id}:${hashMarkdown(markdown)}`,
+      now: new Date(now).toISOString(),
+    });
+    return {
+      lowMinutes: estimate.duration.lowMinutes,
+      highMinutes: estimate.duration.highMinutes,
+      remainingSteps: estimate.remainingSteps,
+      confidence: estimate.confidence,
+      source: estimate.source,
+    };
+  } catch (error) {
+    if (/no runnable steps/i.test(error.message)) return null;
+    console.error(`companion-state: estimate failed for ${entry.id}:`, error.message);
+    return null;
+  }
+}
+
+function buildFleetAttention(summary, status, sourceStatus) {
+  if (!COMPANION_ATTENTION_STATUSES.has(status)) return null;
+  return {
+    cause: sourceStatus ?? status,
+    label: summary?.attention?.label
+      ?? FLEET_ATTENTION_LABELS[sourceStatus]
+      ?? COMPANION_STATUS_LABELS[status]
+      ?? 'Needs attention',
+    title: summary?.attention?.title ?? null,
+  };
+}
+
+function buildFleetActions(summary, status) {
+  const nudge = Object.entries(summary?.nudge_modes ?? {})
+    .filter(([, action]) => action?.available)
+    .map(([mode, action]) => ({
+      mode,
+      label: action.label ?? mode,
+    }));
+  return {
+    open: { available: true },
+    stop: {
+      available: summary?.backend === 'engine' && summary?.is_active === true && status === 'running',
+    },
+    nudge,
+  };
+}
+
+function buildFleetBabysitting(lessons) {
+  if (!lessons || lessons.source !== 'unified' || lessons.scanned?.total <= 0) return null;
+  const manualStopRate = lessons.overall?.manualStopRate;
+  const manualStops = lessons.overall?.manualStops;
+  if (!Number.isFinite(manualStopRate) || !Number.isInteger(manualStops)) return null;
+  return {
+    manualStopRate,
+    manualStops,
+    sampleSize: lessons.scanned.total,
   };
 }
 
@@ -2484,27 +2974,47 @@ function isCompanionStale(lastActivityAt, now) {
 }
 
 function tallyCompanionCounts(campaigns) {
-  const counts = { total: campaigns.length };
+  const counts = { total: campaigns.length, needsAttention: 0, active: 0 };
   for (const status of COMPANION_STATUSES) counts[status] = 0;
   for (const campaign of campaigns) {
     counts[campaign.status] = (counts[campaign.status] ?? 0) + 1;
+    if (COMPANION_ATTENTION_STATUSES.has(campaign.status)) counts.needsAttention += 1;
+    if (campaign.is_active) counts.active += 1;
   }
   return counts;
+}
+
+export function deriveCompanionWorstStatus(campaigns) {
+  if (campaigns.some((campaign) => ['stalled', 'failed', 'halted'].includes(campaign.status))) {
+    return 'needs-attention';
+  }
+  if (campaigns.some((campaign) => ['running', 'queued'].includes(campaign.status))) {
+    return 'working';
+  }
+  return 'idle';
 }
 
 /* ------------------------------ API: companion pet -------------------------- */
 
 // Read-only discovery + serving for the Campaign Companion's visual pet. Pets
-// are Codex custom-pet packages under ${CODEX_HOME:-$HOME/.codex}/pets; nothing
-// is copied into the repo. Returns the selected pet's metadata with a served
-// spritesheet URL plus the fixed sprite-atlas grid, or { pet: null } when no
-// usable package exists so the UI can render empty. `available` lists every
-// usable package id (handy for a future picker).
+// are either a Codex custom-pet package under ${CODEX_HOME:-$HOME/.codex}/pets
+// or the bundled Kro state assets when no valid package exists. `available`
+// lists discovered user package ids (handy for a future picker).
 async function sendCompanionPet(response) {
   const [pet, available] = await Promise.all([selectPet(petsDir), listPetIds(petsDir)]);
 
-  if (!pet) {
-    sendJson(response, 200, { pet: null, available });
+  if (pet.renderMode === 'states') {
+    sendJson(response, 200, {
+      pet: {
+        id: pet.id,
+        displayName: pet.displayName,
+        description: pet.description,
+        source: pet.source,
+        renderMode: pet.renderMode,
+        stateAssets: pet.stateAssets,
+      },
+      available,
+    });
     return;
   }
 
@@ -2513,9 +3023,12 @@ async function sendCompanionPet(response) {
       id: pet.id,
       displayName: pet.displayName,
       description: pet.description,
+      source: pet.source,
+      renderMode: pet.renderMode,
+      spriteVersionNumber: pet.spriteVersionNumber,
       spritesheetPath: pet.spritesheetPath,
       spritesheetUrl: `/api/companion-pet/spritesheet?id=${encodeURIComponent(pet.id)}`,
-      sprite: PET_SPRITE,
+      sprite: spriteGridForVersion(pet.spriteVersionNumber),
     },
     available,
   });
@@ -2826,6 +3339,39 @@ async function handleRunStop(request, response) {
     });
   } catch (error) {
     if (error instanceof CampaignStopError) {
+      sendJson(response, 409, { ok: false, error: error.message });
+      return;
+    }
+    throw error;
+  }
+}
+
+async function handleRunApproveReview(request, response) {
+  const payload = await readJsonBody(request);
+  if (typeof payload.id !== 'string' || typeof payload.runId !== 'string') {
+    sendJson(response, 400, { error: 'Expected { id: string, runId: string }.' });
+    return;
+  }
+
+  const registry = await readRegistry();
+  const entry = registry.campaigns.find((campaign) => campaign.id === payload.id);
+  if (!entry) {
+    sendJson(response, 404, { error: 'Campaign not found.' });
+    return;
+  }
+
+  try {
+    const result = await approveCampaignHumanReview(entry.filePath, {
+      runId: payload.runId,
+      approvedVia: 'api',
+    });
+    sendJson(response, 200, {
+      ok: true,
+      status: result.state.run.status,
+      event: 'human_review_approved',
+    });
+  } catch (error) {
+    if (error instanceof HumanReviewApprovalError) {
       sendJson(response, 409, { ok: false, error: error.message });
       return;
     }
