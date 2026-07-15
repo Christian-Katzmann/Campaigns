@@ -44,6 +44,28 @@ test('runner execution aborts and reaps its process group', async (t) => {
   assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' });
 });
 
+test('runner tolerates EPIPE when the child closes stdin before prompt delivery', async (t) => {
+  const repo = await mkdtemp(path.join(tmpdir(), 'campaigns-runner-stdin-race-'));
+  t.after(() => rm(repo, { recursive: true, force: true }));
+  await execFileAsync('git', ['-C', repo, 'init', '-b', 'main']);
+
+  const result = await runRunnerInvocation({
+    args: ['-e', "require('node:fs').closeSync(0); setTimeout(() => {}, 100)"],
+    command: process.execPath,
+    env: process.env,
+    outputPath: null,
+    stdin: 'x'.repeat(128 * 1024),
+  }, {
+    containmentRoot: repo,
+    cwd: repo,
+    logPath: path.join(repo, 'runner.log'),
+    onSpawn: async () => new Promise((resolve) => setTimeout(resolve, 50)),
+    watchdog: { minimum_runtime_ms: 60_000, stall_window_ms: 60_000 },
+  });
+
+  assert.equal(result.exitCode, 0);
+});
+
 test('live output stays bounded and is deleted after completion, failure, and stop', async (t) => {
   const repo = await mkdtemp(path.join(tmpdir(), 'campaigns-live-output-'));
   t.after(() => rm(repo, { recursive: true, force: true }));
