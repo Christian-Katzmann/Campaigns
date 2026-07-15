@@ -48,6 +48,7 @@
     "start": "node server.mjs",
     "start:sample": "node server.mjs --file examples/sample-campaign.md",
     "assets:render": "./scripts/render-public-assets.sh",
+    "replay:build": "node scripts/build-replay-demo.mjs",
     "check": "find server.mjs lib public bin -type f \\( -name '*.mjs' -o -name 'app.js' \\) -not -path '*/vendor/*' -print0 | xargs -0 -n1 node --check",
     "test": "node --test --test-concurrency=1 test/*.test.mjs",
     "action:e2e": "node scripts/action-e2e-harness.mjs",

@@ -6,6 +6,8 @@ Plan work in markdown. Run it with a coding agent. Watch progress, activity, and
 
 *Plan → run → watch: the checklist stays in the markdown file while the activity drawer shows the current step and its evidence.*
 
+[Replay a real run — no install, no writes →](https://christian-katzmann.github.io/Campaigns/)
+
 ## Five-minute quickstart
 
 You need Node.js 20+ and either Claude Code or Codex installed and signed in.
@@ -77,6 +79,7 @@ Run a capped campaign from a same-repository pull request with the [Campaigns in
 - **Desktop launcher:** package the macOS wrapper with `npm run desktop:build`; the Node server remains the portable path.
 - **Notifications and local integrations:** they are off unless configured. See [Optional integrations](docs/optional-integrations.md) for detection and environment variables.
 - **Public assets:** regenerate every README screenshot, the social preview, and the local trailer with `npm run assets:render` on macOS.
+- **Recorded replay:** build the self-contained static demo with `npm run replay:build`.
 
 ## What this is not
 

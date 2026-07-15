@@ -31,7 +31,8 @@ together and owns no feature logic.
   focus trap, relative-time, the campaign-logo + copy-path helpers.
 - `modules/render.mjs` — board rendering: the block/step/phase/prompt/review-card
   renderers and the `render()` entry, plus save-status, focus/filter, the mobile
-  step bar, and the step observer.
+  step bar, and the step observer. Its IO-free `renderReadOnlyBoard()` seam is
+  shared by the live editor and the static journal replay.
 - `modules/board.mjs` — board interactions and document IO: click/input dispatch,
   the check toggles, code edit, autosave + the `baseHash` conflict flow, export,
   open-a-file, and the resume card.

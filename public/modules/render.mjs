@@ -50,33 +50,13 @@ const RESERVED_TOKENS = new Set(['STEP', 'PHASE']);
 
 export function render() {
   applyTheme(state.prefs.theme);
-  const blocks = parseMarkdown(state.markdown);
-  const phases = classifyPhases(extractPhases(blocks));
-  const stepSections = extractStepSections(blocks, state.markdown);
-  const stats = getProgressStats(blocks);
-  const resume = findResumeTarget(blocks, stepSections);
-  const stepCheckMap = linkChecksToSteps(blocks, stepSections);
-  const planHealthFindings = analyzePlanHealth(
-    state.markdown,
-    state.planHealthAvoidAboveSteps,
-  );
-
-  state.stepSections = stepSections;
-  state.stepCheckMap = stepCheckMap;
-  state.reviewTemplates = extractReviewTemplates(blocks);
-  state.phaseReviewCheckMap = linkChecksToPhaseReviews(blocks);
-  state.finalReview = extractFinalReview(blocks);
-  state.campaignFinalReviewCheck = findCampaignFinalReviewCheck(blocks);
-  state.isNewShape = isNewShapeCampaign(blocks);
+  const view = renderReadOnlyBoard();
+  const { blocks, phases, resume, stats } = view;
   recordTodayActivity(stats.done);
-
   detectPhaseCompletions(phases);
 
   const firstHeading = blocks.find((block) => block.type === 'heading' && block.level === 1);
-  const title = firstHeading
-    ? firstHeading.text
-    : campaignFileStem(state.filePath) || 'Campaigns';
-  elements.documentTitle.textContent = title;
+  elements.documentTitle.textContent = view.title;
   // Lead the tab title with progress so a narrow tab still shows where the
   // campaign stands at a glance.
   const progressPrefix = stats.total > 0 ? `${stats.done}/${stats.total} · ` : '';
@@ -91,6 +71,38 @@ export function render() {
   updateSaveStatus();
   renderResumePreview(resume);
   applyFilterClasses();
+
+  applyFocusMode();
+  renderMobileBottombar();
+  attachStepObserver();
+}
+
+// Shared by the live editor and the static replay. This is the smallest board
+// seam with no IO: give it Markdown and a DOM target, and it renders the same
+// parsed execution board without binding editor actions.
+export function renderReadOnlyBoard({
+  markdown = state.markdown,
+  filePath = state.filePath,
+  target = elements.document,
+  readOnly = false,
+} = {}) {
+  state.markdown = markdown;
+  state.filePath = filePath;
+  const blocks = parseMarkdown(markdown);
+  const phases = classifyPhases(extractPhases(blocks));
+  const stepSections = extractStepSections(blocks, markdown);
+  const stats = getProgressStats(blocks);
+  const resume = findResumeTarget(blocks, stepSections);
+  const stepCheckMap = linkChecksToSteps(blocks, stepSections);
+  const planHealthFindings = analyzePlanHealth(markdown, state.planHealthAvoidAboveSteps);
+
+  state.stepSections = stepSections;
+  state.stepCheckMap = stepCheckMap;
+  state.reviewTemplates = extractReviewTemplates(blocks);
+  state.phaseReviewCheckMap = linkChecksToPhaseReviews(blocks);
+  state.finalReview = extractFinalReview(blocks);
+  state.campaignFinalReviewCheck = findCampaignFinalReviewCheck(blocks);
+  state.isNewShape = isNewShapeCampaign(blocks);
 
   const phaseTitles = new Map();
   for (const phase of phases) {
@@ -115,11 +127,28 @@ export function render() {
   const planHealthStrip = renderPlanHealthStrip(planHealthFindings);
   const renderedBlocks = withPath.map((block) => renderBlock(block, stepSections));
   if (planHealthStrip) renderedBlocks.unshift(planHealthStrip);
-  elements.document.replaceChildren(...renderedBlocks);
+  // Cloning strips the live editor's toggle/prefs listeners while preserving
+  // native details/summary navigation in a read-only replay.
+  const targetBlocks = readOnly
+    ? renderedBlocks.map((block) => block.cloneNode(true))
+    : renderedBlocks;
+  target.replaceChildren(...targetBlocks);
+  target.dataset.readOnly = String(readOnly);
+  if (readOnly) {
+    for (const control of target.querySelectorAll('button, input, textarea, select')) {
+      control.disabled = true;
+    }
+  }
 
-  applyFocusMode();
-  renderMobileBottombar();
-  attachStepObserver();
+  const firstHeading = blocks.find((block) => block.type === 'heading' && block.level === 1);
+  return {
+    blocks,
+    phases,
+    resume,
+    stats,
+    stepSections,
+    title: firstHeading?.text || campaignFileStem(filePath) || 'Campaigns',
+  };
 }
 
 export function renderProgressLabel(stats) {
