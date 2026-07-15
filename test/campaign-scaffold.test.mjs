@@ -32,6 +32,7 @@ test('campaign creation is exclusive and reports an existing file as 409', async
   t.after(() => rm(projectPath, { recursive: true, force: true }));
 
   const first = await createCampaignScaffold({ name: 'Launch Notes', projectPath });
+  assert.equal(path.basename(first.filePath), 'launch-notes.campaign.md');
   const original = await readFile(first.filePath, 'utf8');
 
   await assert.rejects(
@@ -49,7 +50,7 @@ test('drafted markdown uses the same safe slug and exclusive create contract', a
     name: 'Planned Launch',
     projectPath,
   });
-  assert.equal(path.basename(created.filePath), 'planned-launch.md');
+  assert.equal(path.basename(created.filePath), 'planned-launch.campaign.md');
   assert.equal(await readFile(created.filePath, 'utf8'), '# Planned Launch\n\nDrafted content.\n');
   await assert.rejects(
     createCampaignFromMarkdown({

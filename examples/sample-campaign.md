@@ -35,6 +35,8 @@ Write the first version.
 ```text
 SCOPE: Draft a short public note about a small thing you learned.
 OUTPUT: A draft note in plain markdown.
+ACCEPTANCE:
+- The draft states one useful idea in plain language.
 OPEN QUESTIONS:
 - What is the one useful idea the reader should keep?
 ```
@@ -49,6 +51,8 @@ Cut anything that does not help the reader.
 ```text
 SCOPE: Edit the draft for clarity and brevity.
 OUTPUT: A sharper note.
+ACCEPTANCE:
+- The revised note is clear, concise, and keeps the original useful idea.
 OPEN QUESTIONS:
 - Is the opening sentence doing real work?
 ```
@@ -63,6 +67,8 @@ Put the note where readers can find it.
 ```text
 SCOPE: Prepare the final note for publishing.
 OUTPUT: Published URL or a ready-to-paste final draft.
+ACCEPTANCE:
+- The note is published or ready to paste without further editing.
 OPEN QUESTIONS:
 - Which surface fits the note best?
 ```

@@ -45,7 +45,7 @@ The default runner is Claude Code. To use Codex, add `--runner codex`. Open the 
 
 ### 1. Plan in markdown
 
-A campaign is an ordinary `.md` file with phases, checklist items, and a fenced prompt for each step. Start from [the sample campaign](examples/sample-campaign.md), create one in the app, or use the [paste-anywhere planner prompt](docs/paste-anywhere-planner.md).
+A campaign is an ordinary Markdown file with phases, checklist items, and a fenced prompt for each step. New files created in the app use `<slug>.campaign.md`; existing `.md` campaign files remain fully supported. Start from [the sample campaign](examples/sample-campaign.md), create one in the app, or use the [paste-anywhere planner prompt](docs/paste-anywhere-planner.md).
 
 ### 2. Run with your agent
 
@@ -98,9 +98,12 @@ Any markdown file opens. These conventions unlock the execution board:
 | `Model:` and `Parallel:` | Runner and scheduling guidance shown with the step |
 | ``Lane: `public/**`, `test/**` `` | Backtick-quoted repo-relative write globs used to prove parallel steps are disjoint |
 | A fenced block inside the step | The prompt sent to the agent |
+| `CHECK: {"command":"npm test"}` inside the prompt | An executable acceptance check |
 | `- [ ] Final review` + `## Final review` | One campaign-level release gate |
 
 The markdown file is the source of truth. Browser edits use a `baseHash`; stale writes return `409` instead of overwriting newer disk changes.
+
+See the [Campaign Markdown v1 specification](docs/spec/campaign-md-v1.md) for the versioned grammar, executable `CHECK` format, and conformance rules.
 
 ## CLI reference
 

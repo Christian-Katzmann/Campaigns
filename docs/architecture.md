@@ -3,7 +3,7 @@
 Campaigns renders a markdown campaign plan as an execution board. The markdown
 file on disk is the source of truth; the browser UI is an editor around that
 file, not an independent store. Everything flows from one loop: the server reads
-the `.md` file → the browser parses it into a data model → renders the board →
+the `.campaign.md` (or legacy `.md`) file → the browser parses it into a data model → renders the board →
 edits mutate the markdown string → a `baseHash`-guarded `PUT` writes it back to
 disk. Nothing is persisted anywhere else except small per-file UI preferences in
 `localStorage` and the campaign registry (`registry.json`).
@@ -20,6 +20,8 @@ together and owns no feature logic.
 - `lib/parser.mjs` — pure markdown → data model: blocks, phases, step sections,
   check↔step linking, progress stats, final-review migration. No DOM; imported
   directly by the Node tests.
+- `lib/campaign-file.mjs` — browser-safe filename semantics shared with Node;
+  both `name.campaign.md` and legacy `name.md` resolve to the stem `name`.
 - `lib/prefs.mjs` — pure preference defaults, sanitize, and theme normalization.
 - `lib/fleet.mjs` — pure fleet grouping, row presentation, ETA/babysitting
   labels, and Kro-state mapping.

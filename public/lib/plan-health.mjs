@@ -1,14 +1,51 @@
 import {
   EXECUTABLE_CHECK_LINE_REGEX,
   extractFinalReview,
+  extractPhases,
   extractStepSections,
+  findStepForCheck,
+  parseExecutableChecks,
   parseMarkdown,
+  progressChecklistBlocks,
 } from './parser.mjs';
 
 export const DEFAULT_AVOID_ABOVE_STEPS = 10;
 export const MAX_REQUIRED_READING_ITEMS = 5;
 
 export const PLAN_HEALTH_RULES = [
+  {
+    id: 'missing-title',
+    severity: 'error',
+    find: ({ title }) => title
+      ? []
+      : [{
+          ...campaignTarget(1),
+          message: 'This plan has no H1 title.',
+          fixHint: 'Add one # Campaign title heading.',
+        }],
+  },
+  {
+    id: 'missing-phase',
+    severity: 'error',
+    find: ({ phases }) => phases.length > 0
+      ? []
+      : [{
+          ...campaignTarget(1),
+          message: 'This plan has no checklist phase.',
+          fixHint: 'Add a ### Phase N — Title heading under ## Progress checklist.',
+        }],
+  },
+  {
+    id: 'missing-steps',
+    severity: 'error',
+    find: ({ steps }) => steps.length > 0
+      ? []
+      : [{
+          ...campaignTarget(1),
+          message: 'This plan has no Step N.M sections.',
+          fixHint: 'Add at least one ## Step N.M — Name section.',
+        }],
+  },
   {
     id: 'missing-model',
     severity: 'error',
@@ -21,6 +58,57 @@ export const PLAN_HEALTH_RULES = [
       })),
   },
   {
+    id: 'missing-parallel',
+    severity: 'error',
+    find: ({ steps }) => steps
+      .filter((step) => !step.parallel)
+      .map((step) => ({
+        ...stepTarget(step),
+        message: `${stepLabel(step)} has no valid Parallel chip.`,
+        fixHint: 'Add Parallel: NO or a reciprocal YES — with Step N.M declaration.',
+      })),
+  },
+  {
+    id: 'invalid-step-id',
+    severity: 'error',
+    find: ({ steps }) => steps
+      .filter((step) => !/^\d+\.\d+$/.test(step.number))
+      .map((step) => ({
+        ...stepTarget(step),
+        message: `${stepLabel(step)} does not use a numeric N.M id.`,
+        fixHint: 'Use a heading such as ## Step 1.1 — Name.',
+      })),
+  },
+  {
+    id: 'duplicate-step-id',
+    severity: 'error',
+    find: ({ steps }) => {
+      const seen = new Set();
+      return steps.flatMap((step) => {
+        if (!seen.has(step.number)) {
+          seen.add(step.number);
+          return [];
+        }
+        return [{
+          ...stepTarget(step),
+          message: `${stepLabel(step)} repeats an existing step id.`,
+          fixHint: 'Give every step section one unique numeric N.M id.',
+        }];
+      });
+    },
+  },
+  {
+    id: 'missing-prompt',
+    severity: 'error',
+    find: ({ steps }) => steps
+      .filter((step) => !step.prompt.trim())
+      .map((step) => ({
+        ...stepTarget(step),
+        message: `${stepLabel(step)} has no fenced prompt.`,
+        fixHint: 'Add one non-empty fenced prompt inside the step section.',
+      })),
+  },
+  {
     id: 'missing-acceptance',
     severity: 'error',
     find: ({ steps }) => steps
@@ -30,6 +118,27 @@ export const PLAN_HEALTH_RULES = [
         message: `${stepLabel(step)} has no ACCEPTANCE section.`,
         fixHint: 'Add observable acceptance criteria to the fenced step prompt.',
       })),
+  },
+  {
+    id: 'invalid-check',
+    severity: 'error',
+    find: ({ steps }) => steps.flatMap((step) => {
+      try {
+        parseExecutableChecks(step.prompt);
+        return [];
+      } catch (error) {
+        return [{
+          ...stepTarget(step),
+          message: `${stepLabel(step)} has an invalid executable CHECK: ${error.message}`,
+          fixHint: 'Use CHECK: followed by one JSON object with command and supported fields.',
+        }];
+      }
+    }),
+  },
+  {
+    id: 'checklist-mismatch',
+    severity: 'error',
+    find: findChecklistMismatches,
   },
   {
     id: 'step-count',
@@ -56,13 +165,31 @@ export const PLAN_HEALTH_RULES = [
   {
     id: 'missing-final-review',
     severity: 'error',
-    find: ({ finalReview }) => finalReview?.code
+    find: ({ finalReview, finalReviewHeadings }) => (
+      finalReviewHeadings.length === 1 && finalReview?.code?.content?.trim()
+    )
       ? []
       : [{
           ...campaignTarget(1, 'campaign-review'),
-          message: 'This plan has no campaign-level final review prompt.',
-          fixHint: 'Add one ## Final review section with a fenced review prompt.',
+          message: finalReviewHeadings.length > 1
+            ? `This plan has ${finalReviewHeadings.length} campaign-level Final review sections.`
+            : 'This plan has no campaign-level final review prompt.',
+          fixHint: 'Keep one ## Final review section with a fenced review prompt.',
         }],
+  },
+  {
+    id: 'final-review-check',
+    severity: 'error',
+    find: ({ checklistChecks }) => {
+      const matches = checklistChecks.filter((check) => /^final\s+review\s*$/i.test(check.text));
+      return matches.length === 1
+        ? []
+        : [{
+            ...campaignTarget(matches[0]?.lineStart + 1 || 1, 'campaign-review'),
+            message: `This plan has ${matches.length} campaign-level Final review checklist items.`,
+            fixHint: 'Keep exactly one - [ ] Final review item in the progress checklist.',
+          }];
+    },
   },
   {
     id: 'missing-check',
@@ -84,12 +211,19 @@ export function resolveAvoidAboveSteps(lessons) {
 
 export function analyzePlanHealth(markdown, avoidAboveSteps = DEFAULT_AVOID_ABOVE_STEPS) {
   const blocks = parseMarkdown(markdown);
+  const steps = stepContexts(blocks, markdown);
   const context = {
     avoidAboveSteps: positiveWholeNumber(avoidAboveSteps)
       ? avoidAboveSteps
       : DEFAULT_AVOID_ABOVE_STEPS,
+    checklistChecks: progressChecklistBlocks(blocks).filter((block) => block.type === 'check'),
     finalReview: extractFinalReview(blocks),
-    steps: stepContexts(blocks, markdown),
+    finalReviewHeadings: blocks.filter((block) => (
+      block.type === 'heading' && block.level === 2 && /^final\s+review\s*$/i.test(block.text)
+    )),
+    phases: extractPhases(blocks),
+    steps,
+    title: blocks.find((block) => block.type === 'heading' && block.level === 1) ?? null,
   };
 
   return PLAN_HEALTH_RULES.flatMap((rule) => rule.find(context).map((finding) => ({
@@ -97,6 +231,36 @@ export function analyzePlanHealth(markdown, avoidAboveSteps = DEFAULT_AVOID_ABOV
     severity: rule.severity,
     ...finding,
   })));
+}
+
+function findChecklistMismatches({ checklistChecks, steps }) {
+  const counts = new Map(steps.map((step) => [step.number, 0]));
+  const findings = [];
+
+  for (const check of checklistChecks) {
+    if (/^final\s+review\b/i.test(check.text)) continue;
+    const step = findStepForCheck(check.text, steps);
+    if (step) {
+      counts.set(step.number, counts.get(step.number) + 1);
+    } else if (/^(?:step\s+)?\d/i.test(check.text)) {
+      findings.push({
+        ...campaignTarget(check.lineStart + 1),
+        message: `Checklist item "${check.text}" has no matching step section.`,
+        fixHint: 'Match the checklist id to one ## Step N.M — Name section.',
+      });
+    }
+  }
+
+  for (const step of steps) {
+    const count = counts.get(step.number);
+    if (count === 1) continue;
+    findings.push({
+      ...stepTarget(step),
+      message: `${stepLabel(step)} has ${count} matching progress checklist items.`,
+      fixHint: 'Keep exactly one matching checklist item for this step.',
+    });
+  }
+  return findings;
 }
 
 function stepContexts(blocks, markdown) {

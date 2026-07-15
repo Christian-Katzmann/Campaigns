@@ -11,7 +11,6 @@ import {
   copyIconTemplate,
   cssEscape,
   element,
-  fileNameFromPath,
   formatTime,
   inlineMarkdown,
   relativeTime,
@@ -38,6 +37,7 @@ import {
   wrapDocSections,
   wrapSteps,
 } from '../lib/parser.mjs';
+import { campaignFileStem } from '../lib/campaign-file.mjs';
 import { recordTodayActivity, savePrefs, todayDelta } from './prefs-store.mjs';
 import { applyTheme, detectPhaseCompletions } from './effects.mjs';
 import { analyzePlanHealth } from '../lib/plan-health.mjs';
@@ -75,7 +75,7 @@ export function render() {
   const firstHeading = blocks.find((block) => block.type === 'heading' && block.level === 1);
   const title = firstHeading
     ? firstHeading.text
-    : (fileNameFromPath(state.filePath) || 'Campaigns').replace(/\.md$/i, '');
+    : campaignFileStem(state.filePath) || 'Campaigns';
   elements.documentTitle.textContent = title;
   // Lead the tab title with progress so a narrow tab still shows where the
   // campaign stands at a glance.

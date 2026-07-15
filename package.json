@@ -31,6 +31,7 @@
     "schema/",
     "SECURITY.md",
     "docs/campaigns-in-ci.md",
+    "docs/spec/campaign-md-v1.md",
     "docs/paste-anywhere-planner.md",
     "docs/run-state-schema.md",
     "docs/runner-api.md",
