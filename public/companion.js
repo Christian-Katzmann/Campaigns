@@ -1,9 +1,9 @@
 // Campaign Companion — a compact, read-only status surface.
 //
 // Polls /api/companion-state for the campaign feed and /api/companion-pet for
-// Kro's sprite. Everything here is observe-only: it never mutates state, and it
-// throttles itself to near-nothing when the window is hidden so a parked popup
-// (or a future always-on-top panel) never burns cycles in the background.
+// Kro or a custom pet. Everything here is observe-only: it never mutates state,
+// and it throttles itself to near-nothing when the window is hidden so a parked
+// popup (or a future always-on-top panel) never burns cycles in the background.
 //
 // Conventions mirror app.js: a small `element()` builder, `relativeTime()` for
 // human elapsed strings, and the same status vocabulary the server emits.
@@ -23,6 +23,7 @@ const PET_ANIMATIONS = {
   running: { row: 7, frames: 6, durations: [120, 120, 120, 120, 120, 220] },
   waving: { row: 3, frames: 4, durations: [140, 140, 140, 280] },
 };
+const PET_STATES = new Set(['idle', 'working', 'needs-attention']);
 
 // Companion statuses sort into five bands. Default view hides sleeping/quiet
 // campaigns so the panel stays about what matters now, not the full archive.
@@ -74,6 +75,9 @@ const runtime = {
   petFrameTimer: null,
   petFrameIndex: 0,
   petAnimation: 'idle',
+  petRenderMode: null,
+  petStateAssets: null,
+  petWorstStatus: 'idle',
   petCellStep: 0,
   petRowStep: 0,
   petHovered: false,
@@ -164,9 +168,10 @@ function renderState(data) {
   renderCounts(campaigns, visible);
   renderList(visible);
 
-  runtime.petActive = campaigns.some((c) => c.status === 'running');
+  runtime.petWorstStatus = resolvePetWorstStatus(data.worstStatus, campaigns);
+  runtime.petActive = runtime.petWorstStatus === 'working';
   window.campaignCompanion?.setPetActive?.(runtime.petActive);
-  updatePetAnimation();
+  updatePetVisual();
 
   const liveCount = campaigns.filter((c) => STATUS_BAND[c.status] === 'active').length;
   const attentionCount = campaigns.filter(isNotification).length;
@@ -358,6 +363,17 @@ function isRecentlyActive(iso) {
   return Number.isFinite(ms) && Date.now() - ms <= RECENT_STALLED_NOTIFICATION_MS;
 }
 
+function resolvePetWorstStatus(worstStatus, campaigns) {
+  if (PET_STATES.has(worstStatus)) return worstStatus;
+  if (campaigns.some((campaign) => ATTENTION_STATUSES.has(campaign.status))) {
+    return 'needs-attention';
+  }
+  if (campaigns.some((campaign) => campaign.status === 'running' || campaign.status === 'queued')) {
+    return 'working';
+  }
+  return 'idle';
+}
+
 function copyReference(campaign) {
   return campaign.current_step?.path || campaign.referencePath || campaign.filePath || '';
 }
@@ -468,11 +484,10 @@ function setFooter(mode, text) {
   els.footText.textContent = text;
 }
 
-/* ------------------------------ Pet sprite ---------------------------------- */
+/* ------------------------------ Pet ----------------------------------------- */
 
-// Fetch the selected pet once. When a package exists we set up the sprite cell
-// from the contract grid and start a gentle frame loop; when none does we leave
-// the pet block hidden and the page stays fully usable.
+// Fetch the selected pet once. Custom packages use their declared atlas grid;
+// bundled Kro swaps among three small state illustrations.
 async function loadPet() {
   let data;
   try {
@@ -484,12 +499,33 @@ async function loadPet() {
   }
 
   const pet = data?.pet;
-  if (!pet || !pet.spritesheetUrl || !pet.sprite) return;
+  if (!pet) return;
 
-  setupSprite(pet);
+  if (pet.renderMode === 'states' && pet.stateAssets) {
+    setupStatePet(pet);
+  } else if (pet.spritesheetUrl && pet.sprite) {
+    setupSprite(pet);
+  } else {
+    return;
+  }
+
   els.petFallback.hidden = true;
   els.pet.hidden = false;
-  if (!document.hidden) startPetLoop();
+  if (!document.hidden && runtime.petRenderMode === 'atlas') startPetLoop();
+}
+
+function setupStatePet(pet) {
+  stopPetLoop();
+  runtime.petRenderMode = 'states';
+  runtime.petStateAssets = pet.stateAssets;
+  runtime.petCellStep = 0;
+  runtime.petRowStep = 0;
+
+  const node = els.petSprite;
+  node.classList.add('is-state-asset');
+  node.style.removeProperty('background-size');
+  node.style.removeProperty('background-position');
+  renderStatePet();
 }
 
 // Scale one sprite cell down to the header slot and prime the loop. The sheet is
@@ -503,6 +539,9 @@ function setupSprite(pet) {
   const cellH = grid.cellHeight * scale;
 
   const node = els.petSprite;
+  runtime.petRenderMode = 'atlas';
+  runtime.petStateAssets = null;
+  node.classList.remove('is-state-asset');
   node.style.width = `${displayWidth}px`;
   node.style.height = `${cellH}px`;
   node.style.backgroundImage = `url("${pet.spritesheetUrl}")`;
@@ -523,7 +562,7 @@ function positionSprite() {
 }
 
 function startPetLoop() {
-  if (!runtime.petCellStep) return;
+  if (runtime.petRenderMode !== 'atlas' || !runtime.petCellStep) return;
   stopPetLoop();
   schedulePetFrame();
 }
@@ -550,10 +589,15 @@ function stopPetLoop() {
 
 function setPetHovered(hovered) {
   runtime.petHovered = hovered;
-  updatePetAnimation();
+  updatePetVisual();
 }
 
-function updatePetAnimation() {
+function updatePetVisual() {
+  if (runtime.petRenderMode === 'states') {
+    renderStatePet();
+    return;
+  }
+
   const next = desiredPetAnimation();
   const changed = runtime.petAnimation !== next;
   if (changed) {
@@ -564,6 +608,12 @@ function updatePetAnimation() {
   if (!document.hidden && (changed || !runtime.petFrameTimer)) {
     startPetLoop();
   }
+}
+
+function renderStatePet() {
+  const url = runtime.petStateAssets?.[runtime.petWorstStatus]
+    ?? runtime.petStateAssets?.idle;
+  if (url) els.petSprite.style.backgroundImage = `url("${url}")`;
 }
 
 function desiredPetAnimation() {

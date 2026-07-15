@@ -26,6 +26,7 @@ const previousEnv = new Map();
 for (const [name, value] of Object.entries({
   CAMPAIGNS_PORT_FILE: path.join(root, 'server.port'),
   CAMPAIGNS_CONFIG_DIR: path.join(root, 'user-config'),
+  CAMPAIGNS_PETS_DIR: path.join(root, 'pets'),
   CAMPAIGNS_REGISTRY_DIR: registryDir,
   CAMPAIGNS_RUNS_DIR: path.join(root, 'runs'),
 })) {
@@ -36,6 +37,7 @@ for (const [name, value] of Object.entries({
 const {
   campaignFileDeletionMode,
   deleteCampaignFile,
+  deriveCompanionWorstStatus,
   startServer,
 } = await import('../server.mjs');
 
@@ -71,6 +73,16 @@ test('campaign file deletion is recoverable on macOS and explicit permanent remo
   const deleted = await deleteCampaignFile(permanentSource, { platform: 'win32' });
   assert.deepEqual(deleted, { deletionMode: 'permanent', trashed: false });
   await assert.rejects(access(permanentSource), { code: 'ENOENT' });
+});
+
+test('companion worst status prioritizes attention, then live work, then idle', () => {
+  assert.equal(deriveCompanionWorstStatus([]), 'idle');
+  assert.equal(deriveCompanionWorstStatus([{ status: 'paused' }]), 'idle');
+  assert.equal(deriveCompanionWorstStatus([{ status: 'queued' }]), 'working');
+  assert.equal(
+    deriveCompanionWorstStatus([{ status: 'running' }, { status: 'failed' }]),
+    'needs-attention',
+  );
 });
 
 test('document and registry HTTP contracts hold against a real ephemeral server', async (t) => {
@@ -117,11 +129,66 @@ test('document and registry HTTP contracts hold against a real ephemeral server'
   );
   assert.deepEqual(capabilities.runnerWarnings, []);
   assert.ok(Object.hasOwn(capabilities, 'personalLayer'));
+  assert.equal(capabilities.personalLayer.companion, true);
   assert.ok(Object.hasOwn(capabilities, 'providers'));
   assert.equal(typeof capabilities.deviceOnboarding.available, 'boolean');
   assert.equal(typeof capabilities.deviceOnboarding.runner.ready, 'boolean');
   assert.equal(typeof capabilities.deviceOnboarding.skill.ready, 'boolean');
   assert.equal(typeof capabilities.deviceOnboarding.stablePrivateUrl.ready, 'boolean');
+
+  const companionPageResponse = await fetch(`${baseUrl}/companion`);
+  assert.equal(companionPageResponse.status, 200);
+  assert.match(await companionPageResponse.text(), /id="companion-pet-sprite"/);
+  const companionState = await fetch(`${baseUrl}/api/companion-state`).then((response) =>
+    response.json(),
+  );
+  assert.ok(['idle', 'working', 'needs-attention'].includes(companionState.worstStatus));
+
+  const bundledPetResponse = await fetch(`${baseUrl}/api/companion-pet`);
+  const bundledPet = await bundledPetResponse.json();
+  assert.equal(bundledPetResponse.status, 200);
+  assert.equal(bundledPet.pet.id, 'kro');
+  assert.equal(bundledPet.pet.source, 'bundled');
+  assert.equal(bundledPet.pet.renderMode, 'states');
+  assert.deepEqual(Object.keys(bundledPet.pet.stateAssets), ['idle', 'working', 'needs-attention']);
+  for (const assetUrl of Object.values(bundledPet.pet.stateAssets)) {
+    const assetResponse = await fetch(`${baseUrl}${assetUrl}`);
+    assert.equal(assetResponse.status, 200);
+    assert.equal(assetResponse.headers.get('content-type'), 'image/svg+xml');
+    assert.match(await assetResponse.text(), /^<svg/);
+  }
+
+  const customV2Dir = path.join(root, 'pets', 'custom-v2');
+  await mkdir(customV2Dir, { recursive: true });
+  await writeFile(path.join(customV2Dir, 'pet.json'), JSON.stringify({
+    id: 'custom-v2',
+    displayName: 'Custom V2',
+    description: 'Fixture pet.',
+    spriteVersionNumber: 2,
+    spritesheetPath: 'spritesheet.png',
+  }));
+  await writeFile(path.join(customV2Dir, 'spritesheet.png'), Buffer.from('fixture'));
+  const customV2 = await fetch(`${baseUrl}/api/companion-pet`).then((response) => response.json());
+  assert.equal(customV2.pet.source, 'custom');
+  assert.equal(customV2.pet.renderMode, 'atlas');
+  assert.equal(customV2.pet.spriteVersionNumber, 2);
+  assert.equal(customV2.pet.sprite.rows, 11);
+  assert.equal(customV2.pet.sprite.height, 2288);
+  await rm(customV2Dir, { recursive: true, force: true });
+
+  const customV1Dir = path.join(root, 'pets', 'custom-v1');
+  await mkdir(customV1Dir, { recursive: true });
+  await writeFile(path.join(customV1Dir, 'pet.json'), JSON.stringify({
+    id: 'custom-v1',
+    displayName: 'Custom V1',
+    spritesheetPath: 'spritesheet.png',
+  }));
+  await writeFile(path.join(customV1Dir, 'spritesheet.png'), Buffer.from('fixture'));
+  const customV1 = await fetch(`${baseUrl}/api/companion-pet`).then((response) => response.json());
+  assert.equal(customV1.pet.spriteVersionNumber, 1);
+  assert.equal(customV1.pet.sprite.rows, 9);
+  assert.equal(customV1.pet.sprite.height, 1872);
+  await rm(customV1Dir, { recursive: true, force: true });
 
   const notificationSettingsResponse = await fetch(`${baseUrl}/api/notification-settings`, {
     method: 'PUT',

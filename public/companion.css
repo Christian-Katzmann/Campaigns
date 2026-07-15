@@ -148,6 +148,13 @@ body.companion {
   image-rendering: auto;
 }
 
+.companion-pet-sprite.is-state-asset {
+  width: 56px;
+  height: 60px;
+  background-position: center;
+  background-size: contain;
+}
+
 .companion-head-text {
   min-width: 0; /* let the title ellipsize instead of pushing width */
   flex: 1 1 auto;

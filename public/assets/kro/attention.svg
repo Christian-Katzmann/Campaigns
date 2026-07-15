@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 104" role="img" aria-labelledby="title">
+  <title id="title">Kro needs attention</title>
+  <circle cx="78" cy="19" r="15" fill="#f3b83f"/>
+  <path fill="#493200" d="M76 9h4l-1 13h-2Zm2 16a2.5 2.5 0 1 1 0 5 2.5 2.5 0 0 1 0-5Z"/>
+  <path fill="#1d2024" d="M18 47c0-20 13-34 32-34 17 0 29 13 29 30v34c0 10-8 18-18 18H37c-11 0-19-8-19-19V47Z"/>
+  <path fill="#3a3030" d="M23 55c10-6 23-4 34 7-7 16-19 23-34 18-4-8-4-17 0-25Z"/>
+  <path fill="#d8a746" d="m76 42 16 7-16 7Z"/>
+  <circle cx="64" cy="36" r="8" fill="#f7f3e8"/>
+  <circle cx="67" cy="36" r="3" fill="#1d2024"/>
+  <path fill="none" stroke="#876b35" stroke-linecap="round" stroke-width="3" d="M40 94v7m17-7v7m-22 0h10m7 0h10"/>
+</svg>

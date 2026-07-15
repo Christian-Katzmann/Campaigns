@@ -13,6 +13,8 @@ The generated bundle preserves the existing app name, bundle id, preferred port,
 
 Campaign Companion is a small always-on-top panel that shows which registered campaigns are running, stalled, paused, stale, or done — without opening the full board.
 
+Meet Kro, the companion's built-in campaign bird: he rests, works, or asks for attention even on a fresh install. Custom Codex pets still take his place automatically.
+
 - **Launch:** open the Campaigns app, then click the Campaign Companion icon in the macOS menu bar. The in-app **Companion** button does the same thing. In a plain browser it falls back to a small popup window.
 - **Use:** the panel defaults to **Active** campaigns only. Toggle **All** to see sleeping, finished, and idle campaigns. The collapse button shrinks the panel down to the pet plus an attention signal. In collapsed mode, drag the pet to move it, or right-click it and choose **Expand**. **Open App** brings the main Campaigns window forward.
 - **Notifications:** the badge only counts non-parked `failed`, `halted`, or `stalled` campaigns touched in the last 24 hours. Old attention states move to **All**.

@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 104" role="img" aria-labelledby="title">
+  <title id="title">Kro working</title>
+  <rect x="7" y="67" width="82" height="28" rx="5" fill="#d9e8f7"/>
+  <path fill="#1d2024" d="M22 43c0-19 13-32 32-32 17 0 29 12 29 29v33c0 11-8 19-19 19H41c-11 0-19-8-19-19V43Z"/>
+  <path fill="#31363c" d="M28 52c12 0 22 7 28 21-9 8-19 10-29 6-4-9-3-18 1-27Z"/>
+  <path fill="#d8a746" d="m80 38 13 6-13 6Z"/>
+  <circle cx="68" cy="33" r="7" fill="#f7f3e8"/>
+  <circle cx="70" cy="34" r="2.5" fill="#1d2024"/>
+  <path fill="none" stroke="#3378b8" stroke-linecap="round" stroke-width="3" d="M56 75h21M51 83h26"/>
+  <path fill="none" stroke="#3378b8" stroke-linecap="round" stroke-width="2" d="m9 18 5 5m4-13v8m9-3-6 6"/>
+</svg>

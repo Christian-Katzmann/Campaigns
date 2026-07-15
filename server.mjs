@@ -17,13 +17,13 @@ import {
   rerunAutomateFinalize,
 } from './lib/automate-providers.mjs';
 import {
-  PET_SPRITE,
   PET_SPRITE_MIME,
   isValidPetId,
   listPetIds,
   readPetManifest,
   resolvePetsDir,
   selectPet,
+  spriteGridForVersion,
   statSpritesheet,
 } from './lib/companion-pets.mjs';
 import { httpError, readJsonBody, sendJson, sendStatic } from './lib/http.mjs';
@@ -167,6 +167,14 @@ const COMPANION_STATUS_LABELS = {
   completed: 'Completed',
   idle: 'Idle',
 };
+const COMPANION_ASSET_PATHS = [
+  'companion.html',
+  'companion.js',
+  'companion.css',
+  'assets/kro/idle.svg',
+  'assets/kro/working.svg',
+  'assets/kro/attention.svg',
+];
 const NOTIFICATION_TITLE_MAX = 80;
 const NOTIFICATION_MESSAGE_MAX = 500;
 const STOP_WATCH_INTERVAL_MS = positiveDuration(process.env.CAMPAIGNS_STOP_WATCH_INTERVAL_MS, 30_000);
@@ -598,21 +606,23 @@ async function sendCapabilities(url, response) {
     if (!/No Git project root found/.test(error.message)) throw error;
     runnerRegistry = await loadRunnerRegistry();
   }
-  const [automation, nativeLessons, legacyLessons, runners, deviceOnboarding] = await Promise.all([
-    getAutomateProviderAvailability(),
-    hasUnifiedRunLedgers(lessonsRunsDir).catch(() => false),
-    stat(lessonsHelperPath).then((info) => info.isFile()).catch(() => false),
-    runnerCapabilities(runnerRegistry, { cwd: runnerCwd }),
-    resolveServerDeviceOnboardingContext().catch((error) => ({
-      capability: {
-        available: false,
-        hint: error.message || 'Phone onboarding is unavailable.',
-        runner: { ready: false, id: '', label: '' },
-        skill: { ready: false, path: '' },
-        stablePrivateUrl: { ready: false, kind: '', tool: '', url: '' },
-      },
-    })),
-  ]);
+  const [automation, nativeLessons, legacyLessons, runners, deviceOnboarding, companion] =
+    await Promise.all([
+      getAutomateProviderAvailability(),
+      hasUnifiedRunLedgers(lessonsRunsDir).catch(() => false),
+      stat(lessonsHelperPath).then((info) => info.isFile()).catch(() => false),
+      runnerCapabilities(runnerRegistry, { cwd: runnerCwd }),
+      resolveServerDeviceOnboardingContext().catch((error) => ({
+        capability: {
+          available: false,
+          hint: error.message || 'Phone onboarding is unavailable.',
+          runner: { ready: false, id: '', label: '' },
+          skill: { ready: false, path: '' },
+          stablePrivateUrl: { ready: false, kind: '', tool: '', url: '' },
+        },
+      })),
+      companionAssetsAvailable(),
+    ]);
   const fileDeletionMode = campaignFileDeletionMode();
   sendJson(response, 200, {
     fileDeletion: {
@@ -622,7 +632,7 @@ async function sendCapabilities(url, response) {
     personalLayer: {
       automate: automation.available,
       away: automation.available,
-      companion: automation.available,
+      companion,
       lessons: nativeLessons || legacyLessons,
     },
     providers: automation.providers,
@@ -631,6 +641,17 @@ async function sendCapabilities(url, response) {
     runnerWarnings: runnerRegistry.warnings,
     runners,
   });
+}
+
+async function companionAssetsAvailable() {
+  try {
+    const details = await Promise.all(
+      COMPANION_ASSET_PATHS.map((assetPath) => stat(path.join(publicDir, assetPath))),
+    );
+    return details.every((entry) => entry.isFile());
+  } catch {
+    return false;
+  }
 }
 
 async function resolveServerDeviceOnboardingContext() {
@@ -2674,6 +2695,7 @@ async function sendCompanionState(response) {
   sendJson(response, 200, {
     generatedAt: new Date(now).toISOString(),
     counts: tallyCompanionCounts(campaigns),
+    worstStatus: deriveCompanionWorstStatus(campaigns),
     campaigns,
   });
 }
@@ -2810,19 +2832,37 @@ function tallyCompanionCounts(campaigns) {
   return counts;
 }
 
+export function deriveCompanionWorstStatus(campaigns) {
+  if (campaigns.some((campaign) => ['stalled', 'failed', 'halted'].includes(campaign.status))) {
+    return 'needs-attention';
+  }
+  if (campaigns.some((campaign) => ['running', 'queued'].includes(campaign.status))) {
+    return 'working';
+  }
+  return 'idle';
+}
+
 /* ------------------------------ API: companion pet -------------------------- */
 
 // Read-only discovery + serving for the Campaign Companion's visual pet. Pets
-// are Codex custom-pet packages under ${CODEX_HOME:-$HOME/.codex}/pets; nothing
-// is copied into the repo. Returns the selected pet's metadata with a served
-// spritesheet URL plus the fixed sprite-atlas grid, or { pet: null } when no
-// usable package exists so the UI can render empty. `available` lists every
-// usable package id (handy for a future picker).
+// are either a Codex custom-pet package under ${CODEX_HOME:-$HOME/.codex}/pets
+// or the bundled Kro state assets when no valid package exists. `available`
+// lists discovered user package ids (handy for a future picker).
 async function sendCompanionPet(response) {
   const [pet, available] = await Promise.all([selectPet(petsDir), listPetIds(petsDir)]);
 
-  if (!pet) {
-    sendJson(response, 200, { pet: null, available });
+  if (pet.renderMode === 'states') {
+    sendJson(response, 200, {
+      pet: {
+        id: pet.id,
+        displayName: pet.displayName,
+        description: pet.description,
+        source: pet.source,
+        renderMode: pet.renderMode,
+        stateAssets: pet.stateAssets,
+      },
+      available,
+    });
     return;
   }
 
@@ -2831,9 +2871,12 @@ async function sendCompanionPet(response) {
       id: pet.id,
       displayName: pet.displayName,
       description: pet.description,
+      source: pet.source,
+      renderMode: pet.renderMode,
+      spriteVersionNumber: pet.spriteVersionNumber,
       spritesheetPath: pet.spritesheetPath,
       spritesheetUrl: `/api/companion-pet/spritesheet?id=${encodeURIComponent(pet.id)}`,
-      sprite: PET_SPRITE,
+      sprite: spriteGridForVersion(pet.spriteVersionNumber),
     },
     available,
   });
