@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import { promisify } from 'node:util';
 
-import { runCampaign } from '../lib/pump.mjs';
+import { runCampaign, runPathsForCampaign } from '../lib/pump.mjs';
 import { classifyRunnerResult, createRunnerRegistry } from '../lib/runners.mjs';
 import {
   RunStateTransitionError,
@@ -33,6 +33,9 @@ export const AUDIT_CLASS_COVERAGE = Object.freeze([
   coverage('unreviewed force merge', 'test/pump.test.mjs', 'force_merged_unreviewed occurs only with the explicit config escape hatch', 'force_merged only with explicit flag'),
   coverage('manual user stop', 'test/pump.test.mjs', 'user stop gives grace, kills the active process group, and records salvage', 'stopped_by_user with salvage'),
   coverage('dead worker recovery', 'test/recovery.test.mjs', 'a dead running worker is failed with salvaged output, reset, and resumes on next run', 'recovery resets and resumes the step'),
+  coverage('parallel worker killed', 'test/chaos.test.mjs', 'a killed parallel worker preserves its sibling and retries only the affected step', 'clean sibling merged; killed step retryable; no worktree or process leak'),
+  coverage('parallel child worktree orphaned', 'test/chaos.test.mjs', 'an orphaned parallel child is pruned while every committed branch survives', 'orphaned step retryable; committed branches retained; no worktree leak'),
+  coverage('parallel sibling merge conflict', 'test/chaos.test.mjs', 'a parallel merge conflict aborts cleanly and preserves both branches', 'merge_conflict retryable; both branches retained; no worktree or process leak'),
   coverage('step cap', 'test/pump.test.mjs', 'max_steps_per_run stops at the boundary with a visible cap event', 'cap_reached / max_steps_per_run'),
 ]);
 
@@ -108,6 +111,7 @@ test('rendered board status DOM exposes attention for human review, caps, and st
   globalThis.document = fakeDocument();
   try {
     const { renderAutomateStatusContent } = await import('../public/modules/automate-drawer.mjs');
+    const { renderLaneChip } = await import('../public/modules/render.mjs');
     const expectedLabels = {
       awaiting_human_review: 'Awaiting review',
       cap_reached: 'Cap reached',
@@ -125,6 +129,11 @@ test('rendered board status DOM exposes attention for human review, caps, and st
       assert.match(dump, new RegExp(label));
       assert.match(dump, />!<\/span>/);
     }
+
+    const lane = renderLaneChip({ globs: ['public/modules/**', 'test/*.test.mjs'] });
+    assert.match(lane.outerHTML, /meta-lane/);
+    assert.match(lane.outerHTML, /public\/modules\/\*\*/);
+    assert.match(lane.outerHTML, /test\/\*\.test\.mjs/);
   } finally {
     globalThis.document = originalDocument;
   }
@@ -165,6 +174,260 @@ test('hello E2E runs the step and final review to terminal completed', async (t)
   assert.equal(state.history.some((entry) => entry.event === 'campaign_merged'), false);
   assert.match(await readFile(campaignPath, 'utf8'), /- \[x\] Step 1\.1/);
 });
+
+test('a killed parallel worker preserves its sibling and retries only the affected step', async (t) => {
+  const fixture = await makeParallelChaosFixture(t, killedWorkerScript());
+  const before = worktreePaths(await git(fixture.repo, ['worktree', 'list', '--porcelain']));
+
+  await assert.rejects(runCampaign(fixture.campaignPath, fixture.options), /Runner exited|Step 1\.2/);
+  const failed = await readChaosState(fixture);
+  const afterFailure = worktreePaths(await git(fixture.repo, ['worktree', 'list', '--porcelain']));
+  const killedPid = Number(await readFile(path.join(fixture.pidDir, '1.2.pid'), 'utf8'));
+
+  assert.equal(failed.steps.find((step) => step.id === '1.1').status, 'completed');
+  assert.equal(failed.steps.find((step) => step.id === '1.2').status, 'failed');
+  assert.equal(failed.steps.find((step) => step.id === '1.2').failure.code, 'worker_exit');
+  assert.equal(failed.steps.find((step) => step.id === '1.2').failure.retryable, true);
+  assert.ok(failed.artifacts.parallel_worktrees.every((worktree) => worktree.pruned_at));
+  assert.deepEqual(afterFailure, before);
+  assert.equal(isPidAlive(killedPid), false);
+  await assertCommittedParallelBranchesSurvive(fixture.repo, failed);
+
+  const completed = await runCampaign(fixture.campaignPath, fixture.options);
+  const afterRetry = worktreePaths(await git(fixture.repo, ['worktree', 'list', '--porcelain']));
+  assert.ok(['completed', 'merged'].includes(completed.state.run.status));
+  assert.equal(completed.state.steps.find((step) => step.id === '1.1').attempt, 1);
+  assert.equal(completed.state.steps.find((step) => step.id === '1.2').attempt, 2);
+  assert.deepEqual(afterRetry, before);
+  await assertNoLiveChaosWorkers(fixture.pidDir);
+});
+
+test('an orphaned parallel child is pruned while every committed branch survives', async (t) => {
+  const fixture = await makeParallelChaosFixture(t, orphanedWorktreeScript());
+  const before = worktreePaths(await git(fixture.repo, ['worktree', 'list', '--porcelain']));
+
+  await assert.rejects(runCampaign(fixture.campaignPath, fixture.options), /Could not inspect Step 1\.2 worktree/);
+  const failed = await readChaosState(fixture);
+  const after = worktreePaths(await git(fixture.repo, ['worktree', 'list', '--porcelain']));
+  const affected = failed.steps.find((step) => step.id === '1.2');
+
+  assert.equal(failed.steps.find((step) => step.id === '1.1').status, 'completed');
+  assert.equal(affected.status, 'failed');
+  assert.equal(affected.failure.code, 'tool_failure');
+  assert.equal(affected.failure.retryable, true);
+  assert.ok(failed.artifacts.parallel_worktrees.every((worktree) => worktree.pruned_at));
+  assert.deepEqual(after, before);
+  await assertCommittedParallelBranchesSurvive(fixture.repo, failed);
+  await assertNoLiveChaosWorkers(fixture.pidDir);
+});
+
+test('a parallel merge conflict aborts cleanly and preserves both branches', async (t) => {
+  const fixture = await makeParallelChaosFixture(t, mergeConflictScript(), {
+    'shared.txt': 'base\n',
+  });
+  const before = worktreePaths(await git(fixture.repo, ['worktree', 'list', '--porcelain']));
+
+  await assert.rejects(runCampaign(fixture.campaignPath, fixture.options), /Could not merge Step 1\.2/);
+  const failed = await readChaosState(fixture);
+  const after = worktreePaths(await git(fixture.repo, ['worktree', 'list', '--porcelain']));
+  const affected = failed.steps.find((step) => step.id === '1.2');
+
+  assert.equal(failed.steps.find((step) => step.id === '1.1').status, 'completed');
+  assert.equal(affected.status, 'failed');
+  assert.equal(affected.failure.code, 'merge_conflict');
+  assert.equal(affected.failure.retryable, true);
+  assert.match(affected.failure.output_tail, /CONFLICT|conflict/i);
+  assert.ok(failed.artifacts.parallel_worktrees.every((worktree) => worktree.pruned_at));
+  assert.deepEqual(after, before);
+  await assertCommittedParallelBranchesSurvive(fixture.repo, failed);
+  await assertNoLiveChaosWorkers(fixture.pidDir);
+});
+
+async function makeParallelChaosFixture(t, runnerScript, initialFiles = {}) {
+  const root = await mkdtemp(path.join(tmpdir(), 'campaigns-parallel-chaos-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const repo = path.join(root, 'repo');
+  const runsDir = path.join(root, 'runs');
+  const campaignPath = path.join(repo, 'campaign.md');
+  const configPath = path.join(root, 'campaigns.config.json');
+  const pidDir = path.join(root, 'pids');
+  await mkdir(repo, { recursive: true });
+  await mkdir(pidDir, { recursive: true });
+  await git(repo, ['init', '-b', 'main']);
+  await git(repo, ['config', 'user.name', 'Campaigns Test']);
+  await git(repo, ['config', 'user.email', 'campaigns@example.test']);
+  await writeFile(campaignPath, parallelChaosCampaign(), 'utf8');
+  for (const [relativePath, contents] of Object.entries(initialFiles)) {
+    const destination = path.join(repo, relativePath);
+    await mkdir(path.dirname(destination), { recursive: true });
+    await writeFile(destination, contents, 'utf8');
+  }
+  const config = fakeRunnerConfig();
+  config.runners.fake.args = ['-e', runnerScript, '{prompt}'];
+  await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, 'utf8');
+  await git(repo, ['add', '.']);
+  await git(repo, ['commit', '-m', 'Add parallel chaos fixture']);
+  return {
+    root,
+    repo,
+    runsDir,
+    campaignPath,
+    pidDir,
+    options: {
+      configPath,
+      runsDir,
+      noWorktree: false,
+      stdout: silent,
+      stderr: silent,
+      env: {
+        ...process.env,
+        CAMPAIGNS_CONFIG_DIR: path.join(root, 'user-config'),
+        CHAOS_PID_DIR: pidDir,
+        CHAOS_FAIL_ONCE: path.join(root, 'failed-once'),
+        CHAOS_SAFE_CWD: root,
+      },
+    },
+  };
+}
+
+function killedWorkerScript() {
+  return `
+    const fs = require('node:fs');
+    const { execFileSync } = require('node:child_process');
+    const prompt = process.argv[1];
+    if (!prompt.includes('campaigns.step_completed')) {
+      process.stdout.write('Verdict: APPROVED\\nReasons:\\n\\nChaos recovery passed.');
+    } else {
+      const step = prompt.match(/^Step: ([^ ]+)/m)[1];
+      fs.writeFileSync(process.env.CHAOS_PID_DIR + '/' + step + '.pid', String(process.pid));
+      if (step === '1.2' && !fs.existsSync(process.env.CHAOS_FAIL_ONCE)) {
+        fs.writeFileSync(process.env.CHAOS_FAIL_ONCE, 'killed once');
+        process.kill(process.pid, 'SIGKILL');
+      } else {
+        fs.writeFileSync('result-' + step + '.txt', step + '\\n');
+        execFileSync('git', ['add', 'result-' + step + '.txt']);
+        execFileSync('git', ['-c', 'commit.gpgSign=false', 'commit', '-m', 'Complete ' + step]);
+        process.stdout.write(prompt);
+      }
+    }
+  `;
+}
+
+function orphanedWorktreeScript() {
+  return `
+    const fs = require('node:fs');
+    const { execFileSync } = require('node:child_process');
+    const prompt = process.argv[1];
+    if (!prompt.includes('campaigns.step_completed')) {
+      process.stdout.write('Verdict: APPROVED\\nReasons:\\n\\nUnused review.');
+    } else {
+      const step = prompt.match(/^Step: ([^ ]+)/m)[1];
+      const cwd = process.cwd();
+      fs.writeFileSync(process.env.CHAOS_PID_DIR + '/' + step + '.pid', String(process.pid));
+      fs.writeFileSync('result-' + step + '.txt', step + '\\n');
+      execFileSync('git', ['add', 'result-' + step + '.txt']);
+      execFileSync('git', ['-c', 'commit.gpgSign=false', 'commit', '-m', 'Complete ' + step]);
+      if (step === '1.2') {
+        process.chdir(process.env.CHAOS_SAFE_CWD);
+        fs.rmSync(cwd, { recursive: true, force: true });
+      }
+      process.stdout.write(prompt);
+    }
+  `;
+}
+
+function mergeConflictScript() {
+  return `
+    const fs = require('node:fs');
+    const { execFileSync } = require('node:child_process');
+    const prompt = process.argv[1];
+    if (!prompt.includes('campaigns.step_completed')) {
+      process.stdout.write('Verdict: APPROVED\\nReasons:\\n\\nUnused review.');
+    } else {
+      const step = prompt.match(/^Step: ([^ ]+)/m)[1];
+      fs.writeFileSync(process.env.CHAOS_PID_DIR + '/' + step + '.pid', String(process.pid));
+      fs.writeFileSync('shared.txt', step + '\\n');
+      execFileSync('git', ['add', 'shared.txt']);
+      execFileSync('git', ['-c', 'commit.gpgSign=false', 'commit', '-m', 'Complete ' + step]);
+      process.stdout.write(prompt);
+    }
+  `;
+}
+
+function parallelChaosCampaign() {
+  return `# Parallel chaos fixture
+
+## Progress checklist
+
+### Phase 1 — Split
+
+- [ ] Step 1.1 — Left
+- [ ] Step 1.2 — Right
+- [ ] Final review
+
+## Step 1.1 — Left
+
+Model: Fake · None
+Parallel: YES — with Step 1.2
+Lane: \`lane-left/**\`
+
+\`\`\`text
+Complete the left side.
+\`\`\`
+
+## Step 1.2 — Right
+
+Model: Fake · None
+Parallel: YES — with Step 1.1
+Lane: \`lane-right/**\`
+
+\`\`\`text
+Complete the right side.
+\`\`\`
+
+## Final review
+
+\`\`\`text
+Review the chaos fixture.
+\`\`\`
+`;
+}
+
+async function readChaosState(fixture) {
+  const paths = runPathsForCampaign(fixture.campaignPath, fixture.runsDir);
+  return JSON.parse(await readFile(paths.statePath, 'utf8'));
+}
+
+async function assertCommittedParallelBranchesSurvive(repo, state) {
+  for (const worktree of state.artifacts.parallel_worktrees) {
+    await git(repo, ['show-ref', '--verify', `refs/heads/${worktree.branch}`]);
+  }
+}
+
+async function assertNoLiveChaosWorkers(pidDir) {
+  const files = await readdir(pidDir);
+  for (const file of files.filter((name) => name.endsWith('.pid'))) {
+    const pid = Number(await readFile(path.join(pidDir, file), 'utf8'));
+    assert.equal(isPidAlive(pid), false, `worker ${pid} from ${file} is still alive`);
+  }
+}
+
+function worktreePaths(porcelain) {
+  return porcelain.split('\n')
+    .filter((line) => line.startsWith('worktree '))
+    .map((line) => line.slice('worktree '.length))
+    .sort();
+}
+
+function isPidAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error.code === 'EPERM';
+  }
+}
 
 function coverage(auditClass, testFile, testName, outcome) {
   return Object.freeze({ audit_class: auditClass, test_file: testFile, test_name: testName, outcome });

@@ -8,8 +8,8 @@ Planning rules:
 2. Use 2–6 phases and usually 4–10 total implementation steps. Bundle work that shares files, context, and verification. Each step must fit one focused agent session.
 3. Do not invent product decisions or repository paths. Put unresolved product choices in `OPEN QUESTIONS`; use a path placeholder only when the project description does not establish the real path.
 4. If a local Campaigns server is already reachable, read `/api/lessons` and use its sizing and failure signals. If it is absent, continue silently with these rules.
-5. Every step heading has exactly one `Model:` line and one `Parallel:` line directly below it. Recommend the user's strongest available model tier and a strongest equivalent from another installed runtime. Add each runtime's supported effort label after a middle dot. Do not pin unavailable model versions. The first recommendation is preferred.
-6. Use `Parallel: YES — with Step N.M` only for same-phase steps with disjoint writes and no read-after-write dependency. Otherwise use `Parallel: NO`.
+5. Every step heading has exactly one `Model:`, one `Parallel:`, and one `Lane:` line directly below it. Recommend the user's strongest available model tier and a strongest equivalent from another installed runtime. Add each runtime's supported effort label after a middle dot. Do not pin unavailable model versions. The first recommendation is preferred.
+6. Write lanes as one or more comma-separated, backtick-quoted, repo-relative path globs, for example ``Lane: `public/modules/**`, `test/parser.test.mjs` ``. Never use absolute paths, prose, or unquoted globs. Use `Parallel: YES — with Step N.M` only for reciprocal same-phase steps whose lanes are disjoint and have no read-after-write dependency. Otherwise use `Parallel: NO`.
 7. Every step prompt contains `SCOPE`, `REQUIRED READING`, `OUTPUT`, `ACCEPTANCE`, `OPEN QUESTIONS`, and the exact forward-sweep instruction shown below. Acceptance criteria must be observable in the diff or practical command output.
 8. Use one campaign-level final review. Do not add per-step or per-phase review steps.
 9. Keep all execution non-interactive. Temporary servers bind to `127.0.0.1` and are stopped before exit. Preserve existing user changes. Stop only for destructive data loss, production deployment, secret or paid-provider mutation, or a real product decision.
@@ -62,6 +62,7 @@ Each step contains a self-contained prompt for a fresh agent. `REQUIRED READING`
 
 Model: {{STRONGEST AVAILABLE PRIMARY MODEL}} · {{HIGH OR MAXIMUM PRACTICAL EFFORT}} / {{STRONGEST AVAILABLE ALTERNATE-RUNTIME MODEL}} · {{HIGH OR MAXIMUM PRACTICAL EFFORT}}
 Parallel: {{NO OR YES — with Step N.M}}
+Lane: `{{REPO-RELATIVE PATH GLOB}}`
 
 {{ONE SHORT PARAGRAPH EXPLAINING WHY THIS STEP EXISTS}}
 
@@ -83,6 +84,7 @@ FORWARD SWEEP: before checking this step off, do a quick pass over the campaign'
 
 Model: {{STRONGEST AVAILABLE PRIMARY MODEL}} · {{EFFORT}} / {{STRONGEST AVAILABLE ALTERNATE-RUNTIME MODEL}} · {{EFFORT}}
 Parallel: {{NO OR YES — with Step N.M}}
+Lane: `{{REPO-RELATIVE PATH GLOB}}`
 
 {{REPEAT THE COMPLETE STEP SHAPE ABOVE}}
 
@@ -90,6 +92,7 @@ Parallel: {{NO OR YES — with Step N.M}}
 
 Model: {{STRONGEST AVAILABLE PRIMARY MODEL}} · {{EFFORT}} / {{STRONGEST AVAILABLE ALTERNATE-RUNTIME MODEL}} · {{EFFORT}}
 Parallel: NO
+Lane: `{{REPO-RELATIVE PATH GLOB}}`
 
 {{REPEAT THE COMPLETE STEP SHAPE ABOVE}}
 
@@ -116,7 +119,7 @@ Use only these NEEDS WORK tags: verification-gap, scope-drift, acceptance-miss, 
 ```
 ````
 
-Before returning the markdown, check that every checklist step has one matching H2 step section, all step IDs are numeric `N.M`, every phase has a descriptive title, every step has both metadata lines and a fenced prompt, and the document has exactly one final-review checkbox and section.
+Before returning the markdown, check that every checklist step has one matching H2 step section, all step IDs are numeric `N.M`, every phase has a descriptive title, every step has all three metadata lines and a fenced prompt, every lane uses only backtick-quoted repo-relative globs, and the document has exactly one final-review checkbox and section.
 
 PROJECT DESCRIPTION:
 {{PASTE THE PROJECT DESCRIPTION HERE}}

@@ -3053,6 +3053,14 @@ details.step-group[data-completed="true"] .step-meta {
   white-space: nowrap;
 }
 
+.meta-lane-label {
+  font-weight: 650;
+}
+
+.meta-lane-globs {
+  font-family: var(--mono);
+}
+
 /* Model chip — two segments (Claude Code + Codex) split by a thin divider.
    Each segment leads with a tiny mono glyph in a distinct tone so the eye
    can tell the agents apart at a glance. */

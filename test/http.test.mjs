@@ -767,6 +767,7 @@ FORWARD SWEEP: before checking this step off, do a quick pass over the campaign'
 
 Model: ${modelValue}
 Parallel: NO
+Lane: \`src/prepare/**\`
 
 ${stepPrompt('Prepare the release.')}
 
@@ -774,6 +775,7 @@ ${stepPrompt('Prepare the release.')}
 
 Model: ${modelValue}
 Parallel: NO
+Lane: \`src/ship/**\`
 
 ${stepPrompt('Ship the release.')}
 

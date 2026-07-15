@@ -126,6 +126,7 @@ test('version-1 ledgers upgrade with cap defaults and the explicit stop status',
   assert.equal(upgraded.steps[0].runner, null);
   assert.equal(upgraded.steps[0].model, null);
   assert.equal(upgraded.steps[0].effort, null);
+  assert.equal(upgraded.steps[0].lane, null);
   assertValidRunState(upgraded);
 });
 

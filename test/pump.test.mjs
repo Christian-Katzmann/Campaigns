@@ -7,9 +7,12 @@ import { test } from 'node:test';
 
 import {
   buildStepRunnerInvocation,
+  globPrefix,
+  laneGlobsOverlap,
   parseCampaignPlan,
   PumpLockError,
   requestCampaignStop,
+  resolveParallelLaneSafety,
   resolveParallelStepGroup,
   runCampaign,
   runExecutableChecks,
@@ -61,7 +64,12 @@ test('parallel metadata reaches the engine plan and only reciprocal same-phase l
   const markdown = parallelCampaignMarkdown();
   const plan = parseCampaignPlan(markdown);
   assert.deepEqual(plan.steps[0].parallel, { isParallel: true, siblingSteps: ['1.2'] });
+  assert.deepEqual(plan.steps[0].lane, { globs: ['result-1.1.txt'] });
   assert.deepEqual(resolveParallelStepGroup(plan, '1.1').steps.map((step) => step.id), ['1.1', '1.2']);
+  assert.deepEqual(resolveParallelLaneSafety(resolveParallelStepGroup(plan, '1.1').steps), {
+    safe: true,
+    reason: null,
+  });
 
   const malformed = parseCampaignPlan(markdown.replace(
     'Parallel: YES — with Step 1.1',
@@ -74,6 +82,29 @@ test('parallel metadata reaches the engine plan and only reciprocal same-phase l
     'Parallel: YES — with Step 2.1',
   ));
   assert.match(resolveParallelStepGroup(crossPhase, '1.1').reason, /across phases/);
+
+  const overlapping = parseCampaignPlan(markdown.replace(
+    'Lane: `result-1.2.txt`',
+    'Lane: `result-1.1.txt`',
+  ));
+  assert.match(
+    resolveParallelLaneSafety(resolveParallelStepGroup(overlapping, '1.1').steps).reason,
+    /overlapping lanes/,
+  );
+
+  const missing = parseCampaignPlan(markdown.replace('Lane: `result-1.2.txt`\n', ''));
+  assert.match(
+    resolveParallelLaneSafety(resolveParallelStepGroup(missing, '1.1').steps).reason,
+    /missing or has an unparseable Lane/,
+  );
+});
+
+test('lane overlap uses campaign-wt glob-prefix semantics', () => {
+  assert.equal(globPrefix('src/components/**/*.tsx'), 'src/components/');
+  assert.equal(laneGlobsOverlap('src/left/**', 'src/right/**'), false);
+  assert.equal(laneGlobsOverlap('src/**', 'src/api/**'), true);
+  assert.equal(laneGlobsOverlap('**', 'docs/**'), true);
+  assert.equal(laneGlobsOverlap('src/a*.js', 'src/ab*.js'), false);
 });
 
 test('primary chip segment selects the runner, model, and effort at the invocation seam', async () => {
@@ -362,6 +393,7 @@ test('reciprocal siblings run concurrently to the configured cap, join, and prun
   assert.deepEqual(after, before);
   assert.equal(result.state.config.max_parallel_steps, 2);
   assert.equal(result.state.steps[0].parallel.is_parallel, true);
+  assert.deepEqual(result.state.steps[0].lane, { globs: ['result-1.1.txt'] });
   assert.equal(result.state.artifacts.parallel_worktrees.length, 3);
   assert.ok(result.state.artifacts.parallel_worktrees.every((worktree) => worktree.pruned_at));
   assert.deepEqual(
@@ -414,7 +446,11 @@ test('a failed parallel member preserves its clean sibling and retries alone', a
   assert.equal(failed.steps.find((step) => step.id === '1.2').status, 'failed');
   assert.ok(failed.artifacts.parallel_worktrees.every((worktree) => worktree.pruned_at));
   assert.equal(registeredAfterFailure.some((line) => line.includes('/parallel-')), false);
-  assert.equal(await readFile(path.join(failed.run.identity.execution.repo_root, 'result-1.1.txt'), 'utf8'), '1.1\n');
+  assert.ok(failed.artifacts.worktree.pruned_at);
+  assert.equal(
+    `${await git(fixture.repo, ['show', `${failed.artifacts.worktree.branch}:result-1.1.txt`])}\n`,
+    '1.1\n',
+  );
 
   const result = await runCampaign(fixture.campaignPath, fixture.options);
   const counts = JSON.parse(await readFile(countsPath, 'utf8'));
@@ -423,6 +459,33 @@ test('a failed parallel member preserves its clean sibling and retries alone', a
   assert.ok(result.state.history.some((entry) => (
     entry.event === 'parallel_group_demoted' && /already-completed Step 1\.1/.test(entry.message)
   )));
+});
+
+test('overlapping and missing lanes demote parallel groups visibly and still complete', async (t) => {
+  for (const [name, campaignText, reason] of [
+    [
+      'overlap',
+      parallelCampaignMarkdown().replace('Lane: `result-1.2.txt`', 'Lane: `result-1.1.txt`'),
+      /overlapping lanes/,
+    ],
+    [
+      'missing',
+      parallelCampaignMarkdown().replace('Lane: `result-1.2.txt`\n', ''),
+      /missing or has an unparseable Lane/,
+    ],
+  ]) {
+    await t.test(name, async (t) => {
+      const fixture = await makeFixture(t, { worktree: true, campaignText });
+      const before = worktreePaths(await git(fixture.repo, ['worktree', 'list', '--porcelain']));
+      const result = await runCampaign(fixture.campaignPath, fixture.options);
+      const after = worktreePaths(await git(fixture.repo, ['worktree', 'list', '--porcelain']));
+      const demotion = result.state.history.find((entry) => entry.event === 'parallel_group_demoted');
+
+      assert.ok(['completed', 'merged'].includes(result.state.run.status));
+      assert.match(demotion?.message || '', reason);
+      assert.deepEqual(after, before);
+    });
+  }
 });
 
 test('stopping a parallel group terminates every worker group and prunes every child worktree', async (t) => {
@@ -1073,6 +1136,7 @@ function parallelCampaignMarkdown({ check = null, threeSteps = false } = {}) {
 
 Model: Fake · None
 Parallel: YES — with Steps 1.1 and 1.2
+Lane: \`result-1.3.txt\`
 
 \`\`\`text
 Create the third fixture result.
@@ -1093,6 +1157,7 @@ ${third}- [ ] Step 2.1 — Join proof
 
 Model: Fake · None
 Parallel: YES — with ${sibling}
+Lane: \`result-1.1.txt\`
 
 \`\`\`text
 Create the first fixture result.${check ? `\nCHECK: ${JSON.stringify(check)}` : ''}
@@ -1102,6 +1167,7 @@ Create the first fixture result.${check ? `\nCHECK: ${JSON.stringify(check)}` : 
 
 Model: Fake · None
 Parallel: YES — with ${reverse}
+Lane: \`result-1.2.txt\`
 
 \`\`\`text
 Create the second fixture result.
@@ -1111,6 +1177,7 @@ ${thirdSection}
 
 Model: Fake · None
 Parallel: NO
+Lane: \`result-2.1.txt\`
 
 \`\`\`text
 Verify the phase joined before this step starts.

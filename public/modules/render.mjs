@@ -99,7 +99,7 @@ export function render() {
   const stepIdSet = new Set(stepSections.map((section) => section.anchorId));
   // Strip the `## Final review` heading and its prompt code block from inline
   // rendering — the card we append at the end owns that content. Also strip
-  // the per-step `Model:` / `Parallel:` source lines: the chips under each
+  // the per-step `Model:` / `Parallel:` / `Lane:` source lines: the chips under each
   // step heading own that content (see renderStepGroup).
   const finalReviewStripped = state.isNewShape && state.finalReview
     ? stripFinalReviewBlocks(blocks, state.finalReview)
@@ -739,18 +739,19 @@ export function renderStepGroup(block, stepSections) {
 }
 
 /**
- * Renders the `Model:` and `Parallel:` chips that sit directly under a step
- * heading. Returns null when the step has neither piece of metadata —
- * legacy campaigns without Model/Parallel lines render unchanged.
+ * Renders the `Model:`, `Parallel:`, and `Lane:` chips under a step heading.
+ * Legacy campaigns without metadata render unchanged.
  */
 export function renderStepMeta(section, stepSections) {
   const modelChip = renderModelChip(section.model, section.number);
   const parallelChip = renderParallelChip(section.parallel, stepSections);
-  if (!modelChip && !parallelChip) return null;
+  const laneChip = renderLaneChip(section.lane);
+  if (!modelChip && !parallelChip && !laneChip) return null;
 
   const row = element('div', { className: 'step-meta' });
   if (modelChip) row.append(modelChip);
   if (parallelChip) row.append(parallelChip);
+  if (laneChip) row.append(laneChip);
   return row;
 }
 
@@ -833,6 +834,20 @@ export function renderParallelChip(parallel, stepSections) {
     });
     chip.append(linksWrap);
   }
+  return chip;
+}
+
+export function renderLaneChip(lane) {
+  if (!lane?.globs?.length) return null;
+  const chip = element('div', {
+    className: 'meta-chip meta-lane',
+    title: `Writes are declared inside ${lane.globs.join(', ')}.`,
+  });
+  chip.append(
+    element('span', { className: 'meta-lane-label', text: 'Lane' }),
+    element('span', { className: 'meta-parallel-sep', ariaHidden: 'true', text: '·' }),
+    element('span', { className: 'meta-lane-globs', text: lane.globs.join(', ') }),
+  );
   return chip;
 }
 
@@ -1037,11 +1052,12 @@ export function updateSaveStatus() {
 }
 
 // Keep the relative "Saved Xm ago" label honest while the tab sits open.
-setInterval(() => {
+const saveStatusRefreshTimer = setInterval(() => {
   if (state.saveStatus === 'idle' && !state.dirty && state.lastModified) {
     updateSaveStatus();
   }
 }, 30_000);
+saveStatusRefreshTimer.unref?.();
 
 export function getSaveStatusInline() {
   if (!state.serverBacked) return { text: '', state: 'idle' };
