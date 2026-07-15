@@ -31,6 +31,7 @@ import {
   scheduleAutoSave,
   showResumeCardIfNeeded,
 } from './modules/board.mjs';
+import { fetchCampaignEstimate, initCampaignEstimate } from './modules/estimate-ui.mjs';
 
 const WORKFLOWS_V2_ASSET_VERSION = '2026-06-22-dedupe';
 
@@ -131,6 +132,8 @@ async function initialize() {
   }
 
   render();
+  initCampaignEstimate({ save: saveToServer });
+  await fetchCampaignEstimate();
   showResumeCardIfNeeded();
   initSwitcher();
   initSettings(payload.app);
@@ -165,12 +168,21 @@ async function updateWorkflowsAvailability() {
 async function updatePersonalLayerAvailability() {
   let personalLayer = {};
   let fileDeletion = {};
+  let runnerCatalog = [];
+  let defaultRunner = '';
   try {
-    const response = await fetch('/api/capabilities');
+    const params = new URLSearchParams(window.location.search);
+    const id = params.get('id');
+    const capabilitiesUrl = id
+      ? `/api/capabilities?id=${encodeURIComponent(id)}`
+      : '/api/capabilities';
+    const response = await fetch(capabilitiesUrl);
     if (response.ok) {
       const payload = await response.json();
       personalLayer = payload.personalLayer ?? {};
       fileDeletion = payload.fileDeletion ?? {};
+      runnerCatalog = Array.isArray(payload.runners) ? payload.runners : [];
+      defaultRunner = typeof payload.defaultRunner === 'string' ? payload.defaultRunner : '';
     }
   } catch {
     // Optional integrations stay hidden when capability discovery is unavailable.
@@ -180,8 +192,10 @@ async function updatePersonalLayerAvailability() {
     automate: personalLayer.automate === true,
     away: personalLayer.away === true,
     companion: personalLayer.companion === true,
+    defaultRunner,
     fileDeletionMode: fileDeletion.mode === 'trash' ? 'trash' : 'permanent',
     lessons: personalLayer.lessons === true,
+    runners: runnerCatalog,
   };
 
   if (elements.companionButton) {

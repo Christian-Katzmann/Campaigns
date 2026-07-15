@@ -31,6 +31,7 @@ import {
   linkChecksToPhaseReviews,
   linkChecksToSteps,
   parseMarkdown,
+  parseModelSegment,
   phaseDescriptiveTitle,
   stripFinalReviewBlocks,
   stripStepMetaBlocks,
@@ -743,7 +744,7 @@ export function renderStepGroup(block, stepSections) {
  * legacy campaigns without Model/Parallel lines render unchanged.
  */
 export function renderStepMeta(section, stepSections) {
-  const modelChip = renderModelChip(section.model);
+  const modelChip = renderModelChip(section.model, section.number);
   const parallelChip = renderParallelChip(section.parallel, stepSections);
   if (!modelChip && !parallelChip) return null;
 
@@ -753,41 +754,45 @@ export function renderStepMeta(section, stepSections) {
   return row;
 }
 
-export function renderModelChip(model) {
-  if (!model || (!model.claudeCode && !model.codex)) return null;
+export function renderModelChip(model, stepNumber = '') {
+  const primary = model?.primary ?? model?.claudeCode ?? '';
+  const alternate = model?.alternate ?? model?.codex ?? '';
+  if (!primary && !alternate) return null;
 
   const titleParts = [];
-  if (model.claudeCode) titleParts.push(`Claude Code: ${model.claudeCode}`);
-  if (model.codex) titleParts.push(`Codex: ${model.codex}`);
-  const chip = element('div', {
+  if (primary) titleParts.push(`Primary: ${primary}`);
+  if (alternate) titleParts.push(`Alternate: ${alternate}`);
+  const chip = element('button', {
     className: 'meta-chip meta-model',
+    dataset: { action: 'edit-step-model', stepNumber },
     title: titleParts.join(' / '),
+    type: 'button',
   });
+  chip.setAttribute('aria-haspopup', 'dialog');
+  chip.setAttribute('aria-label', `Edit model for Step ${stepNumber}`);
 
-  if (model.claudeCode) {
+  [primary, alternate].filter(Boolean).forEach((segment, index) => {
+    if (index > 0) chip.append(element('span', { className: 'agent-divider', ariaHidden: 'true' }));
+    const runner = runnerForModelSegment(segment);
     chip.append(
       element('span', {
-        className: 'agent-glyph agent-glyph-cc',
-        ariaLabel: 'Claude Code',
-        text: 'CC',
+        className: `agent-glyph agent-glyph-${runner?.id === 'claude' ? 'cc' : 'cx'}`,
+        ariaLabel: runner?.label ?? 'Runner',
+        text: runner?.id === 'claude' ? 'CC' : runner?.id === 'codex' ? 'CX' : 'AI',
       }),
-      element('span', { className: 'agent-spec', text: model.claudeCode }),
+      element('span', { className: 'agent-spec', text: segment }),
     );
-  }
-  if (model.claudeCode && model.codex) {
-    chip.append(element('span', { className: 'agent-divider', ariaHidden: 'true' }));
-  }
-  if (model.codex) {
-    chip.append(
-      element('span', {
-        className: 'agent-glyph agent-glyph-cx',
-        ariaLabel: 'Codex',
-        text: 'CX',
-      }),
-      element('span', { className: 'agent-spec', text: model.codex }),
-    );
-  }
+  });
   return chip;
+}
+
+function runnerForModelSegment(segment) {
+  const parsed = parseModelSegment(segment);
+  if (!parsed) return null;
+  const wanted = parsed.model.trim().toLowerCase();
+  return state.capabilities.runners.find((runner) => runner.models?.some((model) => (
+    model.id?.trim().toLowerCase() === wanted || model.label?.trim().toLowerCase() === wanted
+  ))) ?? null;
 }
 
 export function renderParallelChip(parallel, stepSections) {

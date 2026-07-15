@@ -12,12 +12,9 @@ import {
   state,
 } from './state.mjs';
 import { element, showToast } from './dom.mjs';
+import { ETA_STEP_BASELINES, fleetPriorForBackend } from '../lib/estimate-priors.mjs';
 
-export const ETA_STEP_BASELINES = Object.freeze({
-  claude: { label: 'Claude', sample: 662, median: 12.9, p75: 18.1, p90: 23.6, gapPerStep: 0 },
-  codex: { label: 'Codex', sample: 100, median: 6.1, p75: 8.8, p90: 11, gapPerStep: 12 },
-  default: { label: 'Campaign history', sample: 0, median: 10, p75: 16, p90: 24, gapPerStep: 0 },
-});
+export { ETA_STEP_BASELINES } from '../lib/estimate-priors.mjs';
 
 // One-line readout of the closest-fitting task(s) for the drawer panel. Keeps
 // the inline panel honest without rebuilding the whole matcher UI there.
@@ -86,7 +83,7 @@ export function awayStepWindow(stateLike) {
 }
 
 export function etaBaselineForBackend(backend) {
-  return ETA_STEP_BASELINES[String(backend || '').toLowerCase()] || ETA_STEP_BASELINES.default;
+  return fleetPriorForBackend(backend);
 }
 
 export function etaConfidence(baseline) {

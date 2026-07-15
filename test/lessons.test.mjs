@@ -70,6 +70,12 @@ test('native lessons discover current and archived unified ledgers but ignore le
   await mkdir(runDir, { recursive: true });
   const current = fixtureLedger({ id: 'current', outcome: 'approved' });
   const archived = fixtureLedger({ id: 'archived', outcome: 'capped' });
+  archived.schema_version = 2;
+  for (const step of archived.steps) {
+    delete step.runner;
+    delete step.model;
+    delete step.effort;
+  }
   await writeFile(path.join(runDir, 'state.json'), `${JSON.stringify(current)}\n`, 'utf8');
   await writeFile(path.join(runDir, 'state-archived.json'), `${JSON.stringify(archived)}\n`, 'utf8');
   await writeFile(path.join(runDir, 'state-legacy.json'), '{"phase":"complete"}\n', 'utf8');

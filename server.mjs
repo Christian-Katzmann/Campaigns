@@ -6,11 +6,12 @@ import { homedir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFile } from 'node:child_process';
-import { createCampaignScaffold } from './lib/campaign-scaffold.mjs';
+import { createCampaignFromMarkdown, createCampaignScaffold } from './lib/campaign-scaffold.mjs';
 import {
   abandonAutomateCampaign,
   getAutomateProviderAvailability,
   getAutomateState,
+  getEngineRunLedger,
   nudgeAutomateState,
   rerunAutomateFinalize,
 } from './lib/automate-providers.mjs';
@@ -25,9 +26,20 @@ import {
   statSpritesheet,
 } from './lib/companion-pets.mjs';
 import { httpError, readJsonBody, sendJson, sendStatic } from './lib/http.mjs';
-import { hasUnifiedRunLedgers, loadUnifiedLessons } from './lib/lessons.mjs';
-import { CampaignStopError, defaultCampaignsRunsDir, requestCampaignStop } from './lib/pump.mjs';
+import { resolveCampaignConfig } from './lib/config.mjs';
+import { estimateCampaign } from './lib/estimate.mjs';
+import { hasUnifiedRunLedgers, loadUnifiedLessons, readUnifiedRunLedgers } from './lib/lessons.mjs';
+import { PlannerDraftError, draftCampaign } from './lib/planner.mjs';
+import {
+  CampaignStopError,
+  defaultCampaignsRunsDir,
+  parseCampaignPlan,
+  requestCampaignStop,
+  resolveStepRunnerSelection,
+  runCampaign,
+} from './lib/pump.mjs';
 import { RecoveryError, recoverCampaign } from './lib/recovery.mjs';
+import { createRunnerRegistry, loadRunnerRegistry, runnerCapabilities } from './lib/runners.mjs';
 import {
   normalizeRegistryCollections,
   pruneMissingCampaigns,
@@ -134,6 +146,7 @@ const LOGO_MIME = new Map([
 const LOGO_EXTENSIONS = [...LOGO_MIME.keys()];
 
 let defaultCampaignId = null;
+const activeCampaignRuns = new Map();
 
 const server = createServer(async (request, response) => {
   try {
@@ -151,6 +164,11 @@ const server = createServer(async (request, response) => {
 
     if (url.pathname === '/api/campaigns/new' && request.method === 'POST') {
       await newCampaignEndpoint(request, response);
+      return;
+    }
+
+    if (url.pathname === '/api/campaigns/plan' && request.method === 'POST') {
+      await planCampaignEndpoint(request, response);
       return;
     }
 
@@ -180,12 +198,17 @@ const server = createServer(async (request, response) => {
     }
 
     if (url.pathname === '/api/capabilities' && request.method === 'GET') {
-      await sendCapabilities(response);
+      await sendCapabilities(url, response);
       return;
     }
 
     if (url.pathname === '/api/lessons' && request.method === 'GET') {
       await sendLessons(response);
+      return;
+    }
+
+    if (url.pathname === '/api/estimate' && request.method === 'GET') {
+      await sendEstimate(url, response);
       return;
     }
 
@@ -262,6 +285,11 @@ const server = createServer(async (request, response) => {
       return;
     }
 
+    if (url.pathname === '/api/run/start' && request.method === 'POST') {
+      await handleRunStart(request, response);
+      return;
+    }
+
     if (url.pathname === '/api/run/stop' && request.method === 'POST') {
       await handleRunStop(request, response);
       return;
@@ -293,7 +321,16 @@ const server = createServer(async (request, response) => {
   }
 });
 
+const closeHttpServer = server.close.bind(server);
+server.close = function closeCampaignsServer(callback) {
+  void stopActiveCampaignRuns()
+    .catch(() => abortActiveCampaignRuns())
+    .finally(() => closeHttpServer(callback));
+  return server;
+};
+
 server.on('close', stopStopWatcher);
+server.on('close', abortActiveCampaignRuns);
 
 export async function startServer({
   campaignFile = null,
@@ -352,6 +389,9 @@ async function runCli() {
 
   try {
     await startServer({ campaignFile, port, host });
+    const shutdown = () => { void shutdownCliServer(); };
+    process.once('SIGINT', shutdown);
+    process.once('SIGTERM', shutdown);
   } catch (error) {
     if (error.code === 'EADDRINUSE') {
       console.error(`Port ${port} is already in use — another Campaigns server may be running.`);
@@ -363,8 +403,17 @@ async function runCli() {
   }
 }
 
-if (path.resolve(process.argv[1] ?? '') === fileURLToPath(import.meta.url)) {
-  await runCli();
+let cliShutdownPromise = null;
+
+function shutdownCliServer() {
+  if (cliShutdownPromise) return cliShutdownPromise;
+  cliShutdownPromise = (async () => {
+    await stopActiveCampaignRuns();
+    if (server.listening) {
+      await new Promise((resolve) => server.close(resolve));
+    }
+  })();
+  return cliShutdownPromise;
 }
 
 function parseArgs(rawArgs) {
@@ -430,11 +479,26 @@ function defaultLessonsHelperPath() {
   return path.join(homedir(), '.claude', 'skills', 'campaign-planner', 'bin', 'read-past-campaigns.py');
 }
 
-async function sendCapabilities(response) {
-  const [automation, nativeLessons, legacyLessons] = await Promise.all([
+async function sendCapabilities(url, response) {
+  const campaign = await resolveCampaign(url);
+  let runnerRegistry;
+  let runnerCwd = __dirname;
+  try {
+    const resolved = await resolveCampaignConfig({
+      campaignPath: campaign?.filePath ?? null,
+      cwd: __dirname,
+    });
+    runnerRegistry = createRunnerRegistry(resolved.config);
+    runnerCwd = resolved.projectRoot;
+  } catch (error) {
+    if (!/No Git project root found/.test(error.message)) throw error;
+    runnerRegistry = await loadRunnerRegistry();
+  }
+  const [automation, nativeLessons, legacyLessons, runners] = await Promise.all([
     getAutomateProviderAvailability(),
     hasUnifiedRunLedgers(lessonsRunsDir).catch(() => false),
     stat(lessonsHelperPath).then((info) => info.isFile()).catch(() => false),
+    runnerCapabilities(runnerRegistry, { cwd: runnerCwd }),
   ]);
   const fileDeletionMode = campaignFileDeletionMode();
   sendJson(response, 200, {
@@ -449,7 +513,49 @@ async function sendCapabilities(response) {
       lessons: nativeLessons || legacyLessons,
     },
     providers: automation.providers,
+    defaultRunner: runnerRegistry.defaultRunner,
+    runners,
   });
+}
+
+async function sendEstimate(url, response) {
+  const campaign = await resolveCampaign(url);
+  if (!campaign) {
+    sendJson(response, 404, { error: 'Campaign not found.' });
+    return;
+  }
+
+  const markdown = await readFile(campaign.filePath, 'utf8');
+  const plan = parseCampaignPlan(markdown);
+  let runnerRegistry;
+  try {
+    const resolved = await resolveCampaignConfig({ campaignPath: campaign.filePath, cwd: __dirname });
+    runnerRegistry = createRunnerRegistry(resolved.config);
+  } catch (error) {
+    if (!/No Git project root found/.test(error.message)) throw error;
+    runnerRegistry = await loadRunnerRegistry();
+  }
+  const steps = plan.steps.map((step) => ({
+    id: step.id,
+    checked: step.checked,
+    runner: resolveStepRunnerSelection(runnerRegistry, step).runner,
+  }));
+  const [allLedgers, locatedLedger] = await Promise.all([
+    readUnifiedRunLedgers(lessonsRunsDir),
+    getEngineRunLedger(campaign.filePath, campaign.id),
+  ]);
+  const liveLedger = locatedLedger && !['completed', 'merged', 'force_merged'].includes(locatedLedger.run.status)
+    ? locatedLedger
+    : null;
+  const historicalLedgers = liveLedger
+    ? allLedgers.filter((ledger) => ledger.run.id !== liveLedger.run.id)
+    : allLedgers;
+  sendJson(response, 200, estimateCampaign({
+    steps,
+    ledgers: historicalLedgers,
+    liveLedger,
+    seed: `${campaign.id}:${hashMarkdown(markdown)}`,
+  }));
 }
 
 async function writeRuntimePort(actualPort) {
@@ -894,6 +1000,56 @@ async function newCampaignEndpoint(request, response) {
   });
   const id = await ensureRegistered(created.filePath);
   sendJson(response, 201, { ...created, id });
+}
+
+async function planCampaignEndpoint(request, response) {
+  const payload = await readJsonBody(request);
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  const abortIfClosed = () => {
+    if (!response.writableEnded) controller.abort();
+  };
+  request.once('aborted', abort);
+  response.once('close', abortIfClosed);
+  let created = null;
+  try {
+    const draft = await draftCampaign({
+      effort: payload?.effort,
+      intent: payload?.intent,
+      model: payload?.model,
+      projectPath: payload?.projectPath,
+      runnerId: payload?.runnerId,
+      signal: controller.signal,
+    });
+    created = await createCampaignFromMarkdown({
+      markdown: draft.markdown,
+      name: draft.title,
+      projectPath: draft.projectRoot,
+    });
+    const id = await ensureRegistered(created.filePath);
+    sendJson(response, 201, {
+      ...created,
+      boardUrl: `?id=${encodeURIComponent(id)}`,
+      findings: draft.findings,
+      id,
+      selection: draft.selection,
+    });
+  } catch (error) {
+    if (created?.filePath) await unlink(created.filePath).catch(() => {});
+    if (response.destroyed) return;
+    if (error instanceof PlannerDraftError) {
+      sendJson(response, error.statusCode, {
+        error: error.message,
+        findings: error.findings,
+        rawOutput: error.rawOutput,
+      });
+      return;
+    }
+    throw error;
+  } finally {
+    request.removeListener('aborted', abort);
+    response.removeListener('close', abortIfClosed);
+  }
 }
 
 async function sendCampaignIcon(url, response) {
@@ -2157,6 +2313,154 @@ async function handleAutomateNudge(request, response) {
   sendJson(response, result.ok ? 200 : 502, result);
 }
 
+async function handleRunStart(request, response) {
+  const payload = await readJsonBody(request);
+  if (typeof payload.id !== 'string') {
+    sendJson(response, 400, { error: 'Expected { id: string }.' });
+    return;
+  }
+
+  const registry = await readRegistry();
+  const entry = registry.campaigns.find((campaign) => campaign.id === payload.id);
+  if (!entry) {
+    sendJson(response, 404, { error: 'Campaign not found.' });
+    return;
+  }
+  if (activeCampaignRuns.has(entry.id)) {
+    sendJson(response, 409, { error: 'This campaign already has an active run.' });
+    return;
+  }
+  const existing = await getAutomateState(entry.filePath, {
+    summary: true,
+    registryId: entry.id,
+  });
+  if (existing?.is_active) {
+    sendJson(response, 409, { error: 'This campaign already has an active run.' });
+    return;
+  }
+
+  const active = { controller: null, promise: null };
+  activeCampaignRuns.set(entry.id, active);
+  try {
+    const launch = await prepareCampaignLaunch(entry.filePath);
+    const controller = new AbortController();
+    active.controller = controller;
+    active.promise = Promise.resolve()
+      .then(() => runCampaign(entry.filePath, {
+        registryId: entry.id,
+        signal: controller.signal,
+      }))
+      .catch((error) => {
+        console.error(`Campaign run failed for ${entry.id}:`, error.message);
+      })
+      .finally(() => {
+        if (activeCampaignRuns.get(entry.id) === active) activeCampaignRuns.delete(entry.id);
+      });
+
+    sendJson(response, 202, {
+      ok: true,
+      status: 'starting',
+      committed: launch.committed,
+      commitSha: launch.commitSha,
+    });
+  } catch (error) {
+    activeCampaignRuns.delete(entry.id);
+    const status = error.statusCode ?? 500;
+    sendJson(response, status, { error: error.message });
+  }
+}
+
+export async function prepareCampaignLaunch(campaignFile) {
+  const resolved = await resolveCampaignConfig({ campaignPath: campaignFile, cwd: __dirname });
+  const repoRoot = await realpath(path.resolve(resolved.effective.repoRoot || resolved.projectRoot));
+  const campaignPath = await realpath(path.resolve(campaignFile));
+  const relativeCampaign = path.relative(repoRoot, campaignPath);
+  if (!relativeCampaign || relativeCampaign.startsWith('..') || path.isAbsolute(relativeCampaign)) {
+    throw launchError('The campaign markdown must live inside its configured Git repository.');
+  }
+
+  const status = await runGit(repoRoot, ['status', '--porcelain=v1', '-z', '--untracked-files=all']);
+  if (status.exitCode !== 0) {
+    throw launchError(`Git could not inspect the worktree: ${status.stderr.trim() || 'git status failed'}.`);
+  }
+  const dirtyPaths = parsePorcelainPaths(status.stdout);
+  const unrelated = dirtyPaths.filter((candidate) => candidate !== relativeCampaign);
+  if (unrelated.length > 0) {
+    throw launchError(
+      `Launch blocked by unrelated worktree changes: ${unrelated.join(', ')}. Commit or clear them first; Campaigns will not stash or include them.`,
+    );
+  }
+  if (dirtyPaths.length === 0) return { committed: false, commitSha: null, repoRoot };
+
+  const added = await runGit(repoRoot, ['add', '--', relativeCampaign]);
+  if (added.exitCode !== 0) {
+    throw launchError(`Could not stage ${relativeCampaign}: ${added.stderr.trim() || 'git add failed'}.`);
+  }
+  const committed = await runGit(repoRoot, [
+    '-c', 'commit.gpgSign=false',
+    'commit', '-m', 'Save campaign plan', '--', relativeCampaign,
+  ]);
+  if (committed.exitCode !== 0) {
+    throw launchError(`Could not commit ${relativeCampaign}: ${committed.stderr.trim() || 'git commit failed'}.`);
+  }
+  const head = await runGit(repoRoot, ['rev-parse', 'HEAD']);
+  if (head.exitCode !== 0) throw launchError('Campaign plan committed, but Git could not read the commit id.');
+  return { committed: true, commitSha: head.stdout.trim(), repoRoot };
+}
+
+function parsePorcelainPaths(output) {
+  const entries = String(output).split('\0');
+  const paths = [];
+  for (let index = 0; index < entries.length; index += 1) {
+    const entry = entries[index];
+    if (!entry) continue;
+    const status = entry.slice(0, 2);
+    paths.push(entry.slice(3));
+    if (/[RC]/.test(status)) {
+      const renamedPath = entries[index + 1];
+      if (renamedPath) paths.push(renamedPath);
+      index += 1;
+    }
+  }
+  return [...new Set(paths)];
+}
+
+function launchError(message) {
+  const error = new Error(message);
+  error.statusCode = 409;
+  return error;
+}
+
+function runGit(repoRoot, args) {
+  return new Promise((resolve) => {
+    execFile('git', ['-C', repoRoot, ...args], { encoding: 'utf8' }, (error, stdout = '', stderr = '') => {
+      resolve({ exitCode: error?.code ?? 0, stdout, stderr });
+    });
+  });
+}
+
+function abortActiveCampaignRuns() {
+  for (const active of activeCampaignRuns.values()) active.controller?.abort();
+}
+
+async function stopActiveCampaignRuns() {
+  const entries = [...activeCampaignRuns.entries()];
+  await Promise.all(entries.map(async ([id, active]) => {
+    const registry = await readRegistry();
+    const entry = registry.campaigns.find((campaign) => campaign.id === id);
+    if (!entry) {
+      active.controller?.abort();
+      return;
+    }
+    try {
+      await requestCampaignStop(entry.filePath);
+    } catch {
+      active.controller?.abort();
+    }
+  }));
+  await Promise.allSettled(entries.map(([, active]) => active.promise).filter(Boolean));
+}
+
 async function handleRunRecover(request, response) {
   const payload = await readJsonBody(request);
   if (typeof payload.id !== 'string') {
@@ -2258,4 +2562,8 @@ async function handleAutomateAbandon(request, response) {
 
 function hashMarkdown(markdown) {
   return createHash('sha256').update(markdown).digest('hex');
+}
+
+if (path.resolve(process.argv[1] ?? '') === fileURLToPath(import.meta.url)) {
+  await runCli();
 }

@@ -74,6 +74,14 @@
             <div class="progress-track" aria-hidden="true">
               <div id="progress-fill"></div>
             </div>
+            <section id="estimate-card" class="estimate-card" aria-live="polite" hidden>
+              <p class="estimate-card-label">Estimated work</p>
+              <strong id="estimate-duration" class="estimate-duration">Loading…</strong>
+              <div id="estimate-facts" class="estimate-facts"></div>
+              <p id="estimate-source" class="estimate-source"></p>
+              <button id="launch-campaign-button" class="button button-primary button-wide estimate-launch" type="button">Launch</button>
+              <p id="estimate-error" class="estimate-error" hidden></p>
+            </section>
             <button id="resume-button" class="button button-wide resume-button" type="button">
               <span class="resume-label">Resume</span>
               <span id="resume-preview" class="resume-preview"></span>

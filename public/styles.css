@@ -224,6 +224,73 @@ button {
   transition: width 180ms ease-out;
 }
 
+.estimate-card {
+  margin: 4px 0 16px;
+  padding: 14px 0 0;
+  border-top: 1px solid var(--line);
+}
+
+.estimate-card[hidden] {
+  display: none;
+}
+
+.estimate-card-label {
+  margin: 0 0 3px;
+  color: var(--ink-faint);
+  font-size: 11px;
+  font-weight: 760;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.estimate-card .estimate-duration {
+  font-size: 20px;
+  font-variant-numeric: tabular-nums;
+}
+
+.estimate-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 9px;
+}
+
+.estimate-facts span {
+  padding: 2px 6px;
+  border: 1px solid var(--line-soft);
+  border-radius: 4px;
+  background: var(--paper-strong);
+  color: var(--ink-soft);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.estimate-source {
+  margin: 8px 0 0;
+  color: var(--ink-faint);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.estimate-source[data-confidence="high"] {
+  color: var(--status-ok);
+}
+
+.estimate-source[data-confidence="medium"] {
+  color: var(--status-warn);
+}
+
+.estimate-launch {
+  margin-top: 12px;
+}
+
+.estimate-error {
+  margin: 8px 0 0;
+  color: var(--danger);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
 .save-status {
   margin: 13px 0 0;
   color: var(--ink-soft);
@@ -2597,6 +2664,11 @@ body.view-library #conflict-modal {
   margin-bottom: 0;
 }
 
+.new-campaign-mode {
+  display: flex;
+  gap: 8px;
+}
+
 .new-campaign-field {
   display: flex;
   flex-direction: column;
@@ -2625,6 +2697,44 @@ body.view-library #conflict-modal {
   box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
+.new-campaign-intent {
+  min-height: 112px;
+  padding-block: 10px;
+  line-height: 1.45;
+  resize: vertical;
+}
+
+.new-campaign-planner-fields {
+  display: grid;
+  grid-template-columns: 1.2fr 1fr 0.8fr;
+  gap: 10px;
+}
+
+.new-campaign-progress {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 13px;
+}
+
+.new-campaign-salvage {
+  max-height: 180px;
+  margin: 0;
+  overflow: auto;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--paper-strong);
+  color: var(--ink-soft);
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+
+.new-campaign-salvage[hidden],
+.new-campaign-progress[hidden] {
+  display: none;
+}
+
 .new-campaign-error {
   margin: 0;
   color: var(--danger);
@@ -2634,6 +2744,12 @@ body.view-library #conflict-modal {
 
 .new-campaign-error[hidden] {
   display: none;
+}
+
+@media (max-width: 620px) {
+  .new-campaign-planner-fields {
+    grid-template-columns: 1fr;
+  }
 }
 
 /* ---------- Dark mode (follows system) ---------- */
@@ -2943,7 +3059,12 @@ details.step-group[data-completed="true"] .step-meta {
 
 .meta-model {
   font-family: var(--mono);
-  cursor: help;
+  cursor: pointer;
+}
+
+.meta-model:hover {
+  border-color: color-mix(in srgb, var(--accent) 42%, transparent);
+  background: color-mix(in srgb, var(--accent) 5%, var(--paper));
 }
 
 .meta-model .agent-glyph {
@@ -3011,6 +3132,69 @@ details.step-group[data-completed="true"] .step-meta {
   letter-spacing: 0.02em;
   text-transform: uppercase;
   font-size: 11px;
+}
+
+.model-picker-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: color-mix(in srgb, var(--ink) 34%, transparent);
+}
+
+.model-picker-card {
+  width: min(420px, 100%);
+  padding: 20px;
+  border: 1px solid color-mix(in srgb, var(--ink) 14%, transparent);
+  border-radius: 14px;
+  background: var(--paper);
+  box-shadow: 0 18px 50px color-mix(in srgb, var(--ink) 22%, transparent);
+}
+
+.model-picker-title {
+  margin: 0 0 16px;
+  color: var(--ink);
+  font-size: 17px;
+}
+
+.model-picker-fields {
+  display: grid;
+  gap: 12px;
+}
+
+.model-picker-field {
+  display: grid;
+  gap: 5px;
+  color: var(--ink-soft);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.model-picker-field select {
+  width: 100%;
+  min-height: 38px;
+  padding: 7px 10px;
+  border: 1px solid color-mix(in srgb, var(--ink) 16%, transparent);
+  border-radius: 8px;
+  background: var(--paper);
+  color: var(--ink);
+  font: inherit;
+}
+
+.model-picker-hint {
+  min-height: 18px;
+  margin: 10px 0 0;
+  color: var(--danger);
+  font-size: 12px;
+}
+
+.model-picker-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
 }
 
 /* --- Doc section (collapsible top-level intro/protocol H2 sections) ------- */

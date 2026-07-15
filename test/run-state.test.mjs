@@ -99,6 +99,11 @@ test('version-1 ledgers upgrade with cap defaults and the explicit stop status',
   state = move(state, 'stopped_by_user');
   const old = structuredClone(state);
   old.schema_version = 1;
+  for (const step of old.steps) {
+    delete step.runner;
+    delete step.model;
+    delete step.effort;
+  }
   delete old.config.max_steps_per_run;
   delete old.config.max_run_minutes;
   delete old.config.stop_grace_ms;
@@ -108,11 +113,35 @@ test('version-1 ledgers upgrade with cap defaults and the explicit stop status',
   }
 
   const upgraded = upgradeRunState(old);
+  assert.equal(upgraded.schema_version, 3);
   assert.equal(upgraded.run.status, 'stopped_by_user');
   assert.equal(upgraded.config.max_steps_per_run, 50);
   assert.equal(upgraded.config.max_run_minutes, 360);
   assert.equal(upgraded.config.stop_grace_ms, 3_000);
+  assert.equal(upgraded.steps[0].runner, null);
+  assert.equal(upgraded.steps[0].model, null);
+  assert.equal(upgraded.steps[0].effort, null);
   assertValidRunState(upgraded);
+});
+
+test('completed steps retain the actual runner, model, and effort', () => {
+  let state = move(stateWithSteps(), 'run_started');
+  state = move(state, 'step_started', {
+    step_id: '1.1',
+    worker: { ...worker(), runner: 'codex' },
+  });
+  state = move(state, 'step_completed', {
+    step_id: '1.1',
+    receipt_path: '/state/runs/a/receipts/1.1.md',
+    runner: 'codex',
+    model: 'gpt-5.6-sol',
+    effort: 'xhigh',
+  });
+  assert.deepEqual(
+    (({ runner, model, effort }) => ({ runner, model, effort }))(state.steps[0]),
+    { runner: 'codex', model: 'gpt-5.6-sol', effort: 'xhigh' },
+  );
+  assertValidRunState(state);
 });
 
 test('runs every normal step and review transition through merge', () => {
