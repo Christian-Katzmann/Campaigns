@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
-import { once } from 'node:events';
 import { access, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -141,7 +140,7 @@ test('POST /api/run/recover applies the same recovery over the loopback server',
     campaigns: [{ id: 'fixture-campaign', filePath: fixture.campaignPath }],
   }, null, 2)}\n`, 'utf8');
 
-  const child = spawn(process.execPath, ['server.mjs', '--port', '0'], {
+  const child = fixture.trackChild(spawn(process.execPath, ['server.mjs', '--port', '0'], {
     cwd: path.resolve('.'),
     env: {
       ...process.env,
@@ -150,8 +149,7 @@ test('POST /api/run/recover applies the same recovery over the loopback server',
       CAMPAIGNS_PORT_FILE: path.join(fixture.root, 'server.port'),
     },
     stdio: ['ignore', 'pipe', 'pipe'],
-  });
-  t.after(() => stopChild(child));
+  }));
   const port = await waitForServerPort(child);
 
   const response = await fetch(`http://127.0.0.1:${port}/api/run/recover`, {
@@ -177,7 +175,7 @@ test('POST /api/run/stop records the explicit user-stop status', async (t) => {
     campaigns: [{ id: 'fixture-campaign', filePath: fixture.campaignPath }],
   }, null, 2)}\n`, 'utf8');
 
-  const child = spawn(process.execPath, ['server.mjs', '--port', '0'], {
+  const child = fixture.trackChild(spawn(process.execPath, ['server.mjs', '--port', '0'], {
     cwd: path.resolve('.'),
     env: {
       ...process.env,
@@ -186,8 +184,7 @@ test('POST /api/run/stop records the explicit user-stop status', async (t) => {
       CAMPAIGNS_PORT_FILE: path.join(fixture.root, 'server.port'),
     },
     stdio: ['ignore', 'pipe', 'pipe'],
-  });
-  t.after(() => stopChild(child));
+  }));
   const port = await waitForServerPort(child);
 
   const response = await fetch(`http://127.0.0.1:${port}/api/run/stop`, {
@@ -282,7 +279,7 @@ test('POST /api/run/approve-review records approval and rejects a second tap', a
     campaigns: [{ id: 'fixture-campaign', filePath: fixture.campaignPath }],
   }, null, 2)}\n`, 'utf8');
 
-  const child = spawn(process.execPath, ['server.mjs', '--port', '0'], {
+  const child = fixture.trackChild(spawn(process.execPath, ['server.mjs', '--port', '0'], {
     cwd: path.resolve('.'),
     env: {
       ...process.env,
@@ -291,8 +288,7 @@ test('POST /api/run/approve-review records approval and rejects a second tap', a
       CAMPAIGNS_PORT_FILE: path.join(fixture.root, 'server.port'),
     },
     stdio: ['ignore', 'pipe', 'pipe'],
-  });
-  t.after(() => stopChild(child));
+  }));
   const port = await waitForServerPort(child);
   const request = () => fetch(`http://127.0.0.1:${port}/api/run/approve-review`, {
     method: 'POST',
@@ -354,7 +350,11 @@ test('killed-run recovery adopts a clean worktree or prunes it while retaining i
 
 async function makeFixture(t, { reviewOutput = null } = {}) {
   const root = await mkdtemp(path.join(tmpdir(), 'campaigns-recovery-'));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  const children = new Set();
+  t.after(async () => {
+    for (const child of children) await stopChild(child);
+    await rm(root, { recursive: true, force: true });
+  });
   const repo = path.join(root, 'repo');
   const runsDir = path.join(root, 'runs');
   const campaignPath = path.join(repo, 'campaign.md');
@@ -393,6 +393,11 @@ Review the fixture.
     runsDir,
     campaignPath,
     configPath,
+    trackChild(child) {
+      children.add(child);
+      child.once('close', () => children.delete(child));
+      return child;
+    },
     runOptions: {
       configPath,
       runsDir,
@@ -604,12 +609,22 @@ async function waitForServerPort(child) {
 
 async function stopChild(child) {
   if (child.exitCode !== null || child.signalCode !== null) return;
+  const closed = new Promise((resolve) => child.once('close', () => resolve(true)));
   child.kill('SIGTERM');
-  await Promise.race([
-    once(child, 'close'),
-    new Promise((resolve) => setTimeout(resolve, 2_000)),
-  ]);
-  if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+  if (await Promise.race([closed, closeTimeout()])) return;
+  if (child.exitCode === null && child.signalCode === null) {
+    child.kill('SIGKILL');
+    if (!await Promise.race([closed, closeTimeout()])) {
+      throw new Error(`Server child ${child.pid ?? 'unknown'} did not close after SIGKILL.`);
+    }
+  }
+}
+
+function closeTimeout() {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(false), 2_000);
+    timer.unref?.();
+  });
 }
 
 function git(cwd, args) {

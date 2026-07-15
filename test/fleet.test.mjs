@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import { once } from 'node:events';
 import { spawn } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -358,12 +357,22 @@ async function waitForServerPort(child) {
 
 async function stopChild(child) {
   if (child.exitCode !== null || child.signalCode !== null) return;
+  const closed = new Promise((resolve) => child.once('close', () => resolve(true)));
   child.kill('SIGTERM');
-  await Promise.race([
-    once(child, 'close'),
-    new Promise((resolve) => setTimeout(resolve, 2_000)),
-  ]);
-  if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+  if (await Promise.race([closed, closeTimeout()])) return;
+  if (child.exitCode === null && child.signalCode === null) {
+    child.kill('SIGKILL');
+    if (!await Promise.race([closed, closeTimeout()])) {
+      throw new Error(`Server child ${child.pid ?? 'unknown'} did not close after SIGKILL.`);
+    }
+  }
+}
+
+function closeTimeout() {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(false), 2_000);
+    timer.unref?.();
+  });
 }
 
 function installFakeFleetDom(t) {

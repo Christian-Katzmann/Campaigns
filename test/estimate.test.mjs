@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { once } from 'node:events';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -138,7 +137,11 @@ test('live completed steps at 2x prior raise the remaining estimate', () => {
 
 test('GET /api/estimate resolves a registered campaign and returns fleet cold-start data', async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), 'campaigns-estimate-http-'));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  let child = null;
+  t.after(async () => {
+    if (child) await stopChild(child);
+    await rm(root, { recursive: true, force: true });
+  });
   const repo = path.join(root, 'repo');
   const registryDir = path.join(root, 'registry');
   const campaignPath = path.join(repo, 'campaigns', 'estimate.md');
@@ -152,7 +155,7 @@ test('GET /api/estimate resolves a registered campaign and returns fleet cold-st
     'utf8',
   );
 
-  const child = spawn(process.execPath, ['server.mjs', '--port', '0'], {
+  child = spawn(process.execPath, ['server.mjs', '--port', '0'], {
     cwd: path.resolve('.'),
     env: {
       ...process.env,
@@ -163,7 +166,6 @@ test('GET /api/estimate resolves a registered campaign and returns fleet cold-st
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
-  t.after(() => stopChild(child));
   const port = await waitForServerPort(child);
 
   const response = await fetch(`http://127.0.0.1:${port}/api/estimate?id=estimate-fixture`);
@@ -296,10 +298,20 @@ async function waitForServerPort(child) {
 
 async function stopChild(child) {
   if (child.exitCode !== null || child.signalCode !== null) return;
+  const closed = new Promise((resolve) => child.once('close', () => resolve(true)));
   child.kill('SIGTERM');
-  await Promise.race([
-    once(child, 'close'),
-    new Promise((resolve) => setTimeout(resolve, 2_000)),
-  ]);
-  if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+  if (await Promise.race([closed, closeTimeout()])) return;
+  if (child.exitCode === null && child.signalCode === null) {
+    child.kill('SIGKILL');
+    if (!await Promise.race([closed, closeTimeout()])) {
+      throw new Error(`Server child ${child.pid ?? 'unknown'} did not close after SIGKILL.`);
+    }
+  }
+}
+
+function closeTimeout() {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(false), 2_000);
+    timer.unref?.();
+  });
 }

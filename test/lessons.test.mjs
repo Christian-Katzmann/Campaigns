@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import { once } from 'node:events';
 import { spawn } from 'node:child_process';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -88,7 +87,11 @@ test('native lessons discover current and archived unified ledgers but ignore le
 
 test('server exposes and serves native lessons with a scratch HOME and no Python helper', async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), 'campaigns-lessons-server-'));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  let child = null;
+  t.after(async () => {
+    if (child) await stopChild(child);
+    await rm(root, { recursive: true, force: true });
+  });
   const home = path.join(root, 'home');
   const registryDir = path.join(root, 'registry');
   const runsDir = path.join(root, 'runs');
@@ -103,7 +106,7 @@ test('server exposes and serves native lessons with a scratch HOME and no Python
     'utf8',
   );
 
-  const child = spawn(process.execPath, ['server.mjs', '--port', '0'], {
+  child = spawn(process.execPath, ['server.mjs', '--port', '0'], {
     cwd: path.resolve('.'),
     env: {
       ...process.env,
@@ -115,7 +118,6 @@ test('server exposes and serves native lessons with a scratch HOME and no Python
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
-  t.after(() => stopChild(child));
   const port = await waitForServerPort(child);
 
   const [capabilitiesResponse, lessonsResponse, appResponse, moduleResponse] = await Promise.all([
@@ -268,10 +270,20 @@ async function waitForServerPort(child) {
 
 async function stopChild(child) {
   if (child.exitCode !== null || child.signalCode !== null) return;
+  const closed = new Promise((resolve) => child.once('close', () => resolve(true)));
   child.kill('SIGTERM');
-  await Promise.race([
-    once(child, 'close'),
-    new Promise((resolve) => setTimeout(resolve, 2_000)),
-  ]);
-  if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+  if (await Promise.race([closed, closeTimeout()])) return;
+  if (child.exitCode === null && child.signalCode === null) {
+    child.kill('SIGKILL');
+    if (!await Promise.race([closed, closeTimeout()])) {
+      throw new Error(`Server child ${child.pid ?? 'unknown'} did not close after SIGKILL.`);
+    }
+  }
+}
+
+function closeTimeout() {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(false), 2_000);
+    timer.unref?.();
+  });
 }
