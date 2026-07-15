@@ -3,7 +3,7 @@
 Campaigns renders a markdown campaign plan as an execution board. The markdown
 file on disk is the source of truth; the browser UI is an editor around that
 file, not an independent store. Everything flows from one loop: the server reads
-the `.md` file → the browser parses it into a data model → renders the board →
+the `.campaign.md` (or legacy `.md`) file → the browser parses it into a data model → renders the board →
 edits mutate the markdown string → a `baseHash`-guarded `PUT` writes it back to
 disk. Nothing is persisted anywhere else except small per-file UI preferences in
 `localStorage` and the campaign registry (`registry.json`).
@@ -20,6 +20,8 @@ together and owns no feature logic.
 - `lib/parser.mjs` — pure markdown → data model: blocks, phases, step sections,
   check↔step linking, progress stats, final-review migration. No DOM; imported
   directly by the Node tests.
+- `lib/campaign-file.mjs` — browser-safe filename semantics shared with Node;
+  both `name.campaign.md` and legacy `name.md` resolve to the stem `name`.
 - `lib/prefs.mjs` — pure preference defaults, sanitize, and theme normalization.
 - `lib/fleet.mjs` — pure fleet grouping, row presentation, ETA/babysitting
   labels, and Kro-state mapping.
@@ -29,7 +31,8 @@ together and owns no feature logic.
   focus trap, relative-time, the campaign-logo + copy-path helpers.
 - `modules/render.mjs` — board rendering: the block/step/phase/prompt/review-card
   renderers and the `render()` entry, plus save-status, focus/filter, the mobile
-  step bar, and the step observer.
+  step bar, and the step observer. Its IO-free `renderReadOnlyBoard()` seam is
+  shared by the live editor and the static journal replay.
 - `modules/board.mjs` — board interactions and document IO: click/input dispatch,
   the check toggles, code edit, autosave + the `baseHash` conflict flow, export,
   open-a-file, and the resume card.
@@ -62,6 +65,9 @@ companion/workflow/lessons handlers. It delegates to:
 - `lib/registry.mjs` — registry read/write/normalize, the atomic file writer, and
   missing-campaign pruning (paths passed in; covered by `test/registry.test.mjs`).
 - `lib/http.mjs` — `sendJson`, `readJsonBody`, `httpError`, `sendStatic`.
+- `lib/run-journal.mjs`, `lib/run-state-store.mjs` — integrity-linked run
+  journal folding/append and the redacted `state.json`/`events.jsonl`
+  projections.
 - `lib/lessons.mjs` — native unified-ledger discovery and learning-loop metrics.
 - `lib/notifications.mjs` — macOS/ntfy/webhook delivery and the stop-watcher's
   pure alert classification.

@@ -8,6 +8,7 @@ import { test } from 'node:test';
 
 import { runCampaign, runPathsForCampaign } from '../lib/pump.mjs';
 import { RollbackConflictError, RollbackError, rollbackCampaign } from '../lib/rollback.mjs';
+import { foldRunJournal, readRunJournal } from '../lib/run-journal.mjs';
 import { createRunState, transitionRunState } from '../lib/run-state.mjs';
 
 const execFileAsync = promisify(execFile);
@@ -40,6 +41,10 @@ test('rollback rewinds later ranges, unchecks markdown, restores a pruned execut
   assert.match(receipt, /git revert --no-edit/);
   assert.equal(state.rollbacks.length, 1);
   assert.equal(state.rollbacks[0].receipt_path, result.receiptPath);
+  const folded = foldRunJournal(await readRunJournal(fixture.paths.journalPath));
+  assert.deepEqual(folded.state, state);
+  assert.equal(folded.documents.at(-1).kind, 'rollback_checkboxes_reset');
+  assert.equal(folded.documents.at(-1).markdown, markdown);
 
   const configPath = await writeRunnerConfig(fixture.root);
   const resumed = await runCampaign(fixture.campaignPath, {

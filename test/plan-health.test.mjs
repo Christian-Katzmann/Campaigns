@@ -14,16 +14,70 @@ import {
 
 const RULE_CASES = [
   {
+    name: 'missing H1 title',
+    ruleId: 'missing-title',
+    severity: 'error',
+    markdown: fixtureCampaign({ title: false }),
+  },
+  {
+    name: 'missing checklist phase',
+    ruleId: 'missing-phase',
+    severity: 'error',
+    markdown: fixtureCampaign({ phase: false }),
+  },
+  {
+    name: 'missing step sections',
+    ruleId: 'missing-steps',
+    severity: 'error',
+    markdown: fixtureCampaign({ stepCount: 0 }),
+  },
+  {
     name: 'missing Model chip',
     ruleId: 'missing-model',
     severity: 'error',
     markdown: fixtureCampaign({ model: false }),
   },
   {
+    name: 'missing Parallel chip',
+    ruleId: 'missing-parallel',
+    severity: 'error',
+    markdown: fixtureCampaign({ parallel: false }),
+  },
+  {
+    name: 'non-numeric step id',
+    ruleId: 'invalid-step-id',
+    severity: 'error',
+    markdown: fixtureCampaign({ stepId: '1' }),
+  },
+  {
+    name: 'duplicate step id',
+    ruleId: 'duplicate-step-id',
+    severity: 'error',
+    markdown: fixtureCampaign({ stepCount: 2, stepId: '1.1' }),
+  },
+  {
+    name: 'missing fenced prompt',
+    ruleId: 'missing-prompt',
+    severity: 'error',
+    markdown: fixtureCampaign({ prompt: false }),
+  },
+  {
     name: 'missing ACCEPTANCE',
     ruleId: 'missing-acceptance',
     severity: 'error',
     markdown: fixtureCampaign({ acceptance: false }),
+  },
+  {
+    name: 'invalid executable CHECK',
+    ruleId: 'invalid-check',
+    severity: 'error',
+    markdown: fixtureCampaign({ invalidCheck: true }),
+  },
+  {
+    name: 'unlinked checklist',
+    ruleId: 'checklist-mismatch',
+    severity: 'error',
+    markdown: fixtureCampaign({ checklistItems: false }),
   },
   {
     name: 'step count above lessons threshold',
@@ -45,6 +99,12 @@ const RULE_CASES = [
     markdown: fixtureCampaign({ finalReview: false }),
   },
   {
+    name: 'missing final review checklist item',
+    ruleId: 'final-review-check',
+    severity: 'error',
+    markdown: fixtureCampaign({ finalReviewCheck: false }),
+  },
+  {
     name: 'missing executable CHECK',
     ruleId: 'missing-check',
     severity: 'info',
@@ -56,11 +116,11 @@ for (const fixture of RULE_CASES) {
   test(`plan-health rule fires exactly once for ${fixture.name}`, () => {
     const findings = analyzePlanHealth(fixture.markdown, fixture.avoidAboveSteps);
 
-    assert.equal(findings.length, 1);
-    assert.equal(findings[0].ruleId, fixture.ruleId);
-    assert.equal(findings[0].severity, fixture.severity);
-    assert.equal(Number.isInteger(findings[0].line), true);
-    assert.equal(typeof findings[0].fixHint, 'string');
+    const matching = findings.filter((finding) => finding.ruleId === fixture.ruleId);
+    assert.equal(matching.length, 1);
+    assert.equal(matching[0].severity, fixture.severity);
+    assert.equal(Number.isInteger(matching[0].line), true);
+    assert.equal(typeof matching[0].fixHint, 'string');
   });
 }
 
@@ -106,26 +166,33 @@ test('fenced prompt Save edit adds and clears the inline finding state', () => {
 function fixtureCampaign({
   acceptance = true,
   checks = true,
+  checklistItems = true,
   finalReview = true,
+  finalReviewCheck = true,
+  invalidCheck = false,
   model = true,
+  parallel = true,
+  phase = true,
+  prompt = true,
   readingCount = 2,
+  stepId = null,
   stepCount = 1,
+  title = true,
 } = {}) {
   const checklist = Array.from(
     { length: stepCount },
-    (_, index) => `- [ ] Step 1.${index + 1} — Work ${index + 1}`,
-  ).join('\n');
+    (_, index) => checklistItems
+      ? `- [ ] Step ${stepId ?? `1.${index + 1}`} — Work ${index + 1}`
+      : '',
+  ).filter(Boolean).join('\n');
   const steps = Array.from({ length: stepCount }, (_, index) => {
     const step = index + 1;
+    const id = stepId ?? `1.${step}`;
     const reading = Array.from(
       { length: readingCount },
       (_, item) => `${item + 1}. lib/file-${item + 1}.mjs`,
     ).join('\n');
-    return `## Step 1.${step} — Work ${step}
-
-${model ? 'Model: Fable 5 · High / GPT-5.6-Sol · High\n' : ''}Parallel: NO
-
-Why this step exists.
+    const promptBlock = prompt ? `
 
 \`\`\`text
 SCOPE: Do focused work.
@@ -134,17 +201,22 @@ ${reading}
 OUTPUT: Produce the result.
 ${acceptance ? 'ACCEPTANCE:\n- The result is observable.\n' : ''}OPEN QUESTIONS:
 - None.
-${checks ? 'CHECK: {"command":"true"}\n' : ''}\`\`\``;
+${checks ? `CHECK: ${invalidCheck ? '{"command":"true","timeout":1}' : '{"command":"true"}'}\n` : ''}\`\`\`` : '';
+    return `## Step ${id} — Work ${step}
+
+${model ? 'Model: Fable 5 · High / GPT-5.6-Sol · High\n' : ''}${parallel ? 'Parallel: NO\n' : ''}
+
+Why this step exists.${promptBlock}`;
   }).join('\n\n');
 
-  return `# Fixture campaign
+  return `${title ? '# Fixture campaign\n' : ''}
 
 ## Progress checklist
 
-### Phase 1 — Work
+${phase ? '### Phase 1 — Work\n' : ''}
 
 ${checklist}
-- [ ] Final review
+${finalReviewCheck ? '- [ ] Final review' : ''}
 
 ${steps}
 

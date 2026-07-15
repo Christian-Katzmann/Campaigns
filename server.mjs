@@ -7,6 +7,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFile } from 'node:child_process';
 import { createCampaignFromMarkdown, createCampaignScaffold } from './lib/campaign-scaffold.mjs';
+import { campaignFileStem } from './public/lib/campaign-file.mjs';
 import {
   abandonAutomateCampaign,
   getAutomateProviderAvailability,
@@ -1119,7 +1120,7 @@ async function sendRegistry(response) {
           delete entry.missingSince;
           registryChanged = true;
         }
-        const title = extractTitle(markdown) ?? path.basename(entry.filePath, path.extname(entry.filePath));
+        const title = extractTitle(markdown) ?? campaignFileStem(entry.filePath);
         const progress = countProgress(markdown);
         return {
           ...rest,
@@ -1137,7 +1138,7 @@ async function sendRegistry(response) {
         }
         return {
           ...rest,
-          title: path.basename(entry.filePath),
+          title: campaignFileStem(entry.filePath),
           progress: { done: 0, total: 0 },
           missing: true,
           hasLogo,
@@ -2282,7 +2283,7 @@ async function writeStopWatcherState(state) {
 }
 
 async function buildStopWatcherSnapshot(entry) {
-  let title = path.basename(entry.filePath, path.extname(entry.filePath));
+  let title = campaignFileStem(entry.filePath);
   let missing = false;
   let fileMtimeMs = null;
   let progress = { done: 0, total: 0 };
@@ -2741,12 +2742,12 @@ async function buildCompanionCampaign(entry, now, ledgers = []) {
   let markdown = '';
   try {
     markdown = await readFile(entry.filePath, 'utf8');
-    title = extractTitle(markdown) ?? path.basename(entry.filePath, path.extname(entry.filePath));
+    title = extractTitle(markdown) ?? campaignFileStem(entry.filePath);
     progress = countProgress(markdown);
     missing = false;
   } catch {
     // Markdown gone from disk — represent it clearly, never crash aggregation.
-    title = path.basename(entry.filePath);
+    title = campaignFileStem(entry.filePath);
     progress = { done: 0, total: 0 };
     missing = true;
   }

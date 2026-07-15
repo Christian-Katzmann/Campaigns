@@ -12,8 +12,8 @@ reduce accidents and evidence leakage; none is an agent sandbox.
 
 In scope: `server.mjs`, `campaigns.config.json`, `lib/config.mjs`,
 `lib/runners.mjs`, `lib/runner-process.mjs`, `lib/pump.mjs`,
-`lib/run-state-store.mjs`, `lib/redaction.mjs`, `lib/registry.mjs`, and the
-browser control surfaces under `public/`.
+`lib/run-journal.mjs`, `lib/run-state-store.mjs`, `lib/redaction.mjs`,
+`lib/registry.mjs`, and the browser control surfaces under `public/`.
 
 Assumptions:
 
@@ -41,9 +41,9 @@ multiple OS users share one Campaigns data directory.
   transitions the ledger (`lib/pump.mjs`, `runCampaign()`).
 - Runner adapter: validates runner definitions and spawns the selected CLI
   without a shell (`lib/runners.mjs`, `lib/runner-process.mjs`).
-- Local persistence: campaign markdown, registry, run state, events, receipts,
-  logs, and Git branches/worktrees (`lib/registry.mjs`,
-  `lib/run-state-store.mjs`, `lib/pump.mjs`).
+- Local persistence: campaign markdown, run journal, state/event projections,
+  registry, receipts, logs, and Git branches/worktrees (`lib/registry.mjs`,
+  `lib/run-journal.mjs`, `lib/run-state-store.mjs`, `lib/pump.mjs`).
 - External destinations: runner provider/network plus optional ntfy and webhook
   notifications (`lib/notifications.mjs`).
 
@@ -65,9 +65,10 @@ multiple OS users share one Campaigns data directory.
 - Engine → Git worktree: steps normally execute in an engine-created worktree;
   `--no-worktree` deliberately runs on the campaign branch (`lib/pump.mjs`,
   `ensureExecutionWorktree()`; `docs/running-campaigns.md`).
-- Engine → run artifacts: state and JSONL events are validated/redacted and
-  written atomically; logs/output use streaming or staged redaction
-  (`lib/run-state-store.mjs`, `persistRunState()`;
+- Engine → run artifacts: integrity-linked journal events are synced before
+  validated/redacted state and event projections; logs/output use streaming or
+  staged redaction (`lib/run-journal.mjs`; `lib/run-state-store.mjs`,
+  `persistRunState()`;
   `lib/redaction.mjs`; `lib/runner-process.mjs`, `stageRunnerOutput()`).
 - Operator config/plugin → runner adapter: a manifest chooses an executable,
   arguments, inherited environment, and completion extraction. Manifests are

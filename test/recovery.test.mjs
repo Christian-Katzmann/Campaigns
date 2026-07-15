@@ -14,6 +14,7 @@ import {
   sweepExpiredExecutionWorktree,
 } from '../lib/pump.mjs';
 import { recoverCampaign } from '../lib/recovery.mjs';
+import { foldRunJournal, readRunJournal } from '../lib/run-journal.mjs';
 import {
   createRunState,
   transitionRunState,
@@ -46,6 +47,7 @@ test('campaigns recover releases a stale lock and leaves a resumable ledger', as
     'stale_lock_released',
     'recovery_completed',
   ]);
+  assert.deepEqual(foldRunJournal(await readRunJournal(paths.journalPath)).state, state);
   await assert.rejects(access(paths.lockPath), { code: 'ENOENT' });
 });
 

@@ -9,6 +9,7 @@ import { after, test } from 'node:test';
 
 import { parseCampaignPlan, runPathsForCampaign } from '../lib/pump.mjs';
 import { createRunState, transitionRunState, validateRunState } from '../lib/run-state.mjs';
+import { persistRunState } from '../lib/run-state-store.mjs';
 import {
   parseMarkdown,
   replaceFencedBlockContent,
@@ -89,11 +90,13 @@ test('document and registry HTTP contracts hold against a real ephemeral server'
   const fixtureDir = path.join(root, 'http-fixture');
   const campaignPath = path.join(fixtureDir, 'campaign.md');
   const registeredPath = path.join(fixtureDir, 'registered.md');
+  const compoundPath = path.join(fixtureDir, 'fallback-title.campaign.md');
   const originalMarkdown = '# HTTP fixture\n\nOriginal.\n';
   await mkdir(fixtureDir, { recursive: true });
   await execFileAsync('git', ['init', '-b', 'main'], { cwd: fixtureDir });
   await writeFile(campaignPath, originalMarkdown, 'utf8');
   await writeFile(registeredPath, '# Registered fixture\n', 'utf8');
+  await writeFile(compoundPath, 'No H1 title here.\n', 'utf8');
   await writeFile(path.join(fixtureDir, '.campaigns.json'), `${JSON.stringify({
     runnerPaths: [path.resolve('test/fixtures/runner-plugins/gemini')],
   }, null, 2)}\n`, 'utf8');
@@ -297,11 +300,24 @@ test('document and registry HTTP contracts hold against a real ephemeral server'
   assert.equal(registerResponse.status, 200);
   assert.equal(registered.filePath, registeredPath);
 
+  const compound = await fetch(`${baseUrl}/api/registry`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ filePath: compoundPath }),
+  }).then((response) => response.json());
+
   const registryResponse = await fetch(`${baseUrl}/api/registry`);
   const registry = await registryResponse.json();
   assert.equal(registryResponse.status, 200);
   assert.ok(registry.campaigns.some((campaign) => campaign.id === registered.id));
+  assert.equal(registry.campaigns.find((campaign) => campaign.id === compound.id).title, 'fallback-title');
   assert.equal(registry.defaultCampaignId, document.id);
+  const companionWithCompound = await fetch(`${baseUrl}/api/companion-state`)
+    .then((response) => response.json());
+  assert.equal(
+    companionWithCompound.campaigns.find((campaign) => campaign.id === compound.id).title,
+    'fallback-title',
+  );
 
   const deleteExistingResponse = await fetch(`${baseUrl}/api/registry`, {
     method: 'DELETE',
@@ -321,6 +337,14 @@ test('document and registry HTTP contracts hold against a real ephemeral server'
   });
   assert.equal(deleteMissingResponse.status, 200);
   assert.deepEqual(await deleteMissingResponse.json(), { ok: true });
+
+  await rm(compoundPath);
+  const deleteCompoundResponse = await fetch(`${baseUrl}/api/registry`, {
+    method: 'DELETE',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ id: compound.id }),
+  });
+  assert.equal(deleteCompoundResponse.status, 200);
 
   if (process.platform !== 'darwin') {
     const permanentPath = path.join(fixtureDir, 'permanent-delete.md');
@@ -455,7 +479,7 @@ test('plan campaign endpoint drafts, validates, registers, salvages failures, an
   });
   const blank = await blankResponse.json();
   assert.equal(blankResponse.status, 201);
-  assert.equal(blank.filePath, path.join(nestedProjectPath, 'campaigns', 'still-blank.md'));
+  assert.equal(blank.filePath, path.join(nestedProjectPath, 'campaigns', 'still-blank.campaign.md'));
 
   for (const created of [planned, blank]) {
     await rm(created.filePath, { force: true });
@@ -476,7 +500,7 @@ test('worktrees API lists owners, caches sizes, and safely removes orphans and l
   const repo = path.join(fixtureRoot, 'repo');
   const campaignsDir = path.join(repo, 'campaigns');
   const liveCampaignPath = path.join(campaignsDir, 'live-worktrees-fixture.md');
-  const orphanCampaignPath = path.join(campaignsDir, 'orphan-worktrees-fixture.md');
+  const orphanCampaignPath = path.join(campaignsDir, 'orphan-worktrees-fixture.campaign.md');
   const orphanPath = path.join(fixtureRoot, 'codex-orphan');
   const externalPath = path.join(fixtureRoot, 'external');
   const lockedPath = path.join(fixtureRoot, 'locked');
@@ -586,6 +610,7 @@ test('worktrees API lists owners, caches sizes, and safely removes orphans and l
   assert.equal(engineLive.owner.campaign_id, liveCampaign.id);
   assert.equal(orphan.branch, 'codex/orphan-fixture');
   assert.equal(orphan.owner.backend, 'codex');
+  assert.equal(orphan.owner.campaign_name, 'orphan-worktrees-fixture');
   assert.equal(orphan.status, 'orphan');
   assert.equal(orphan.size_cached, false);
   assert.ok(orphan.size_bytes > 0);
@@ -831,7 +856,7 @@ Review the diff fixture.
     findings: [{ reason: 'acceptance-miss', paths: ['lib/a.js'] }],
     review_path: paths.finalReviewPath,
   });
-  await writeFile(paths.statePath, `${JSON.stringify(state, null, 2)}\n`, 'utf8');
+  await persistRunState(paths.statePath, state);
 
   const textResponse = await fetch(`${baseUrl}/api/run/step-diff?id=${registered.id}&step=1.1`);
   const text = await textResponse.json();
@@ -861,7 +886,7 @@ Review the diff fixture.
     reasons: ['operator rollback'],
     review_path: paths.finalReviewPath,
   });
-  await writeFile(paths.statePath, `${JSON.stringify(state, null, 2)}\n`, 'utf8');
+  await persistRunState(paths.statePath, state);
   const rollbackResponse = await fetch(`${baseUrl}/api/run/rollback`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },

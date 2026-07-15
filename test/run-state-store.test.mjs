@@ -11,6 +11,7 @@ import {
   createRunState,
   transitionRunState,
 } from '../lib/run-state.mjs';
+import { runJournalPath } from '../lib/run-journal.mjs';
 import {
   engineEventLogPath,
   persistRunState,
@@ -112,6 +113,7 @@ test('event log is redacted, ordered, and duplicate-free', async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), 'campaigns-events-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const statePath = path.join(root, 'state.json');
+  await writeFile(path.join(root, 'campaign.md'), '# Journal fixture\n', 'utf8');
   let state = fixtureState(root);
   state = transitionRunState(state, { event: 'run_started', at: at(1) });
   state = transitionRunState(state, {
@@ -130,6 +132,7 @@ test('event log is redacted, ordered, and duplicate-free', async (t) => {
   assert.equal(new Set(events.map((event) => event.sequence)).size, events.length);
   assert.equal(events[2].details.access_token, '[REDACTED]');
   assert.doesNotMatch(lines.join('\n'), /event-secret|token-secret/);
+  assert.doesNotMatch(await readFile(runJournalPath(statePath), 'utf8'), /event-secret|token-secret/);
   assert.deepEqual(validateEngineEvent({}), {
     valid: false,
     errors: [
@@ -148,10 +151,10 @@ function fixtureState(root = '/fixtures/runs/current') {
     created_at: at(0),
     identity: {
       registry_id: null,
-      source: { campaign_path: '/fixtures/repo/campaign.md', repo_root: '/fixtures/repo' },
+      source: { campaign_path: path.join(root, 'campaign.md'), repo_root: root },
       execution: {
-        campaign_path: '/fixtures/repo/campaign.md',
-        repo_root: '/fixtures/repo',
+        campaign_path: path.join(root, 'campaign.md'),
+        repo_root: root,
         branch: 'campaign/current',
       },
     },

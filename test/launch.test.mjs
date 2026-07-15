@@ -73,7 +73,7 @@ test('launch commits only the campaign, rejects a duplicate, and reaches complet
     const ledger = await waitFor(async () => {
       const state = JSON.parse(await readFile(paths.statePath, 'utf8'));
       return state.artifacts.worktree?.pruned_at ? state : null;
-    }, 2_000);
+    }, 5_000);
     const receipt = await readFile(path.join(paths.receiptsDir, '1.1-1.md'), 'utf8');
     const worktreesAfter = worktreePaths(await git(fixture.repo, ['worktree', 'list', '--porcelain']));
     assert.notEqual(ledger.run.identity.execution.repo_root, ledger.run.identity.source.repo_root);

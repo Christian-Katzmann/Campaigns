@@ -17,6 +17,7 @@ import {
   resolveEngineLiveOutput,
 } from '../lib/automate-providers.mjs';
 import { createRunState, transitionRunState } from '../lib/run-state.mjs';
+import { persistRunState } from '../lib/run-state-store.mjs';
 
 function runtime(overrides = {}) {
   return deriveCodexRuntime({
@@ -399,7 +400,7 @@ Second prompt.
     commit_range: { base_oid: '2'.repeat(40), head_oid: '3'.repeat(40) },
   });
   state = transitionRunState(state, { event: 'run_reached_final_review' });
-  await writeFile(path.join(runDir, 'state.json'), `${JSON.stringify(state, null, 2)}\n`, 'utf8');
+  await persistRunState(path.join(runDir, 'state.json'), state);
 
   assert.equal(
     await findEngineStatePath(campaignPath, 'hello-registry', runsDir),
@@ -433,7 +434,7 @@ Second prompt.
     reviewer_family: 'openai',
     reviewer_ladder_tier: 'cross_family',
   });
-  await writeFile(path.join(runDir, 'state.json'), `${JSON.stringify(state, null, 2)}\n`, 'utf8');
+  await persistRunState(path.join(runDir, 'state.json'), state);
   const reviewingProvider = await getAutomateState(campaignPath, { registryId: 'hello-registry' });
   assert.deepEqual(reviewingProvider.review, {
     status: 'running',

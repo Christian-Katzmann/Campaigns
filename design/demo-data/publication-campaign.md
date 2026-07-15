@@ -36,6 +36,8 @@ Write the first public install path.
 ```text
 SCOPE: Explain how a developer clones, installs, and runs the workflow locally.
 OUTPUT: A quickstart that works in under five minutes.
+ACCEPTANCE:
+- A developer can follow the quickstart from clone to a running workflow.
 OPEN QUESTIONS:
 - Which prerequisite is easiest to miss?
 ```
@@ -50,6 +52,8 @@ Show the workflow working.
 ```text
 SCOPE: Capture the smallest screenshot or recording that proves the workflow is real.
 OUTPUT: One hero image plus a one-sentence caption.
+ACCEPTANCE:
+- The visual and caption prove the workflow's core result at a glance.
 OPEN QUESTIONS:
 - What should the first-time visitor understand before reading the README?
 ```
@@ -64,6 +68,8 @@ Cut unclear claims.
 ```text
 SCOPE: Make the release notes concrete and low-hype.
 OUTPUT: Final release copy ready for the README.
+ACCEPTANCE:
+- Every release claim is concrete and supported by the guide or product proof.
 OPEN QUESTIONS:
 - Which claim needs evidence?
 ```

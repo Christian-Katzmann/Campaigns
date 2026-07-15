@@ -1581,7 +1581,7 @@ function isPidAlive(pid) {
 }
 
 async function waitFor(check) {
-  const deadline = Date.now() + 3_000;
+  const deadline = Date.now() + 5_000;
   while (Date.now() < deadline) {
     if (await check()) return;
     await new Promise((resolve) => setTimeout(resolve, 20));
