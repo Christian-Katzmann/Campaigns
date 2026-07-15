@@ -21,12 +21,13 @@ export function initWorktreesPanel() {
     panel.removeAttribute('hidden');
     trigger.setAttribute('aria-expanded', 'true');
     loadWorktrees();
-    window.requestAnimationFrame(() => dialog.focus());
+    dialog.querySelector('[data-action="close-worktrees"]')?.focus();
   };
   const close = () => {
     panel.setAttribute('hidden', '');
     trigger.setAttribute('aria-expanded', 'false');
-    previouslyFocused?.focus();
+    if (previouslyFocused && document.contains(previouslyFocused)) previouslyFocused.focus();
+    else trigger.focus();
   };
 
   trigger.addEventListener('click', open);
@@ -186,6 +187,11 @@ function syncSortControls() {
     const active = button.dataset.worktreeSort === panelState.sortBy;
     button.setAttribute('aria-pressed', String(active));
     button.dataset.direction = active ? panelState.direction : '';
+    const label = button.dataset.worktreeSort === 'size' ? 'size' : 'age';
+    button.setAttribute(
+      'aria-label',
+      active ? `Sort by ${label}, ${panelState.direction === 'desc' ? 'descending' : 'ascending'}` : `Sort by ${label}`,
+    );
   });
 }
 

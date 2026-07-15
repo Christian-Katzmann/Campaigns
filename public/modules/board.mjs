@@ -16,7 +16,14 @@ import {
   togglePhase,
   updateSaveStatus,
 } from './render.mjs';
-import { copyCampaignPath, cssEscape, element, fileNameFromPath, showToast } from './dom.mjs';
+import {
+  copyCampaignPath,
+  cssEscape,
+  element,
+  fileNameFromPath,
+  manageDialogFocus,
+  showToast,
+} from './dom.mjs';
 import {
   classifyPhases,
   extractPhases,
@@ -34,6 +41,7 @@ import { handleCompletionEffects, playAudioFeedback } from './effects.mjs';
 
 const AUTOSAVE_DELAY_MS = 700;
 let autoSaveTimer = null;
+let conflictDialogClose = null;
 
 function documentUrl() {
   return state.id ? `/api/document?id=${encodeURIComponent(state.id)}` : '/api/document';
@@ -262,8 +270,8 @@ export function openStepModelPicker(stepNumber) {
     fillDependentSelects(false);
   });
 
-  const close = () => overlay.remove();
-  cancel.addEventListener('click', close);
+  let close = () => overlay.remove();
+  cancel.addEventListener('click', () => close());
   overlay.addEventListener('click', (event) => {
     if (event.target === overlay) close();
   });
@@ -290,7 +298,7 @@ export function openStepModelPicker(stepNumber) {
   card.append(title, form, availability, actions);
   overlay.append(card);
   document.body.append(overlay);
-  runnerSelect.focus();
+  close = manageDialogFocus(overlay, { initialFocus: runnerSelect });
 }
 
 function pickerField(label, select) {
@@ -574,11 +582,14 @@ export function showConflictModal({ localMarkdown, serverMarkdown }) {
   if (!elements.conflictModal) return;
 
   const card = element('div', { className: 'conflict-card' });
+  const heading = element('h2', { id: 'conflict-modal-title', text: 'The file changed on disk' });
+  const description = element('p', {
+    id: 'conflict-modal-description',
+    text: 'The markdown file changed since this page loaded. Choose which version to keep, or merge by hand.',
+  });
   card.append(
-    element('h2', { text: 'The file changed on disk' }),
-    element('p', {
-      text: 'The markdown file changed since this page loaded. Choose which version to keep, or merge by hand.',
-    }),
+    heading,
+    description,
   );
 
   const diff = element('div', { className: 'conflict-diff' });
@@ -638,12 +649,28 @@ export function showConflictModal({ localMarkdown, serverMarkdown }) {
   actions.append(cancel, keepTheirs, keepMine);
   card.append(actions);
 
+  elements.conflictModal.setAttribute('aria-labelledby', heading.id);
+  elements.conflictModal.setAttribute('aria-describedby', description.id);
   elements.conflictModal.replaceChildren(card);
   elements.conflictModal.hidden = false;
+  conflictDialogClose = manageDialogFocus(elements.conflictModal, {
+    initialFocus: yoursTextarea,
+    onClose: () => {
+      elements.conflictModal.hidden = true;
+      elements.conflictModal.replaceChildren();
+      conflictDialogClose = null;
+    },
+  });
 }
 
 export function hideConflictModal() {
   if (!elements.conflictModal) return;
+  if (conflictDialogClose) {
+    const close = conflictDialogClose;
+    conflictDialogClose = null;
+    close();
+    return;
+  }
   elements.conflictModal.hidden = true;
   elements.conflictModal.replaceChildren();
 }

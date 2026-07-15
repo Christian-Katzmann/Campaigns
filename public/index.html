@@ -52,7 +52,7 @@
           </button>
           <span id="save-status-inline" class="save-status-inline" aria-live="polite"></span>
           <button id="save-button" class="button button-primary" type="button" title="Save (⌘S)">Save file</button>
-          <input id="file-input" class="visually-hidden" type="file" accept=".md,.markdown,text/markdown,text/plain" />
+          <input id="file-input" class="visually-hidden" type="file" accept=".md,.markdown,text/markdown,text/plain" tabindex="-1" aria-hidden="true" />
         </div>
       </header>
 
@@ -90,14 +90,14 @@
           </div>
         </aside>
 
-        <article id="document" class="document" aria-live="polite"></article>
+        <article id="document" class="document"></article>
       </main>
     </div>
 
     <div id="library" class="library" hidden>
       <nav class="topbar-tabs" aria-label="Views">
-        <a class="button button-quiet" href="?library" aria-pressed="true">Campaigns</a>
-        <a id="workflows-tab" class="button button-quiet" href="?view=workflows" aria-pressed="false" hidden>Workflows</a>
+        <a class="button button-quiet" href="?library" aria-current="page">Campaigns</a>
+        <a id="workflows-tab" class="button button-quiet" href="?view=workflows" hidden>Workflows</a>
       </nav>
       <header class="library-header">
         <div class="library-header-text">
@@ -193,7 +193,7 @@
                 <span class="field-desc">Clicks and completion chord</span>
               </div>
               <label class="switch">
-                <input id="sound-toggle" type="checkbox" />
+                <input id="sound-toggle" type="checkbox" aria-label="Sound" />
                 <span class="slider"></span>
               </label>
             </div>
@@ -203,7 +203,7 @@
                 <span class="field-desc">Small visual mark when a phase closes</span>
               </div>
               <label class="switch">
-                <input id="celebration-toggle" type="checkbox" />
+                <input id="celebration-toggle" type="checkbox" aria-label="Completion burst" />
                 <span class="slider"></span>
               </label>
             </div>
@@ -218,7 +218,7 @@
                 <span class="field-desc">Stops, phases, and finishes</span>
               </div>
               <label class="switch">
-                <input id="mac-notify-toggle" type="checkbox" />
+                <input id="mac-notify-toggle" type="checkbox" aria-label="Mac alerts" />
                 <span class="slider"></span>
               </label>
             </div>
@@ -230,7 +230,7 @@
               </label>
               <div class="input-with-button">
                 <input id="ntfy-topic-input" type="text" inputmode="latin" autocomplete="off" spellcheck="false" placeholder="my-campaign-alerts" />
-                <button id="test-ntfy-button" class="button button-quiet" type="button">Test</button>
+                <button id="test-ntfy-button" class="button button-quiet" type="button" aria-label="Test iPhone notification">Test</button>
               </div>
             </div>
 
@@ -241,7 +241,7 @@
               </label>
               <div class="input-with-button">
                 <input id="webhook-url-input" type="url" placeholder="https://hooks.slack.com/services/..." />
-                <button id="test-webhook-button" class="button button-quiet" type="button">Test</button>
+                <button id="test-webhook-button" class="button button-quiet" type="button" aria-label="Test team webhook">Test</button>
               </div>
             </div>
           </section>
@@ -289,12 +289,12 @@
       </section>
     </div>
 
-    <aside id="automate-drawer" class="automate-drawer" hidden>
+    <aside id="automate-drawer" class="automate-drawer" aria-labelledby="automate-drawer-title" hidden>
       <div class="automate-drawer-scrim" data-action="close-automate-drawer"></div>
-      <div class="automate-drawer-resize" role="separator" aria-orientation="horizontal" aria-label="Resize automation drawer" title="Drag to resize"></div>
-      <div class="automate-drawer-panel">
+      <div class="automate-drawer-resize" role="separator" tabindex="0" aria-orientation="vertical" aria-label="Resize automation drawer" aria-controls="automate-drawer-panel" aria-valuemin="320" aria-valuemax="720" aria-valuenow="420" aria-valuetext="420 pixels" title="Drag or use Left and Right arrow keys to resize"></div>
+      <div id="automate-drawer-panel" class="automate-drawer-panel">
         <header class="automate-drawer-header">
-          <h2 class="automate-drawer-title">Automation</h2>
+          <h2 id="automate-drawer-title" class="automate-drawer-title">Automation</h2>
           <button class="automate-drawer-close" type="button" data-action="close-automate-drawer" aria-label="Close automation drawer">&times;</button>
         </header>
         <div class="automate-drawer-body" id="automate-drawer-body">

@@ -120,9 +120,7 @@ export function initSettings(appInfo) {
     previouslyFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     drawer.removeAttribute('hidden');
     settingsBtn.setAttribute('aria-expanded', 'true');
-    window.requestAnimationFrame(() => {
-      drawerContent?.focus();
-    });
+    drawerContent?.querySelector('[data-action="close-settings"]')?.focus();
   };
 
   const closeDrawer = () => {
@@ -153,7 +151,7 @@ export function initSettings(appInfo) {
   });
 
   document.addEventListener('keydown', (event) => {
-    if (drawer.hidden || event.key !== 'Escape') return;
+    if (event.defaultPrevented || drawer.hidden || event.key !== 'Escape') return;
     event.preventDefault();
     closeDrawer();
   });

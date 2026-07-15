@@ -2297,6 +2297,23 @@ body.view-library #conflict-modal {
   text-decoration: none;
 }
 
+.library-collection-toggle {
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.library-collection-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 4px;
+  border-radius: 4px;
+}
+
 .library-card-chrome {
   position: absolute;
   top: 12px;
@@ -3450,7 +3467,6 @@ details.doc-section[open] .doc-section-chevron {
   display: flex;
   justify-content: flex-end;
   visibility: hidden;
-  transition: visibility 180ms ease-out;
 }
 
 .settings-drawer:not([hidden]) {
@@ -6278,6 +6294,7 @@ body.away-open {
 .settings-select:focus-visible,
 .settings-panel-button:focus-visible,
 .worktrees-panel button:focus-visible,
+.automate-drawer-resize:focus-visible,
 .switch input:focus-visible + .slider,
 .step-link:focus-visible {
   outline: 2px solid var(--accent);
@@ -6320,9 +6337,8 @@ html {
   *,
   *::before,
   *::after {
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: 0.01ms !important;
+    animation: none !important;
+    transition: none !important;
   }
 }
 

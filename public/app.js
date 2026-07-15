@@ -237,6 +237,8 @@ function bindGlobalActions() {
 }
 
 function handleGlobalKeydown(event) {
+  if (event.defaultPrevented) return;
+
   if ((event.metaKey || event.ctrlKey) && event.key === 's') {
     event.preventDefault();
     saveToServer({ manual: true });
@@ -252,6 +254,7 @@ function handleGlobalKeydown(event) {
     const isTyping =
       target instanceof HTMLInputElement ||
       target instanceof HTMLTextAreaElement ||
+      target instanceof HTMLSelectElement ||
       (target instanceof HTMLElement && target.isContentEditable);
     if (isTyping) return;
     const isLibrary = document.body.classList.contains('view-library');
@@ -266,6 +269,7 @@ function handleGlobalKeydown(event) {
   const isTyping =
     target instanceof HTMLInputElement ||
     target instanceof HTMLTextAreaElement ||
+    target instanceof HTMLSelectElement ||
     (target instanceof HTMLElement && target.isContentEditable);
   if (isTyping) return;
 
@@ -289,6 +293,8 @@ function handleGlobalKeydown(event) {
     toggleFocusMode();
     return;
   }
+
+  if (target instanceof HTMLElement && target.closest('button, a, summary, [role="separator"]')) return;
 
   const goPrev = event.key === 'ArrowLeft' || event.key === 'a' || event.key === 'A';
   const goNext = event.key === 'ArrowRight' || event.key === 'd' || event.key === 'D';
