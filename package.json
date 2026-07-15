@@ -1,6 +1,6 @@
 {
   "name": "campaigns-app",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
   "description": "Local markdown campaign planner and execution board.",
   "license": "MIT",
@@ -23,21 +23,22 @@
   "engines": {
     "node": ">=20"
   },
+  "publishConfig": {
+    "access": "public"
+  },
   "files": [
     "bin/",
     "action/",
     "lib/",
     "public/",
+    "replay/",
     "schema/",
     "SECURITY.md",
-    "docs/campaigns-in-ci.md",
-    "docs/spec/campaign-md-v1.md",
-    "docs/paste-anywhere-planner.md",
-    "docs/run-state-schema.md",
-    "docs/runner-api.md",
+    "docs/",
     "docs/threat-model.md",
-    "examples/sample-campaign.md",
+    "examples/",
     "scripts/action-e2e-harness.mjs",
+    "scripts/build-replay-demo.mjs",
     "campaigns.config.json",
     "server.mjs"
   ],
@@ -49,8 +50,10 @@
     "start:sample": "node server.mjs --file examples/sample-campaign.md",
     "assets:render": "./scripts/render-public-assets.sh",
     "replay:build": "node scripts/build-replay-demo.mjs",
+    "release:check": "node scripts/verify-release.mjs",
     "check": "find server.mjs lib public bin -type f \\( -name '*.mjs' -o -name 'app.js' \\) -not -path '*/vendor/*' -print0 | xargs -0 -n1 node --check",
     "test": "node --test --test-concurrency=1 test/*.test.mjs",
+    "prepublishOnly": "npm run release:check",
     "action:e2e": "node scripts/action-e2e-harness.mjs",
     "desktop:icons": "APP_NAME='Campaigns' APP_SLUG='campaigns' ./scripts/desktop-icons.sh",
     "desktop:build": "./scripts/desktop-build.sh",

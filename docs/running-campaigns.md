@@ -4,9 +4,12 @@
 progress checklist. The campaign markdown remains the progress source of truth;
 the run ledger records execution evidence and terminal reasons.
 
-Install the engine with `npm install --global campaigns-app`. For a zero-install
-look at the bundled sample board, run `npx campaigns-app`; add `--no-open --port
-0` for an unattended smoke test. The installed executable remains `campaigns`.
+From a source checkout, install the engine with `npm link --silent`. Published
+registry versions can instead use `npm install --global campaigns-app`, or
+`npx campaigns-app@latest` for the bundled sample board; `npm view
+campaigns-app version` confirms that a registry version exists. Add `--no-open
+--port 0` for an unattended smoke launch. The installed executable remains
+`campaigns`.
 
 ## Worktree isolation
 

@@ -6,42 +6,42 @@ Plan work in markdown. Run it with a coding agent. Watch progress, activity, and
 
 *Plan → run → watch: the checklist stays in the markdown file while the activity drawer shows the current step and its evidence.*
 
-[Replay a real run — no install, no writes →](https://christian-katzmann.github.io/Campaigns/)
-
 ## Five-minute quickstart
 
 You need Node.js 20+ and either Claude Code or Codex installed and signed in.
 
-Open the included sample board with no install:
+Clone the repository and install the local command:
 
 ```bash
-npx campaigns-app
+git clone https://github.com/Christian-Katzmann/Campaigns.git
+cd Campaigns
+npm link --silent
+npm run start:sample
 ```
-
-The command binds to `127.0.0.1`, opens the board in your browser, and keeps the
-local server in that terminal. Press Ctrl+C when finished. For an unattended
-smoke test, use `npx campaigns-app --no-open --port 0`.
-
-Install the engine command when you are ready to run your own campaign:
-
-```bash
-npm install --global campaigns-app
-campaigns run path/to/your-campaign.md --runner codex
-```
-
-For source development, clone the repository and run `npm link --silent`.
-`./install.sh` is the equivalent Bash helper on macOS and Linux.
 
 Open the URL printed by the server. It defaults to `http://localhost:4178`.
-From a source checkout, keep that terminal running and start the bundled sample
-in a second terminal:
+Keep that terminal running and start the bundled sample in a second terminal:
 
 ```bash
 cd Campaigns
-campaigns run examples/sample-campaign.md
+campaigns run examples/sample-campaign.md --runner codex
 ```
 
-The default runner is Claude Code. To use Codex, add `--runner codex`. Open the activity button in the board to follow the live step, then watch the same markdown checkboxes advance as receipts land.
+`./install.sh` is the equivalent Bash helper on macOS and Linux.
+
+Published registry versions can also be run or installed without cloning. Check
+that a version is available before using this route:
+
+```bash
+npm view campaigns-app version
+npx campaigns-app@latest
+# or: npm install --global campaigns-app
+```
+
+The board binds to `127.0.0.1` and keeps the local server in that terminal.
+Press Ctrl+C when finished. Use `--no-open --port 0` for an unattended smoke
+launch. Open the activity button to follow the live step, then watch the same
+markdown checkboxes advance as receipts land.
 
 ## Plan → run → watch
 
@@ -79,7 +79,7 @@ Run a capped campaign from a same-repository pull request with the [Campaigns in
 - **Desktop launcher:** package the macOS wrapper with `npm run desktop:build`; the Node server remains the portable path.
 - **Notifications and local integrations:** they are off unless configured. See [Optional integrations](docs/optional-integrations.md) for detection and environment variables.
 - **Public assets:** regenerate every README screenshot, the social preview, and the local trailer with `npm run assets:render` on macOS.
-- **Recorded replay:** build the self-contained static demo with `npm run replay:build`.
+- **Recorded replay:** build the self-contained static demo with `npm run replay:build`. Repository owners can publish it with the manual `Publish recorded replay` GitHub workflow.
 
 ## What this is not
 
@@ -116,7 +116,7 @@ See the [Campaign Markdown v1 specification](docs/spec/campaign-md-v1.md) for th
 | `campaigns stop <campaign.md>` | Stop at a safe boundary, then terminate after the grace period |
 | `campaigns recover <campaign.md>` | Repair a stopped or failed run ledger |
 | `campaigns config doctor [campaign.md]` | Show resolved config, sources, root, and warnings |
-| `npx campaigns-app` | Open the bundled sample board without installing |
+| `npx campaigns-app@latest` | Open a published registry version's bundled sample board |
 | `npm start -- --file <campaign.md>` | Open one campaign in the local board |
 | `npm run start:sample` | Open the included sample campaign |
 
@@ -160,7 +160,7 @@ Registering a file uses an absolute path:
 ## Platform support
 
 - The board, local server, and execution engine run on macOS and Linux; the full suite runs on both in CI. Windows paths, spawning, and signals received a static audit for v1.
-- `npm install --global campaigns-app` is the cross-platform CLI install. `npm link --silent` remains the source-checkout development install; `./install.sh` is a macOS/Linux convenience wrapper.
+- `npm link --silent` is the source-checkout install. Once a registry version exists, `npm install --global campaigns-app` installs that published version. `./install.sh` is a macOS/Linux convenience wrapper.
 - The desktop launcher and native alerts are macOS-only. Remote notifications and the browser UI remain cross-platform.
 - Windows engine limits in v1: Node cannot directly launch `.cmd`/`.bat` agent shims without a shell, and forced stops signal only the direct agent process. Use a native agent executable; descendants started by it may need manual cleanup.
 - The optional public-asset renderer is macOS-only and is not required to plan, run, or watch campaigns.
