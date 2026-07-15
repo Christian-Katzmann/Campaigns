@@ -15,7 +15,7 @@ import {
   isAutomateScheduled,
   state,
 } from './state.mjs';
-import { element, relativeTime, showToast } from './dom.mjs';
+import { element, manageDialogFocus, relativeTime, showToast } from './dom.mjs';
 import { automateIndicator, formatAutomateUnitLabel, updateLibraryDots } from './library.mjs';
 import { awayBestFitHint, openAwayMode } from './away.mjs';
 import { playAudioFeedback } from './effects.mjs';
@@ -26,8 +26,11 @@ import {
 } from './estimate-ui.mjs';
 
 const DRAWER_WIDTH_KEY = 'campaigns-drawer-width:v1';
+const DRAWER_MIN_WIDTH = 320;
+const DRAWER_MAX_WIDTH = 720;
 const LIVE_OUTPUT_CLIENT_MAX_CHARS = 64 * 1024;
 const ROLLBACK_HOLD_MS = 1_200;
+let drawerPreviouslyFocused = null;
 
 const drawerState = {
   open: false,
@@ -68,7 +71,7 @@ export function initAutomateDrawer() {
     window.setTimeout(async () => {
       await fetchCampaignAutomateState();
       await fetchCampaignEstimate();
-      openAutomateDrawer();
+      openAutomateDrawer({ focus: false });
     }, 250);
   });
 
@@ -82,11 +85,15 @@ export function initAutomateDrawer() {
   if (resizeHandle) initDrawerResize(resizeHandle, panel);
 }
 
-export function openAutomateDrawer() {
+export function openAutomateDrawer({ focus = true } = {}) {
   const drawer = document.querySelector('#automate-drawer');
   const toggleBtn = document.querySelector('#automate-drawer-toggle');
   if (!drawer) return;
 
+  if (focus) {
+    const active = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    drawerPreviouslyFocused = active && active !== document.body ? active : toggleBtn;
+  }
   drawerState.open = true;
   drawer.removeAttribute('hidden');
   toggleBtn?.setAttribute('aria-expanded', 'true');
@@ -104,6 +111,9 @@ export function openAutomateDrawer() {
     }, 60_000);
   }
   drawerLogScrolledByUser = false;
+  if (focus) {
+    window.requestAnimationFrame(() => drawer.querySelector('.automate-drawer-close')?.focus());
+  }
 }
 
 export function closeAutomateDrawer() {
@@ -111,12 +121,19 @@ export function closeAutomateDrawer() {
   const toggleBtn = document.querySelector('#automate-drawer-toggle');
   if (!drawer) return;
 
+  const focusWasInside = document.activeElement instanceof HTMLElement && drawer.contains(document.activeElement);
   drawerState.open = false;
   drawer.setAttribute('hidden', '');
   toggleBtn?.setAttribute('aria-expanded', 'false');
 
   clearInterval(automateState.elapsedTimer);
   automateState.elapsedTimer = null;
+  if (drawerPreviouslyFocused && document.contains(drawerPreviouslyFocused)) {
+    drawerPreviouslyFocused.focus();
+  } else if (focusWasInside) {
+    toggleBtn?.focus();
+  }
+  drawerPreviouslyFocused = null;
 }
 
 export function toggleAutomateDrawer() {
@@ -153,11 +170,19 @@ export function initDrawerResize(handle, panel) {
   let startX = 0;
   let startWidth = 0;
 
-  const onPointerMove = (event) => {
-    const delta = startX - event.clientX;
-    const next = Math.max(320, Math.min(720, startWidth + delta));
+  const setWidth = (width) => {
+    const next = Math.max(DRAWER_MIN_WIDTH, Math.min(DRAWER_MAX_WIDTH, width));
     drawerState.width = next;
     panel.style.setProperty('--drawer-width', `${next}px`);
+    handle.setAttribute('aria-valuenow', String(next));
+    handle.setAttribute('aria-valuetext', `${next} pixels`);
+  };
+
+  setWidth(drawerState.width);
+
+  const onPointerMove = (event) => {
+    const delta = startX - event.clientX;
+    setWidth(startWidth + delta);
   };
 
   const onPointerUp = () => {
@@ -178,6 +203,18 @@ export function initDrawerResize(handle, panel) {
     document.body.style.userSelect = 'none';
     window.addEventListener('pointermove', onPointerMove);
     window.addEventListener('pointerup', onPointerUp);
+  });
+
+  handle.addEventListener('keydown', (event) => {
+    let next = null;
+    if (event.key === 'ArrowLeft') next = drawerState.width + 10;
+    if (event.key === 'ArrowRight') next = drawerState.width - 10;
+    if (event.key === 'Home') next = DRAWER_MIN_WIDTH;
+    if (event.key === 'End') next = DRAWER_MAX_WIDTH;
+    if (next == null) return;
+    event.preventDefault();
+    setWidth(next);
+    localStorage.setItem(DRAWER_WIDTH_KEY, String(drawerState.width));
   });
 }
 
@@ -450,6 +487,9 @@ export function renderDrawerBody(data) {
   const children = [];
 
   children.push(renderDrawerStatusPill(data));
+
+  const reviewer = renderDrawerReviewer(data);
+  if (reviewer) children.push(reviewer);
 
   const nudge = renderDrawerNudge(data);
   if (nudge) children.push(nudge);
@@ -797,6 +837,31 @@ export function renderDrawerStatusPill(data) {
   return pill;
 }
 
+export function reviewerSummary(review) {
+  if (!review?.reviewer_ladder_tier) return null;
+  const identity = review.reviewer_runner
+    ? `${review.reviewer_runner}${review.reviewer_family ? ` · ${review.reviewer_family}` : ''}`
+    : 'No automated runner';
+  const tier = {
+    cross_family: 'Cross-family reviewer',
+    same_family: 'Fresh same-family reviewer',
+    explicit: 'Configured reviewer',
+    human: 'Human review required',
+  }[review.reviewer_ladder_tier] ?? 'Reviewer';
+  return `${tier} — ${identity}`;
+}
+
+export function renderDrawerReviewer(data) {
+  const summary = reviewerSummary(data.review);
+  if (!summary) return null;
+  const section = element('section', { className: 'drawer-reviewer' });
+  section.append(
+    element('h3', { className: 'drawer-section-title', text: 'Final review' }),
+    element('p', { className: 'drawer-reviewer-summary', text: summary }),
+  );
+  return section;
+}
+
 export function renderDrawerNudge(data) {
   if (!data.nudge_modes) return null;
   const modes = data.nudge_modes;
@@ -881,9 +946,12 @@ export function showNudgeConfirmModal(data, mode, label, description, requireChe
   const stepId = data.current_step?.id || '?';
   const unitLabel = formatAutomateUnitLabel(data.current_step || { id: stepId });
   const overlay = element('div', { className: 'nudge-confirm-modal', id: 'nudge-confirm-modal' });
+  overlay.setAttribute('role', 'dialog');
+  overlay.setAttribute('aria-modal', 'true');
+  overlay.setAttribute('aria-labelledby', 'nudge-confirm-title');
 
   const card = element('div', { className: 'nudge-confirm-card' });
-  card.append(element('h3', { className: 'nudge-confirm-title', text: label }));
+  card.append(element('h3', { className: 'nudge-confirm-title', id: 'nudge-confirm-title', text: label }));
   card.append(element('p', { className: 'nudge-confirm-desc', text: description }));
 
   let checkbox = null;
@@ -906,7 +974,8 @@ export function showNudgeConfirmModal(data, mode, label, description, requireChe
 
   if (requireCheckbox) confirmBtn.disabled = true;
 
-  cancelBtn.addEventListener('click', () => overlay.remove());
+  let close = () => overlay.remove();
+  cancelBtn.addEventListener('click', () => close());
 
   if (checkbox) {
     checkbox.addEventListener('change', () => {
@@ -919,7 +988,7 @@ export function showNudgeConfirmModal(data, mode, label, description, requireChe
     cancelBtn.disabled = true;
     confirmBtn.textContent = 'Sending…';
     const result = await executeNudge(state.id, mode);
-    overlay.remove();
+    close();
     if (result.ok) {
       showToast(`${unitLabel} nudged — ${mode === 'continue' ? 'continuing' : mode === 'skip' ? 'skipping' : 'restarting'}.`);
       playAudioFeedback('tick');
@@ -934,15 +1003,12 @@ export function showNudgeConfirmModal(data, mode, label, description, requireChe
   card.append(footer);
 
   overlay.addEventListener('click', (e) => {
-    if (e.target === overlay) overlay.remove();
-  });
-  overlay.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') overlay.remove();
+    if (e.target === overlay) close();
   });
 
   overlay.append(card);
   document.body.append(overlay);
-  (requireCheckbox ? checkbox : confirmBtn).focus();
+  close = manageDialogFocus(overlay, { initialFocus: requireCheckbox ? checkbox : confirmBtn });
 }
 
 export async function executeNudge(id, mode) {
@@ -1084,9 +1150,12 @@ export function showFinalizeConfirmModal({ title, body, confirmLabel, busyLabel,
   if (existing) existing.remove();
 
   const overlay = element('div', { className: 'nudge-confirm-modal', id: 'nudge-confirm-modal' });
+  overlay.setAttribute('role', 'dialog');
+  overlay.setAttribute('aria-modal', 'true');
+  overlay.setAttribute('aria-labelledby', 'finalize-confirm-title');
   const card = element('div', { className: 'nudge-confirm-card' });
   card.append(
-    element('h3', { className: 'nudge-confirm-title', text: title }),
+    element('h3', { className: 'nudge-confirm-title', id: 'finalize-confirm-title', text: title }),
     element('p', { className: 'nudge-confirm-desc', text: body }),
   );
 
@@ -1098,7 +1167,8 @@ export function showFinalizeConfirmModal({ title, body, confirmLabel, busyLabel,
     type: 'button',
   });
 
-  cancelBtn.addEventListener('click', () => overlay.remove());
+  let close = () => overlay.remove();
+  cancelBtn.addEventListener('click', () => close());
   confirmBtn.addEventListener('click', async () => {
     confirmBtn.disabled = true;
     cancelBtn.disabled = true;
@@ -1106,7 +1176,7 @@ export function showFinalizeConfirmModal({ title, body, confirmLabel, busyLabel,
     try {
       await onConfirm();
     } finally {
-      overlay.remove();
+      close();
     }
   });
 
@@ -1114,15 +1184,12 @@ export function showFinalizeConfirmModal({ title, body, confirmLabel, busyLabel,
   card.append(footer);
 
   overlay.addEventListener('click', (e) => {
-    if (e.target === overlay) overlay.remove();
-  });
-  overlay.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') overlay.remove();
+    if (e.target === overlay) close();
   });
 
   overlay.append(card);
   document.body.append(overlay);
-  confirmBtn.focus();
+  close = manageDialogFocus(overlay, { initialFocus: confirmBtn });
 }
 
 export function showFinalizeReviewModal(data) {
@@ -1137,17 +1204,25 @@ export function showFinalizeReviewModal(data) {
     className: 'finalize-review-modal',
     id: 'finalize-review-modal',
   });
+  overlay.setAttribute('role', 'dialog');
+  overlay.setAttribute('aria-modal', 'true');
+  overlay.setAttribute('aria-labelledby', 'finalize-review-title');
   const card = element('div', { className: 'finalize-review-card' });
 
   const header = element('div', { className: 'finalize-review-header' });
+  const closeButton = element('button', {
+    className: 'icon-button finalize-review-close',
+    ariaLabel: 'Close review',
+    text: '×',
+    type: 'button',
+  });
   header.append(
-    element('h3', { className: 'finalize-review-title', text: `Finalize review — verdict ${fin.verdict || 'unknown'}` }),
-    element('button', {
-      className: 'icon-button finalize-review-close',
-      ariaLabel: 'Close review',
-      text: '×',
-      type: 'button',
+    element('h3', {
+      className: 'finalize-review-title',
+      id: 'finalize-review-title',
+      text: `Finalize review — verdict ${fin.verdict || 'unknown'}`,
     }),
+    closeButton,
   );
 
   if (reviewPath) {
@@ -1155,23 +1230,21 @@ export function showFinalizeReviewModal(data) {
   }
 
   const body = element('div', { className: 'finalize-review-body' });
+  body.tabIndex = 0;
+  body.setAttribute('aria-label', 'Review content');
   body.innerHTML = renderSimpleMarkdown(content);
 
   card.append(header, body);
   overlay.append(card);
 
-  const closeModal = () => overlay.remove();
-  header.querySelector('.finalize-review-close')?.addEventListener('click', closeModal);
+  let closeModal = () => overlay.remove();
+  closeButton.addEventListener('click', () => closeModal());
   overlay.addEventListener('click', (e) => {
     if (e.target === overlay) closeModal();
   });
-  overlay.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') closeModal();
-  });
 
   document.body.append(overlay);
-  card.tabIndex = -1;
-  card.focus();
+  closeModal = manageDialogFocus(overlay, { initialFocus: closeButton });
 }
 
 export async function executeFinalizeRerun(id) {
@@ -1361,13 +1434,20 @@ export function renderStepRollbackAction(data, step, target) {
 export function showRollbackConfirmModal(data, step, target) {
   document.getElementById('nudge-confirm-modal')?.remove();
   const overlay = element('div', { className: 'nudge-confirm-modal', id: 'nudge-confirm-modal' });
+  overlay.setAttribute('role', 'dialog');
+  overlay.setAttribute('aria-modal', 'true');
+  overlay.setAttribute('aria-labelledby', 'rollback-confirm-title');
   const card = element('div', { className: 'nudge-confirm-card drawer-rollback-confirm' });
   const boundary = target.boundary_step_id;
   const parallelNote = target.includes_parallel_group
     ? ` Step ${step.id} belongs to a parallel group, so the whole group through Step ${boundary} stays.`
     : '';
   card.append(
-    element('h3', { className: 'nudge-confirm-title', text: `Rollback to Step ${step.id}` }),
+    element('h3', {
+      className: 'nudge-confirm-title',
+      id: 'rollback-confirm-title',
+      text: `Rollback to Step ${step.id}`,
+    }),
     element('p', {
       className: 'nudge-confirm-desc',
       text: `This reverts ${target.reset_steps.map((id) => `Step ${id}`).join(', ')}, unchecks them, and resumes after Step ${boundary}.${parallelNote}`,
@@ -1383,6 +1463,7 @@ export function showRollbackConfirmModal(data, step, target) {
   });
   let timer = null;
   let completed = false;
+  let close = () => overlay.remove();
 
   const cancelHold = () => {
     if (completed) return;
@@ -1399,7 +1480,7 @@ export function showRollbackConfirmModal(data, step, target) {
     cancel.disabled = true;
     hold.textContent = 'Rolling back…';
     const result = await executeRollback(state.id, step.id);
-    overlay.remove();
+    close();
     if (result.ok) {
       showToast(result.message || `Rolled back to Step ${boundary}.`);
       playAudioFeedback('tick');
@@ -1415,7 +1496,7 @@ export function showRollbackConfirmModal(data, step, target) {
     timer = window.setTimeout(confirm, ROLLBACK_HOLD_MS);
   };
 
-  cancel.addEventListener('click', () => overlay.remove());
+  cancel.addEventListener('click', () => close());
   hold.addEventListener('pointerdown', beginHold);
   hold.addEventListener('pointerup', cancelHold);
   hold.addEventListener('pointercancel', cancelHold);
@@ -1431,13 +1512,16 @@ export function showRollbackConfirmModal(data, step, target) {
   card.append(footer);
   overlay.append(card);
   overlay.addEventListener('click', (event) => {
-    if (event.target === overlay) overlay.remove();
-  });
-  overlay.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape') overlay.remove();
+    if (event.target === overlay) close();
   });
   document.body.append(overlay);
-  hold.focus();
+  close = manageDialogFocus(overlay, {
+    initialFocus: hold,
+    onClose: () => {
+      cancelHold();
+      overlay.remove();
+    },
+  });
 }
 
 export async function executeRollback(id, to) {

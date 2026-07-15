@@ -1,0 +1,163 @@
+{
+  "schema_version": 7,
+  "run": {
+    "id": "fixture-run-v7",
+    "status": "reviewing",
+    "created_at": "2026-07-08T10:00:00.000Z",
+    "updated_at": "2026-07-08T10:00:05.000Z",
+    "started_at": "2026-07-08T10:00:01.000Z",
+    "ended_at": null,
+    "current_step_id": null,
+    "current_step_ids": [],
+    "identity": {
+      "registry_id": "fixture-campaign",
+      "source": {
+        "campaign_path": "/fixtures/repo/campaigns/review.md",
+        "repo_root": "/fixtures/repo"
+      },
+      "execution": {
+        "campaign_path": "/fixtures/worktree/campaigns/review.md",
+        "repo_root": "/fixtures/worktree",
+        "branch": "campaign/review"
+      }
+    }
+  },
+  "config": {
+    "runner": "claude",
+    "model": "legacy-model",
+    "effort": "high",
+    "watchdog": {
+      "minimum_runtime_ms": 60000,
+      "stall_window_ms": 30000
+    },
+    "max_fix_attempts": 2,
+    "force_merge_unreviewed": false,
+    "max_steps_per_run": 50,
+    "max_run_minutes": 360,
+    "stop_grace_ms": 3000,
+    "max_parallel_steps": 2,
+    "worktree_enabled": false
+  },
+  "cursor": {
+    "step_id": "1.1",
+    "phase": "1",
+    "attempt": 1
+  },
+  "steps": [
+    {
+      "id": "1.1",
+      "name": "Reviewed step",
+      "phase": "1",
+      "status": "completed",
+      "attempt": 1,
+      "started_at": "2026-07-08T10:00:02.000Z",
+      "completed_at": "2026-07-08T10:00:03.000Z",
+      "receipt_path": "/fixtures/runs/review/receipts/1.1.md",
+      "commit_range": {
+        "base_oid": "1111111111111111111111111111111111111111",
+        "head_oid": "2222222222222222222222222222222222222222"
+      },
+      "parallel_group": null,
+      "runner": "claude",
+      "model": "legacy-model",
+      "effort": "high",
+      "failure": null,
+      "parallel": null,
+      "lane": null
+    }
+  ],
+  "worker": null,
+  "workers": [],
+  "review": {
+    "status": "running",
+    "attempts": 1,
+    "verdict": null,
+    "reasons": [],
+    "raw_tags": [],
+    "findings": [],
+    "review_path": null
+  },
+  "blockers": [],
+  "recovery": null,
+  "rollback": null,
+  "rollbacks": [],
+  "artifacts": {
+    "run_dir": "/fixtures/runs/review",
+    "receipts_dir": "/fixtures/runs/review/receipts",
+    "final_review_path": "/fixtures/runs/review/final-review.md",
+    "worktree": null,
+    "parallel_worktrees": []
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "at": "2026-07-08T10:00:00.000Z",
+      "event": "run_created",
+      "from_status": null,
+      "to_status": "pending",
+      "step_id": null,
+      "message": "Run created.",
+      "details": {}
+    },
+    {
+      "sequence": 2,
+      "at": "2026-07-08T10:00:01.000Z",
+      "event": "run_started",
+      "from_status": "pending",
+      "to_status": "running",
+      "step_id": null,
+      "message": null,
+      "details": {}
+    },
+    {
+      "sequence": 3,
+      "at": "2026-07-08T10:00:02.000Z",
+      "event": "step_started",
+      "from_status": "running",
+      "to_status": "running",
+      "step_id": "1.1",
+      "message": null,
+      "details": {}
+    },
+    {
+      "sequence": 4,
+      "at": "2026-07-08T10:00:03.000Z",
+      "event": "step_completed",
+      "from_status": "running",
+      "to_status": "running",
+      "step_id": "1.1",
+      "message": null,
+      "details": {
+        "receipt_path": "/fixtures/runs/review/receipts/1.1.md",
+        "runner": "claude",
+        "model": "legacy-model",
+        "effort": "high",
+        "commit_range": {
+          "base_oid": "1111111111111111111111111111111111111111",
+          "head_oid": "2222222222222222222222222222222222222222"
+        },
+        "parallel_group": null
+      }
+    },
+    {
+      "sequence": 5,
+      "at": "2026-07-08T10:00:04.000Z",
+      "event": "run_reached_final_review",
+      "from_status": "running",
+      "to_status": "awaiting_review",
+      "step_id": null,
+      "message": null,
+      "details": {}
+    },
+    {
+      "sequence": 6,
+      "at": "2026-07-08T10:00:05.000Z",
+      "event": "final_review_started",
+      "from_status": "awaiting_review",
+      "to_status": "reviewing",
+      "step_id": null,
+      "message": null,
+      "details": {}
+    }
+  ]
+}

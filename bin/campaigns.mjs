@@ -13,6 +13,7 @@ import {
   runCampaign,
 } from '../lib/pump.mjs';
 import { formatConfigDoctor, resolveCampaignConfig } from '../lib/config.mjs';
+import { loadConfiguredRunnerRegistry } from '../lib/runners.mjs';
 import { loadUnifiedLessons } from '../lib/lessons.mjs';
 import { RecoveryError, recoverCampaign } from '../lib/recovery.mjs';
 import { RollbackError, rollbackCampaign } from '../lib/rollback.mjs';
@@ -194,6 +195,8 @@ async function runConfigCommand(argv) {
       cli: parsed.options,
       explicitConfigPath: parsed.options.configPath,
     });
+    const registry = await loadConfiguredRunnerRegistry(result.config);
+    result.warnings.push(...registry.warnings);
     process.stdout.write(formatConfigDoctor(result));
     return 0;
   } catch (error) {

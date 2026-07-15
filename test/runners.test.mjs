@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { readFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { test } from 'node:test';
 
 import {
@@ -9,6 +11,7 @@ import {
   classifyRunnerResult,
   createRunnerCompletionMarker,
   createRunnerRegistry,
+  loadConfiguredRunnerRegistry,
   loadRunnerRegistry,
   runnerCapabilities,
 } from '../lib/runners.mjs';
@@ -104,6 +107,93 @@ test('capabilities keep unavailable runners visible with normalized catalogs', a
   assert.deepEqual(claude.defaults, { model: 'claude-opus-4-8', effort: 'high' });
   assert.equal(codex.available, false);
   assert.match(codex.availabilityHint, /not found on PATH/);
+});
+
+test('an explicit runner plugin is validated, family-tagged, and capability-ready', async () => {
+  const config = structuredClone(shippedConfig);
+  config.runnerPaths = [path.resolve('test/fixtures/runner-plugins/gemini')];
+  const registry = await loadConfiguredRunnerRegistry(config);
+  const gemini = registry.get('gemini');
+  const capabilities = await runnerCapabilities(registry, { env: { PATH: '' } });
+
+  assert.equal(gemini.family, 'google');
+  assert.equal(gemini.binary, path.resolve('test/fixtures/runner-plugins/gemini/fake-gemini.mjs'));
+  assert.deepEqual(registry.warnings, []);
+  assert.deepEqual(
+    (({ id, family, available }) => ({ id, family, available }))(
+      capabilities.find((runner) => runner.id === 'gemini'),
+    ),
+    { id: 'gemini', family: 'google', available: true },
+  );
+});
+
+test('runner usage normalizes plugin spend and keeps missing metrics explicit', async () => {
+  const config = structuredClone(shippedConfig);
+  config.runnerPaths = [path.resolve('test/fixtures/runner-plugins/gemini')];
+  const registry = await loadConfiguredRunnerRegistry(config);
+  const marker = createRunnerCompletionMarker(registry, 'gemini', expected);
+  const spend = classifyRunnerResult(registry, 'gemini', {
+    exitCode: 0,
+    stdout: `${JSON.stringify({
+      type: 'usage',
+      metrics: { prompt: 120, completion: 30, cost: 0.0042 },
+    })}\n${marker}`,
+    expected,
+    receiptPath,
+  });
+  assert.deepEqual(spend.usage, {
+    input_tokens: 120,
+    output_tokens: 30,
+    total_tokens: 150,
+    cost_usd: 0.0042,
+  });
+  assert.deepEqual(spend.transition.details.usage, spend.usage);
+
+  const noSpendRegistry = createRunnerRegistry(fakeRunnerConfig());
+  const noSpendMarker = createRunnerCompletionMarker(noSpendRegistry, 'echo', expected);
+  const noSpend = classifyRunnerResult(noSpendRegistry, 'echo', {
+    exitCode: 0,
+    stdout: noSpendMarker,
+    expected,
+    receiptPath,
+  });
+  assert.deepEqual(noSpend.usage, {
+    input_tokens: null,
+    output_tokens: null,
+    total_tokens: null,
+    cost_usd: null,
+  });
+});
+
+test('malformed and colliding runner plugins warn, skip, and leave valid runners usable', async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), 'campaigns-runner-plugins-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const malformed = path.join(root, 'malformed');
+  const collision = path.join(root, 'collision');
+  await Promise.all([mkdir(malformed), mkdir(collision)]);
+  await writeFile(path.join(malformed, 'campaigns-runner.json'), JSON.stringify({
+    schemaVersion: 1,
+    id: 'broken',
+  }), 'utf8');
+  await writeFile(path.join(collision, 'campaigns-runner.json'), JSON.stringify({
+    ...shippedConfig.runners.claude,
+    schemaVersion: 1,
+    id: 'claude',
+    family: 'other',
+  }), 'utf8');
+
+  const config = structuredClone(shippedConfig);
+  config.runnerPaths = [
+    malformed,
+    collision,
+    path.resolve('test/fixtures/runner-plugins/gemini'),
+  ];
+  const registry = await loadConfiguredRunnerRegistry(config);
+
+  assert.ok(registry.names.includes('gemini'));
+  assert.equal(registry.names.filter((id) => id === 'claude').length, 1);
+  assert.match(registry.warnings[0], /manifest field "family" must be a non-empty string/);
+  assert.match(registry.warnings[1], /duplicate id "claude"/);
 });
 
 test('runner invocation preserves Windows paths as literal arguments', async () => {

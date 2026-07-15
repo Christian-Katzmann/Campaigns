@@ -15,7 +15,15 @@ import {
   elements,
   state,
 } from './state.mjs';
-import { applyCampaignLogo, copyCampaignPath, copyIconTemplate, element, relativeTime, showToast } from './dom.mjs';
+import {
+  applyCampaignLogo,
+  copyCampaignPath,
+  copyIconTemplate,
+  element,
+  manageDialogFocus,
+  relativeTime,
+  showToast,
+} from './dom.mjs';
 import {
   awayActiveIdsIn,
   awayEntryButton,
@@ -150,11 +158,14 @@ export function showNewCampaignDialog() {
 
   let mode = 'plan';
   let requestController = null;
+  const close = manageDialogFocus(overlay, {
+    initialFocus: () => (mode === 'plan' ? intentInput : nameInput),
+    onClose: () => {
+      requestController?.abort();
+      overlay.remove();
+    },
+  });
   const runners = state.capabilities.runners;
-  const close = () => {
-    requestController?.abort();
-    overlay.remove();
-  };
   const appendOptions = (select, entries, selectedId) => {
     select.replaceChildren();
     for (const entry of entries) {
@@ -222,9 +233,6 @@ export function showNewCampaignDialog() {
   cancelButton.addEventListener('click', close);
   overlay.addEventListener('click', (event) => {
     if (event.target === overlay) close();
-  });
-  overlay.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape') close();
   });
   form.addEventListener('submit', async (event) => {
     event.preventDefault();
@@ -802,21 +810,16 @@ export function buildLibraryCollectionCard(group) {
       campaignIds: group.campaigns.map((campaign) => campaign.id).join(' '),
     },
   });
-  card.tabIndex = 0;
-  card.setAttribute('role', 'button');
-  card.setAttribute('aria-expanded', 'false');
-  card.setAttribute('aria-label', `${title}. ${group.campaigns.length} campaigns. Press to expand.`);
-
-  const toggle = () => toggleLibraryCollection(group.id);
-  card.addEventListener('click', toggle);
-  card.addEventListener('keydown', (event) => {
-    if (event.key !== 'Enter' && event.key !== ' ') return;
-    event.preventDefault();
-    toggle();
+  const toggle = element('button', {
+    className: 'library-card-link library-collection-toggle',
+    type: 'button',
+    ariaLabel: `${title}. ${group.campaigns.length} campaigns. Expand collection.`,
   });
+  toggle.setAttribute('aria-expanded', 'false');
+  toggle.addEventListener('click', () => toggleLibraryCollection(group.id));
   bindLibraryDropTarget(card, { targetCollectionId: group.id });
 
-  card.append(
+  toggle.append(
     element('span', { className: 'library-card-title', text: title }),
     element('span', {
       className: 'library-card-path',
@@ -824,12 +827,15 @@ export function buildLibraryCollectionCard(group) {
     }),
   );
 
-  appendCollectionProgress(card, stats);
-  card.append(
+  appendCollectionProgress(toggle, stats);
+  toggle.append(
     element('span', {
       className: 'library-card-time',
       text: stats.lastActivityMs ? `Active ${relativeTime(new Date(stats.lastActivityMs).toISOString())}` : '',
     }),
+  );
+  card.append(
+    toggle,
     element('span', {
       className: 'library-collection-count',
       text: String(group.campaigns.length),
@@ -1450,12 +1456,16 @@ export function showDeleteCampaignConfirm(campaign, sourceButton) {
   if (existing) existing.remove();
 
   const overlay = element('div', { className: 'nudge-confirm-modal', id: 'delete-campaign-modal' });
+  overlay.setAttribute('role', 'dialog');
+  overlay.setAttribute('aria-modal', 'true');
+  overlay.setAttribute('aria-labelledby', 'delete-campaign-title');
   const card = element('div', { className: 'nudge-confirm-card' });
   const permanent = state.capabilities.fileDeletionMode !== 'trash';
 
   card.append(
     element('h3', {
       className: 'nudge-confirm-title',
+      id: 'delete-campaign-title',
       text: `Delete "${campaign.title || 'this campaign'}"?`,
     }),
     element('p', {
@@ -1478,7 +1488,8 @@ export function showDeleteCampaignConfirm(campaign, sourceButton) {
     type: 'button',
   });
 
-  cancelBtn.addEventListener('click', () => overlay.remove());
+  let close = () => overlay.remove();
+  cancelBtn.addEventListener('click', () => close());
   confirmBtn.addEventListener('click', async () => {
     confirmBtn.disabled = true;
     cancelBtn.disabled = true;
@@ -1495,7 +1506,7 @@ export function showDeleteCampaignConfirm(campaign, sourceButton) {
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || `Delete failed (${res.status})`);
-      overlay.remove();
+      close();
       await renderLibrary();
       showToast(data.deletionMode === 'trash'
         ? 'Campaign moved to Trash.'
@@ -1512,15 +1523,12 @@ export function showDeleteCampaignConfirm(campaign, sourceButton) {
   card.append(footer);
 
   overlay.addEventListener('click', (e) => {
-    if (e.target === overlay) overlay.remove();
-  });
-  overlay.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') overlay.remove();
+    if (e.target === overlay) close();
   });
 
   overlay.append(card);
   document.body.append(overlay);
-  confirmBtn.focus();
+  close = manageDialogFocus(overlay, { initialFocus: confirmBtn, returnFocus: sourceButton });
 }
 
 export async function togglePark(id, parked) {
@@ -1763,12 +1771,7 @@ export function updateLibraryCollectionIndicator(node) {
     }
   }
 
-  const time = node.querySelector('.library-card-time');
-  if (time) {
-    node.insertBefore(status, time);
-  } else {
-    node.append(status);
-  }
+  node.append(status);
 }
 
 export function collectionAutomationSummary(campaignIds) {

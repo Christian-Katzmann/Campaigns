@@ -27,7 +27,12 @@
     "bin/",
     "lib/",
     "public/",
+    "schema/",
+    "SECURITY.md",
     "docs/paste-anywhere-planner.md",
+    "docs/run-state-schema.md",
+    "docs/runner-api.md",
+    "docs/threat-model.md",
     "examples/sample-campaign.md",
     "campaigns.config.json",
     "server.mjs"

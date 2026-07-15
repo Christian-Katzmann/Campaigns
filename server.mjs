@@ -43,7 +43,11 @@ import {
 } from './lib/pump.mjs';
 import { RecoveryError, recoverCampaign } from './lib/recovery.mjs';
 import { RollbackError, rollbackCampaign } from './lib/rollback.mjs';
-import { createRunnerRegistry, loadRunnerRegistry, runnerCapabilities } from './lib/runners.mjs';
+import {
+  loadConfiguredRunnerRegistry,
+  loadRunnerRegistry,
+  runnerCapabilities,
+} from './lib/runners.mjs';
 import {
   normalizeRegistryCollections,
   pruneMissingCampaigns,
@@ -524,7 +528,7 @@ async function sendCapabilities(url, response) {
       campaignPath: campaign?.filePath ?? null,
       cwd: __dirname,
     });
-    runnerRegistry = createRunnerRegistry(resolved.config);
+    runnerRegistry = await loadConfiguredRunnerRegistry(resolved.config);
     runnerCwd = resolved.projectRoot;
   } catch (error) {
     if (!/No Git project root found/.test(error.message)) throw error;
@@ -550,6 +554,7 @@ async function sendCapabilities(url, response) {
     },
     providers: automation.providers,
     defaultRunner: runnerRegistry.defaultRunner,
+    runnerWarnings: runnerRegistry.warnings,
     runners,
   });
 }
@@ -566,7 +571,7 @@ async function sendEstimate(url, response) {
   let runnerRegistry;
   try {
     const resolved = await resolveCampaignConfig({ campaignPath: campaign.filePath, cwd: __dirname });
-    runnerRegistry = createRunnerRegistry(resolved.config);
+    runnerRegistry = await loadConfiguredRunnerRegistry(resolved.config);
   } catch (error) {
     if (!/No Git project root found/.test(error.message)) throw error;
     runnerRegistry = await loadRunnerRegistry();

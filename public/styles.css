@@ -2297,6 +2297,23 @@ body.view-library #conflict-modal {
   text-decoration: none;
 }
 
+.library-collection-toggle {
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.library-collection-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 4px;
+  border-radius: 4px;
+}
+
 .library-card-chrome {
   position: absolute;
   top: 12px;
@@ -3450,7 +3467,6 @@ details.doc-section[open] .doc-section-chevron {
   display: flex;
   justify-content: flex-end;
   visibility: hidden;
-  transition: visibility 180ms ease-out;
 }
 
 .settings-drawer:not([hidden]) {
@@ -4443,6 +4459,25 @@ body.theme-signal {
 .drawer-status-pill--cap_reached .automate-indicator,
 .drawer-status-pill--stopped_by_user .automate-indicator,
 .drawer-status-pill--rollback_conflict .automate-indicator { color: var(--danger); }
+
+.drawer-reviewer {
+  padding: 10px 12px;
+  margin: -6px 0 18px;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  background: var(--paper);
+}
+
+.drawer-reviewer .drawer-section-title {
+  margin-bottom: 4px;
+}
+
+.drawer-reviewer-summary {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--ink-soft);
+}
 
 /* Current step block — legacy fallback (drawer-now subsumes this for
    campaigns with parsed live_activity). */
@@ -6259,6 +6294,7 @@ body.away-open {
 .settings-select:focus-visible,
 .settings-panel-button:focus-visible,
 .worktrees-panel button:focus-visible,
+.automate-drawer-resize:focus-visible,
 .switch input:focus-visible + .slider,
 .step-link:focus-visible {
   outline: 2px solid var(--accent);
@@ -6301,9 +6337,8 @@ html {
   *,
   *::before,
   *::after {
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: 0.01ms !important;
+    animation: none !important;
+    transition: none !important;
   }
 }
 

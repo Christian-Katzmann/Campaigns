@@ -426,6 +426,25 @@ Second prompt.
     includes_parallel_group: false,
   }]);
   assert.equal(providerState.timeline_events.at(-1).event, 'run_reached_final_review');
+
+  state = transitionRunState(state, {
+    event: 'final_review_started',
+    reviewer_runner: 'codex',
+    reviewer_family: 'openai',
+    reviewer_ladder_tier: 'cross_family',
+  });
+  await writeFile(path.join(runDir, 'state.json'), `${JSON.stringify(state, null, 2)}\n`, 'utf8');
+  const reviewingProvider = await getAutomateState(campaignPath, { registryId: 'hello-registry' });
+  assert.deepEqual(reviewingProvider.review, {
+    status: 'running',
+    verdict: null,
+    reasons: [],
+    raw_tags: [],
+    findings: [],
+    reviewer_runner: 'codex',
+    reviewer_family: 'openai',
+    reviewer_ladder_tier: 'cross_family',
+  });
 });
 
 test('engine provider exposes every concurrent step and log', async (t) => {

@@ -2,6 +2,7 @@
   "schemaVersion": 1,
   "_comment": "Effort names are normalized per runner here because the CLIs use different names: extra-high maps to high for Claude subscriptions and xhigh for Codex.",
   "defaultRunner": "claude",
+  "runnerPaths": [],
   "watchdog": {
     "minimum_runtime_ms": 3600000,
     "stall_window_ms": 1200000
@@ -15,11 +16,13 @@
     "max_parallel_steps": 2
   },
   "review": {
+    "reviewer": "auto",
     "maxFixAttempts": 2,
     "forceMergeUnreviewed": false
   },
   "runners": {
     "claude": {
+      "family": "anthropic",
       "label": "Claude Code",
       "binary": "claude",
       "args": [
@@ -92,9 +95,25 @@
             "field": "result"
           }
         ]
+      },
+      "usage": {
+        "sources": [
+          {
+            "kind": "jsonl",
+            "match": {
+              "type": "result"
+            },
+            "fields": {
+              "input_tokens": "usage.input_tokens",
+              "output_tokens": "usage.output_tokens",
+              "cost_usd": "total_cost_usd"
+            }
+          }
+        ]
       }
     },
     "codex": {
+      "family": "openai",
       "label": "Codex",
       "binary": "codex",
       "args": [
@@ -171,6 +190,20 @@
               "item.type": "agent_message"
             },
             "field": "item.text"
+          }
+        ]
+      },
+      "usage": {
+        "sources": [
+          {
+            "kind": "jsonl",
+            "match": {
+              "type": "turn.completed"
+            },
+            "fields": {
+              "input_tokens": "usage.input_tokens",
+              "output_tokens": "usage.output_tokens"
+            }
           }
         ]
       }

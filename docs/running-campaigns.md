@@ -132,6 +132,33 @@ their source, and the project root. With no campaign argument it uses the
 current directory's Git root. Unknown keys and paths that do not exist are
 reported as warnings; secret-shaped values are masked.
 
+## Final review selection
+
+Final review defaults to `"reviewer": "auto"`:
+
+```json
+{
+  "review": {
+    "reviewer": "auto"
+  }
+}
+```
+
+At the review boundary, Campaigns checks the same runner capabilities exposed
+to the board. It prefers an available runner from a different family than the
+campaign worker, then starts a fresh process from the worker's family. The
+reviewer uses its own default model and effort. If no runner is available,
+Campaigns starts no doomed process: the ledger enters `awaiting_human_review`
+and the existing review notification is sent.
+
+Set `review.reviewer` to a runner id to pin review to that runner. An unavailable
+pinned runner also waits for human review; it never silently switches runners.
+
+This works with one subscription: the same runner family performs review in a
+fresh process. Cross-family review only happens when another configured CLI is
+actually available, and may consume that CLI's separate subscription. Campaigns
+does not translate the worker's model or effort setting across providers.
+
 ## Stopping a run
 
 Use `campaigns stop <campaign.md>` or `POST /api/run/stop` with the registered

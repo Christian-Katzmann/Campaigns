@@ -138,20 +138,56 @@ export function trapDialogFocus(event, container) {
     ),
   ).filter((node) => node instanceof HTMLElement && node.offsetParent !== null);
 
-  if (focusable.length === 0) return;
+  if (focusable.length === 0) {
+    event.preventDefault();
+    container.focus?.();
+    return;
+  }
 
   const first = focusable[0];
   const last = focusable.at(-1);
-  if (event.shiftKey && document.activeElement === first) {
+  const active = document.activeElement;
+  if (event.shiftKey && (active === first || active === container || !container.contains(active))) {
     event.preventDefault();
     last.focus();
     return;
   }
 
-  if (!event.shiftKey && document.activeElement === last) {
+  if (!event.shiftKey && (active === last || !container.contains(active))) {
     event.preventDefault();
     first.focus();
   }
+}
+
+export function manageDialogFocus(container, {
+  initialFocus = null,
+  onClose = () => container.remove(),
+  returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null,
+} = {}) {
+  let closed = false;
+  const handleKeydown = (event) => {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      close();
+    } else if (event.key === 'Tab') {
+      trapDialogFocus(event, container);
+    }
+  };
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    container.removeEventListener('keydown', handleKeydown);
+    onClose();
+    if (returnFocus && document.contains(returnFocus)) returnFocus.focus();
+  };
+
+  container.addEventListener('keydown', handleKeydown);
+  window.requestAnimationFrame(() => {
+    if (closed || !container.isConnected) return;
+    const target = typeof initialFocus === 'function' ? initialFocus() : initialFocus;
+    (target ?? container).focus?.();
+  });
+  return close;
 }
 
 // Set or clear the board's campaign logo + favicon. Lives here (not in the board

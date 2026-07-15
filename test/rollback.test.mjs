@@ -148,7 +148,12 @@ test('rollback refuses live locks and merged campaign results with direct remedi
 
   const merged = await makeSequentialFixture(t);
   let state = JSON.parse(await readFile(merged.paths.statePath, 'utf8'));
-  state = transitionRunState(state, { event: 'final_review_started' });
+  state = transitionRunState(state, {
+    event: 'final_review_started',
+    reviewer_runner: 'fake',
+    reviewer_family: 'fake',
+    reviewer_ladder_tier: 'same_family',
+  });
   await writeFile(merged.paths.finalReviewPath, 'Verdict: APPROVED\nReasons:\n', 'utf8');
   state = transitionRunState(state, {
     event: 'final_review_approved',
@@ -273,6 +278,7 @@ async function writeLedger(fixture, records) {
     steps: fixture.ids.map((id) => ({ id, name: `Step ${id}`, phase: id.split('.')[0] })),
     config: {
       runner: 'fake',
+      reviewer: 'fake',
       model: 'fake',
       effort: 'none',
       watchdog: { minimum_runtime_ms: 0, stall_window_ms: 1_000 },
@@ -352,6 +358,7 @@ async function writeRunnerConfig(root) {
     schemaVersion: 1,
     defaultRunner: 'fake',
     watchdog: { minimum_runtime_ms: 0, stall_window_ms: 1_000 },
+    review: { reviewer: 'fake' },
     runners: {
       fake: {
         binary: process.execPath,
