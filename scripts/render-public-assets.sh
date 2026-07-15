@@ -151,11 +151,13 @@ PY
 
 write_run_fixture() {
   node --input-type=module - "$ROOT_DIR" "$DEMO_FILE" "$TMP_DIR/runs" "$SERVER_PID" <<'NODE'
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 const [rootDir, campaignPath, runsDir, serverPid] = process.argv.slice(2);
+const fixtureRoot = path.join(path.dirname(runsDir), 'fleet-repos');
+const publicRepoRoot = path.join(fixtureRoot, 'Campaigns');
 const { runPathsForCampaign } = await import(pathToFileURL(path.join(rootDir, 'lib/pump.mjs')));
 const { createRunState, transitionRunState } = await import(pathToFileURL(path.join(rootDir, 'lib/run-state.mjs')));
 const paths = runPathsForCampaign(campaignPath, runsDir);
@@ -166,6 +168,7 @@ const at = (minutesAgo) => new Date(now - minutesAgo * 60_000).toISOString();
 
 await mkdir(paths.receiptsDir, { recursive: true });
 await mkdir(paths.logsDir, { recursive: true });
+await mkdir(publicRepoRoot, { recursive: true });
 await writeFile(receiptPath, '# Step 1.1 receipt\n\nInstall path drafted and checked.\n', 'utf8');
 
 const activity = [
@@ -196,7 +199,7 @@ let state = createRunState({
   id: 'public-assets-live-run',
   identity: {
     registry_id: null,
-    source: { campaign_path: campaignPath, repo_root: rootDir },
+    source: { campaign_path: campaignPath, repo_root: publicRepoRoot },
     execution: { campaign_path: campaignPath, repo_root: rootDir, branch: 'main' },
   },
   steps: [
@@ -244,6 +247,124 @@ state = transitionRunState(state, {
   },
 });
 await writeFile(paths.statePath, `${JSON.stringify(state, null, 2)}\n`, 'utf8');
+
+const northwindRoot = path.join(fixtureRoot, 'Northwind');
+const harborRoot = path.join(fixtureRoot, 'Harbor');
+const attentionPath = path.join(northwindRoot, 'campaigns', 'release-rail.md');
+const idlePath = path.join(harborRoot, 'campaigns', 'quiet-harbor.md');
+const historyPath = path.join(harborRoot, 'campaigns', 'past-run.md');
+const campaignMarkdown = (title, checked = false) => `# ${title}
+
+## Progress checklist
+
+### Phase 1 — Deliver
+
+- [${checked ? 'x' : ' '}] Step 1.1 — Ship the release
+- [ ] Final review
+
+## Step 1.1 — Ship the release
+
+Model: GPT-5.6-Sol · High
+Parallel: NO
+
+\`\`\`text
+Ship the release.
+\`\`\`
+
+## Final review
+
+\`\`\`text
+Review the release.
+\`\`\`
+`;
+
+await Promise.all([
+  mkdir(path.join(northwindRoot, '.git'), { recursive: true }),
+  mkdir(path.join(harborRoot, '.git'), { recursive: true }),
+  mkdir(path.dirname(attentionPath), { recursive: true }),
+  mkdir(path.dirname(idlePath), { recursive: true }),
+]);
+await Promise.all([
+  writeFile(attentionPath, campaignMarkdown('Northwind release rail'), 'utf8'),
+  writeFile(idlePath, campaignMarkdown('Harbor field guide'), 'utf8'),
+  writeFile(historyPath, campaignMarkdown('Harbor launch archive', true), 'utf8'),
+]);
+
+const registryPath = path.join(path.dirname(runsDir), 'registry', 'registry.json');
+const registry = JSON.parse(await readFile(registryPath, 'utf8'));
+registry.campaigns.push(
+  {
+    id: 'public-fleet-attention',
+    filePath: attentionPath,
+    createdAt: at(90),
+    lastOpenedAt: at(10),
+    lastActivityAt: at(2),
+  },
+  {
+    id: 'public-fleet-idle',
+    filePath: idlePath,
+    createdAt: at(120),
+    lastOpenedAt: at(45),
+    lastActivityAt: at(45),
+  },
+);
+await writeFile(registryPath, `${JSON.stringify(registry, null, 2)}\n`, 'utf8');
+
+const writeFixtureState = async (campaignFile, fixtureState) => {
+  const fixturePaths = runPathsForCampaign(campaignFile, runsDir);
+  fixtureState.artifacts.run_dir = fixturePaths.runDir;
+  fixtureState.artifacts.receipts_dir = fixturePaths.receiptsDir;
+  fixtureState.artifacts.final_review_path = fixturePaths.finalReviewPath;
+  await mkdir(fixturePaths.runDir, { recursive: true });
+  await writeFile(fixturePaths.statePath, `${JSON.stringify(fixtureState, null, 2)}\n`, 'utf8');
+};
+const fixtureState = ({ id, registryId, campaignFile, repoRoot }) => createRunState({
+  id,
+  identity: {
+    registry_id: registryId,
+    source: { campaign_path: campaignFile, repo_root: repoRoot },
+    execution: { campaign_path: campaignFile, repo_root: repoRoot, branch: 'campaign/public-fixture' },
+  },
+  steps: [{ id: '1.1', name: 'Ship the release', phase: '1' }],
+  config: {
+    runner: 'codex',
+    model: 'public-fixture',
+    effort: 'high',
+    watchdog: { minimum_runtime_ms: 0, stall_window_ms: 60_000 },
+  },
+  artifacts: {
+    run_dir: fixtureRoot,
+    receipts_dir: path.join(fixtureRoot, 'receipts'),
+    final_review_path: path.join(fixtureRoot, 'final-review.md'),
+  },
+  created_at: at(30),
+});
+
+let attentionState = fixtureState({
+  id: 'public-fleet-attention-run',
+  registryId: 'public-fleet-attention',
+  campaignFile: attentionPath,
+  repoRoot: northwindRoot,
+});
+attentionState = transitionRunState(attentionState, { event: 'run_started', at: at(20) });
+attentionState = transitionRunState(attentionState, { event: 'cap_reached', at: at(2) });
+await writeFixtureState(attentionPath, attentionState);
+
+let historyState = fixtureState({
+  id: 'public-fleet-history-run',
+  registryId: null,
+  campaignFile: historyPath,
+  repoRoot: harborRoot,
+});
+historyState = transitionRunState(historyState, { event: 'run_started', at: at(80) });
+historyState = transitionRunState(historyState, {
+  event: 'step_started',
+  step_id: '1.1',
+  at: at(75),
+  worker: { runner: 'codex', invocation_id: 'public-history-step', pid: null },
+});
+historyState = transitionRunState(historyState, { event: 'stopped_by_user', at: at(70) });
+await writeFixtureState(historyPath, historyState);
 NODE
 }
 
@@ -304,6 +425,7 @@ wait_for_server
 write_run_fixture
 
 capture "$ROOT_DIR/design/screenshots/01-campaign-board.png" "1440,1100" "?drawer=activity" 3000
+capture "$ROOT_DIR/design/screenshots/04-fleet.png" "1440,900" "?view=fleet" 6000 20000
 mv "$TMP_DIR/runs" "$TMP_DIR/captured-live-run"
 capture "$ROOT_DIR/design/screenshots/02-mobile-step-flow.png" "390,900" "/" 2500
 capture "$ROOT_DIR/design/screenshots/03-library.png" "1440,900" "?library" 6000 20000

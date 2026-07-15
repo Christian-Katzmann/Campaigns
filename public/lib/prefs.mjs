@@ -59,6 +59,7 @@ export function defaultPrefs() {
     quietHoursEnd: STANDARD_CAMPAIGN_SETTINGS.quietHoursEnd,
     pageAlways: [...STANDARD_CAMPAIGN_SETTINGS.pageAlways],
     verifiedPhoneUrl: '',
+    fleetAsDefault: false,
     theme: STANDARD_CAMPAIGN_SETTINGS.theme,
   };
 }
@@ -101,6 +102,7 @@ export function sanitizePrefs(parsed) {
       ? [...new Set(parsed.pageAlways.filter((item) => NOTIFICATION_PAGE_ALWAYS_VALUES.has(item)))]
       : defaults.pageAlways,
     verifiedPhoneUrl: typeof parsed.verifiedPhoneUrl === 'string' ? parsed.verifiedPhoneUrl : '',
+    fleetAsDefault: typeof parsed.fleetAsDefault === 'boolean' ? parsed.fleetAsDefault : false,
     theme: normalizeTheme(parsed.theme),
   };
 }

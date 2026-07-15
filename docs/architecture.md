@@ -14,13 +14,15 @@ rest directly. The server is a single `node server.mjs` with no runtime deps.
 ## Frontend (`public/`)
 
 `app.js` is the entry only — state hydration, view routing (board / library /
-workflows), and the global action + keyboard bindings. It wires the modules
+fleet / workflows), and the global action + keyboard bindings. It wires the modules
 together and owns no feature logic.
 
 - `lib/parser.mjs` — pure markdown → data model: blocks, phases, step sections,
   check↔step linking, progress stats, final-review migration. No DOM; imported
   directly by the Node tests.
 - `lib/prefs.mjs` — pure preference defaults, sanitize, and theme normalization.
+- `lib/fleet.mjs` — pure fleet grouping, row presentation, ETA/babysitting
+  labels, and Kro-state mapping.
 - `modules/state.mjs` — the shared `state` object, the `elements` handle cache,
   and the automation runtime snapshot + its predicates. Everything imports it.
 - `modules/dom.mjs` — shared DOM helpers: `element()`, escaping, the toast, the
@@ -33,6 +35,8 @@ together and owns no feature logic.
   open-a-file, and the resume card.
 - `modules/library.mjs` — the campaign grid: cards, collections, park/delete/drag,
   quick filter, lessons, and the automation status a card shows.
+- `modules/fleet.mjs` — the shared companion-state fleet view, 15-second refresh,
+  and existing open/stop/nudge action bindings.
 - `modules/switcher.mjs` — the topbar campaign dropdown.
 - `modules/settings.mjs` — the settings drawer + notification preferences.
 - `modules/automate-drawer.mjs` — the automation polling loop and drawer panel.

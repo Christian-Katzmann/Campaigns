@@ -167,6 +167,17 @@ const COMPANION_STATUS_LABELS = {
   completed: 'Completed',
   idle: 'Idle',
 };
+const COMPANION_ATTENTION_STATUSES = new Set(['stalled', 'failed', 'halted']);
+const FLEET_ATTENTION_LABELS = {
+  awaiting_human_review: 'Human review',
+  blocked: 'Blocked',
+  cap_reached: 'Run cap',
+  failed: 'Failed',
+  halted: 'Halted',
+  rollback_conflict: 'Rollback conflict',
+  stopped_by_user: 'Stopped',
+};
+const TERMINAL_RUN_STATUSES = new Set(['completed', 'merged', 'force_merged']);
 const COMPANION_ASSET_PATHS = [
   'companion.html',
   'companion.js',
@@ -2683,24 +2694,44 @@ function isLoopbackAddress(address) {
 // endpoint must not mutate the registry, markdown, or automation state — unlike
 // sendRegistry it never writes back.
 async function sendCompanionState(response) {
-  const registry = await readRegistry();
+  const [registry, ledgers] = await Promise.all([
+    readRegistry(),
+    readUnifiedRunLedgers(lessonsRunsDir),
+  ]);
   const now = Date.now();
+  const lessons = await loadUnifiedLessons(lessonsRunsDir, { ledgers });
 
   const campaigns = (
     await Promise.all(
-      registry.campaigns.map((entry) => buildCompanionCampaign(entry, now).catch(() => null)),
+      registry.campaigns.map((entry) => (
+        buildCompanionCampaign(entry, now, ledgers).catch((error) => {
+          console.error(`companion-state: aggregate failed for ${entry.id}:`, error.message);
+          return null;
+        })
+      )),
     )
   ).filter(Boolean);
+  const babysitting = buildFleetBabysitting(lessons);
 
   sendJson(response, 200, {
     generatedAt: new Date(now).toISOString(),
     counts: tallyCompanionCounts(campaigns),
     worstStatus: deriveCompanionWorstStatus(campaigns),
+    babysitting,
+    lessons: babysitting
+      ? {
+          source: lessons.source,
+          overall: {
+            manualStopRate: babysitting.manualStopRate,
+            manualStops: babysitting.manualStops,
+          },
+        }
+      : null,
     campaigns,
   });
 }
 
-async function buildCompanionCampaign(entry, now) {
+async function buildCompanionCampaign(entry, now, ledgers = []) {
   const parked = Boolean(entry.parkedAt);
   const lastActivityAt = entry.lastActivityAt ?? entry.lastOpenedAt ?? entry.createdAt ?? null;
 
@@ -2745,6 +2776,15 @@ async function buildCompanionCampaign(entry, now) {
         path: currentStepLine ? `${entry.filePath}:${currentStepLine}` : entry.filePath,
       }
     : null;
+  const matchingLedgers = ledgers.filter((ledger) => fleetLedgerMatchesCampaign(ledger, entry));
+  const liveLedger = latestFleetLedger(matchingLedgers.filter((ledger) => (
+    !TERMINAL_RUN_STATUSES.has(ledger.run.status)
+  )));
+  const [repo, eta] = await Promise.all([
+    buildFleetRepo(entry, liveLedger),
+    missing ? null : buildFleetEstimate(entry, markdown, ledgers, liveLedger, now),
+  ]);
+  const sourceStatus = summary?.run_status ?? summary?.status ?? null;
 
   return {
     id: entry.id,
@@ -2752,14 +2792,124 @@ async function buildCompanionCampaign(entry, now) {
     filePath: entry.filePath,
     referencePath: currentStep?.path ?? entry.filePath,
     backend,
+    repo,
     status,
+    sourceStatus,
     label: COMPANION_STATUS_LABELS[status] ?? COMPANION_STATUS_LABELS.idle,
     is_active: status === 'running',
     current_step: currentStep,
+    eta,
+    attention: buildFleetAttention(summary, status, sourceStatus),
+    actions: buildFleetActions(summary, status),
     progress,
     lastActivityAt,
     parked,
     missing,
+  };
+}
+
+function fleetLedgerMatchesCampaign(ledger, entry) {
+  const identity = ledger?.run?.identity;
+  if (identity?.registry_id && identity.registry_id === entry.id) return true;
+  const campaignPath = identity?.source?.campaign_path;
+  return typeof campaignPath === 'string' && path.resolve(campaignPath) === path.resolve(entry.filePath);
+}
+
+function latestFleetLedger(ledgers) {
+  return [...ledgers].sort((left, right) => (
+    String(right?.run?.updated_at ?? '').localeCompare(String(left?.run?.updated_at ?? ''))
+  ))[0] ?? null;
+}
+
+async function buildFleetRepo(entry, liveLedger) {
+  const sourceRoot = liveLedger?.run?.identity?.source?.repo_root;
+  const discoveredRoot = typeof sourceRoot === 'string' && sourceRoot
+    ? sourceRoot
+    : await findRepoRoot(path.dirname(entry.filePath));
+  const root = await canonicalPath(discoveredRoot ?? path.dirname(entry.filePath));
+  return {
+    id: `repo-${hashMarkdown(root).slice(0, 16)}`,
+    label: path.basename(root) || 'Local files',
+  };
+}
+
+async function buildFleetEstimate(entry, markdown, ledgers, liveLedger, now) {
+  try {
+    const plan = parseCampaignPlan(markdown);
+    let runnerRegistry;
+    try {
+      const resolved = await resolveCampaignConfig({ campaignPath: entry.filePath, cwd: __dirname });
+      runnerRegistry = await loadConfiguredRunnerRegistry(resolved.config);
+    } catch (error) {
+      if (!/No Git project root found/.test(error.message)) throw error;
+      runnerRegistry = await loadRunnerRegistry();
+    }
+    const steps = plan.steps.map((step) => ({
+      id: step.id,
+      checked: step.checked,
+      runner: resolveStepRunnerSelection(runnerRegistry, step).runner,
+    }));
+    const historicalLedgers = liveLedger
+      ? ledgers.filter((ledger) => ledger.run.id !== liveLedger.run.id)
+      : ledgers;
+    const estimate = estimateCampaign({
+      steps,
+      ledgers: historicalLedgers,
+      liveLedger,
+      seed: `${entry.id}:${hashMarkdown(markdown)}`,
+      now: new Date(now).toISOString(),
+    });
+    return {
+      lowMinutes: estimate.duration.lowMinutes,
+      highMinutes: estimate.duration.highMinutes,
+      remainingSteps: estimate.remainingSteps,
+      confidence: estimate.confidence,
+      source: estimate.source,
+    };
+  } catch (error) {
+    if (/no runnable steps/i.test(error.message)) return null;
+    console.error(`companion-state: estimate failed for ${entry.id}:`, error.message);
+    return null;
+  }
+}
+
+function buildFleetAttention(summary, status, sourceStatus) {
+  if (!COMPANION_ATTENTION_STATUSES.has(status)) return null;
+  return {
+    cause: sourceStatus ?? status,
+    label: summary?.attention?.label
+      ?? FLEET_ATTENTION_LABELS[sourceStatus]
+      ?? COMPANION_STATUS_LABELS[status]
+      ?? 'Needs attention',
+    title: summary?.attention?.title ?? null,
+  };
+}
+
+function buildFleetActions(summary, status) {
+  const nudge = Object.entries(summary?.nudge_modes ?? {})
+    .filter(([, action]) => action?.available)
+    .map(([mode, action]) => ({
+      mode,
+      label: action.label ?? mode,
+    }));
+  return {
+    open: { available: true },
+    stop: {
+      available: summary?.backend === 'engine' && summary?.is_active === true && status === 'running',
+    },
+    nudge,
+  };
+}
+
+function buildFleetBabysitting(lessons) {
+  if (!lessons || lessons.source !== 'unified' || lessons.scanned?.total <= 0) return null;
+  const manualStopRate = lessons.overall?.manualStopRate;
+  const manualStops = lessons.overall?.manualStops;
+  if (!Number.isFinite(manualStopRate) || !Number.isInteger(manualStops)) return null;
+  return {
+    manualStopRate,
+    manualStops,
+    sampleSize: lessons.scanned.total,
   };
 }
 
@@ -2824,10 +2974,12 @@ function isCompanionStale(lastActivityAt, now) {
 }
 
 function tallyCompanionCounts(campaigns) {
-  const counts = { total: campaigns.length };
+  const counts = { total: campaigns.length, needsAttention: 0, active: 0 };
   for (const status of COMPANION_STATUSES) counts[status] = 0;
   for (const campaign of campaigns) {
     counts[campaign.status] = (counts[campaign.status] ?? 0) + 1;
+    if (COMPANION_ATTENTION_STATUSES.has(campaign.status)) counts.needsAttention += 1;
+    if (campaign.is_active) counts.active += 1;
   }
   return counts;
 }

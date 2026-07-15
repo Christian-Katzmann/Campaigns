@@ -28,6 +28,7 @@ test('defaultPrefs matches the standard campaign settings baseline', () => {
   assert.equal(d.quietHoursStart, '22:00');
   assert.equal(d.quietHoursEnd, '08:00');
   assert.deepEqual(d.pageAlways, ['awaiting_human_review']);
+  assert.equal(d.fleetAsDefault, false);
   assert.deepEqual(d.filters, { todo: true, flight: true, done: true });
 });
 
@@ -52,6 +53,7 @@ test('sanitizePrefs coerces bad types back to defaults and normalizes theme', ()
     digestMode: 'later',
     quietHoursStart: '25:00',
     pageAlways: ['failed', 'unknown', 'failed'],
+    fleetAsDefault: 'yes',
     docSections: null, // -> {}
     extra: 'kept-by-spread',
   });
@@ -62,6 +64,7 @@ test('sanitizePrefs coerces bad types back to defaults and normalizes theme', ()
   assert.equal(cleaned.digestMode, 'immediate');
   assert.equal(cleaned.quietHoursStart, '22:00');
   assert.deepEqual(cleaned.pageAlways, ['failed']);
+  assert.equal(cleaned.fleetAsDefault, false);
   assert.deepEqual(cleaned.docSections, {});
   assert.equal(cleaned.extra, 'kept-by-spread');
 });

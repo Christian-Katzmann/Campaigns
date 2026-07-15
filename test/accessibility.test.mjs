@@ -30,6 +30,7 @@ test('primary controls have restrained live regions, names, and keyboard resize 
   assert.match(html, /id="sound-toggle"[^>]+aria-label="Sound"/);
   assert.match(html, /id="celebration-toggle"[^>]+aria-label="Completion burst"/);
   assert.match(html, /id="mac-notify-toggle"[^>]+aria-label="Mac alerts"/);
+  assert.match(html, /id="fleet-default-toggle"[^>]+aria-label="Start in Fleet"/);
   assert.match(html, /class="automate-drawer-resize"[^>]+tabindex="0"[^>]+aria-orientation="vertical"/);
 });
 

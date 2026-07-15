@@ -9,7 +9,7 @@ import { applyTheme, NTFY_TOPIC_REGEX, postRemoteNotification } from './effects.
 import { buildFeatureRequestUrl } from '../lib/feature-request.mjs';
 import { deviceOnboardingPresentation } from '../lib/device-onboarding.mjs';
 import { normalizeTheme } from '../lib/prefs.mjs';
-import { savePrefs } from './prefs-store.mjs';
+import { saveFleetAsDefault, savePrefs } from './prefs-store.mjs';
 
 let notificationSettingsSaveTimer = null;
 
@@ -98,12 +98,14 @@ export async function persistNotificationSettings() {
 /* ---------- Custom Vibe Coder Extensions ---------- */
 
 export function initSettings(appInfo) {
-  const settingsBtn = document.querySelector('#settings-button');
+  const settingsButtons = [...document.querySelectorAll('[data-settings-trigger]')];
+  const settingsBtn = settingsButtons[0];
   const drawer = document.querySelector('#settings-drawer');
   const drawerContent = drawer?.querySelector('.settings-drawer-content');
   const themeSelect = document.querySelector('#theme-select');
   const soundToggle = document.querySelector('#sound-toggle');
   const celebrationToggle = document.querySelector('#celebration-toggle');
+  const fleetDefaultToggle = document.querySelector('#fleet-default-toggle');
   const macToggle = document.querySelector('#mac-notify-toggle');
   const ntfyInput = document.querySelector('#ntfy-topic-input');
   const testNtfyBtn = document.querySelector('#test-ntfy-button');
@@ -231,6 +233,7 @@ export function initSettings(appInfo) {
     if (themeSelect) themeSelect.value = normalizeTheme(state.prefs.theme);
     if (soundToggle) soundToggle.checked = !!state.prefs.soundEffectsEnabled;
     if (celebrationToggle) celebrationToggle.checked = !!state.prefs.celebrationsEnabled;
+    if (fleetDefaultToggle) fleetDefaultToggle.checked = !!state.prefs.fleetAsDefault;
     if (macToggle) macToggle.checked = !!state.prefs.macNotificationsEnabled;
     if (ntfyInput) ntfyInput.value = state.prefs.ntfyTopic || '';
     if (webhookInput) webhookInput.value = state.prefs.webhookUrl || '';
@@ -245,13 +248,13 @@ export function initSettings(appInfo) {
     syncSettingsControls();
     previouslyFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     drawer.removeAttribute('hidden');
-    settingsBtn.setAttribute('aria-expanded', 'true');
+    settingsButtons.forEach((button) => button.setAttribute('aria-expanded', 'true'));
     drawerContent?.querySelector('[data-action="close-settings"]')?.focus();
   };
 
   const closeDrawer = () => {
     drawer.setAttribute('hidden', '');
-    settingsBtn.setAttribute('aria-expanded', 'false');
+    settingsButtons.forEach((button) => button.setAttribute('aria-expanded', 'false'));
     if (previouslyFocused && document.contains(previouslyFocused)) {
       previouslyFocused.focus();
     } else {
@@ -259,7 +262,7 @@ export function initSettings(appInfo) {
     }
   };
 
-  settingsBtn.addEventListener('click', openDrawer);
+  settingsButtons.forEach((button) => button.addEventListener('click', openDrawer));
 
   drawer.querySelectorAll('[data-action="close-settings"]').forEach(btn => {
     btn.addEventListener('click', closeDrawer);
@@ -301,6 +304,13 @@ export function initSettings(appInfo) {
     celebrationToggle.addEventListener('change', () => {
       state.prefs.celebrationsEnabled = celebrationToggle.checked;
       savePrefs();
+    });
+  }
+
+  if (fleetDefaultToggle) {
+    fleetDefaultToggle.addEventListener('change', () => {
+      state.prefs.fleetAsDefault = fleetDefaultToggle.checked;
+      saveFleetAsDefault(fleetDefaultToggle.checked);
     });
   }
 
