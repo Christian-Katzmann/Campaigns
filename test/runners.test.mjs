@@ -13,6 +13,7 @@ import {
   createRunnerRegistry,
   loadConfiguredRunnerRegistry,
   loadRunnerRegistry,
+  runnerReportsCost,
   runnerCapabilities,
 } from '../lib/runners.mjs';
 import { createRunState, transitionRunState } from '../lib/run-state.mjs';
@@ -27,6 +28,8 @@ const receiptPath = '/tmp/campaigns-runner-receipt.md';
 
 test('shipped Claude and Codex templates preserve their required CLI flags', async () => {
   const registry = await loadRunnerRegistry();
+  assert.equal(runnerReportsCost(registry, 'claude'), true);
+  assert.equal(runnerReportsCost(registry, 'codex'), false);
   const claude = buildRunnerInvocation(registry, 'claude', {
     prompt: 'do the step',
     env: {},

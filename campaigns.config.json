@@ -12,6 +12,7 @@
     "branch": null,
     "max_steps_per_run": 50,
     "max_run_minutes": 360,
+    "max_cost_usd": null,
     "stop_grace_ms": 3000,
     "max_parallel_steps": 2
   },

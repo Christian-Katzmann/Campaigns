@@ -65,6 +65,10 @@ npm start -- --file path/to/your-campaign.md
 
 The board reads progress from disk and the activity drawer reads the local run ledger. There is no second project database to reconcile.
 
+## In CI
+
+Run a capped campaign from a same-repository pull request with the [Campaigns in CI guide](docs/campaigns-in-ci.md). The GitHub Action publishes redacted evidence, one sticky PR comment, and a check run.
+
 ![Campaigns on mobile with core controls and campaign progress kept within reach](design/screenshots/02-mobile-step-flow.png)
 
 ## Power-ups

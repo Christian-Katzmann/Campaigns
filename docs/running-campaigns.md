@@ -79,21 +79,27 @@ make that policy explicit.
 
 ## Run limits
 
-The shipped defaults are 50 completed steps and 360 minutes per run:
+The shipped defaults are 50 completed steps and 360 minutes per run. Local
+dollar caps are opt-in:
 
 ```json
 {
   "run": {
     "max_steps_per_run": 50,
     "max_run_minutes": 360,
+    "max_cost_usd": null,
     "stop_grace_ms": 3000
   }
 }
 ```
 
-Override the caps for one launch with `--max-steps-per-run` and
-`--max-run-minutes`. A cap ends the ledger as `cap_reached`; it does not pretend
-the campaign completed.
+Override the caps for one launch with `--max-steps-per-run`,
+`--max-run-minutes`, and `--max-cost-usd`. A dollar cap sums
+`history[].details.usage.cost_usd` after every runner invocation and stops before
+launching another runner once the total reaches the limit. Selecting a runner
+without a `cost_usd` usage mapping is refused before launch. The CI action makes
+all three caps mandatory. A cap ends the ledger as `cap_reached`; it does not
+pretend the campaign completed.
 
 ## Configuration
 
@@ -125,6 +131,7 @@ Set `CAMPAIGNS_CONFIG_DIR` to use another user-config directory. Scalar
 environment overrides are `CAMPAIGNS_RUNNER`, `CAMPAIGNS_MODEL`,
 `CAMPAIGNS_EFFORT`, `CAMPAIGNS_REPO`, `CAMPAIGNS_BRANCH`,
 `CAMPAIGNS_MAX_STEPS_PER_RUN`, `CAMPAIGNS_MAX_RUN_MINUTES`,
+`CAMPAIGNS_MAX_COST_USD`,
 `CAMPAIGNS_STOP_GRACE_MS`, and `CAMPAIGNS_FORCE_MERGE_UNREVIEWED`.
 
 Run `campaigns config doctor [campaign.md]` to print the effective values,
