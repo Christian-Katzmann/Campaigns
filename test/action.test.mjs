@@ -127,6 +127,29 @@ test('action guide documents the minimal PR permissions and safe event', async (
   assert.match(guide, /`pull_request_target`.*refused/);
 });
 
+test('public CI guide documents replay, caps, evidence, cost honesty, and limitations', async () => {
+  const guide = await readFile(path.resolve('docs/campaigns-in-ci.md'), 'utf8');
+  for (const expected of [
+    'full-40-character-campaigns-commit-sha',
+    'same-repository PRs only',
+    'contents: read',
+    'checks: write',
+    'pull-requests: write',
+    'max_steps',
+    'max_minutes',
+    'max_cost_usd',
+    'state.json',
+    'events.jsonl',
+    'receipts/',
+    'final-review.md',
+    'npm run action:e2e',
+    'not provider spend',
+    'did not perform a live provider-key run',
+  ]) {
+    assert.match(guide, new RegExp(expected.replaceAll('.', '\\.'), 'i'));
+  }
+});
+
 function validInput() {
   return {
     campaign: 'campaign.md',
