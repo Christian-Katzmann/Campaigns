@@ -4434,13 +4434,15 @@ body.theme-signal {
 
 .drawer-status-pill--awaiting_human_review,
 .drawer-status-pill--cap_reached,
-.drawer-status-pill--stopped_by_user {
+.drawer-status-pill--stopped_by_user,
+.drawer-status-pill--rollback_conflict {
   background: var(--danger-wash);
   color: var(--danger);
 }
 .drawer-status-pill--awaiting_human_review .automate-indicator,
 .drawer-status-pill--cap_reached .automate-indicator,
-.drawer-status-pill--stopped_by_user .automate-indicator { color: var(--danger); }
+.drawer-status-pill--stopped_by_user .automate-indicator,
+.drawer-status-pill--rollback_conflict .automate-indicator { color: var(--danger); }
 
 /* Current step block — legacy fallback (drawer-now subsumes this for
    campaigns with parsed live_activity). */
@@ -4865,7 +4867,205 @@ h3.drawer-section-title {
   margin: 0;
 }
 
-/* Log tail */
+.drawer-step-rollback {
+  display: flex;
+  justify-content: flex-end;
+  padding: 0 14px 12px;
+}
+
+.drawer-step-rollback-button {
+  font-size: 12px;
+}
+
+.drawer-rollback-confirm {
+  border-color: color-mix(in srgb, var(--danger) 35%, var(--line));
+}
+
+.drawer-rollback-hold {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+}
+
+.drawer-rollback-hold::before {
+  position: absolute;
+  z-index: -1;
+  inset: 0;
+  background: color-mix(in srgb, var(--danger) 24%, transparent);
+  content: '';
+  transform: scaleX(0);
+  transform-origin: left;
+}
+
+.drawer-rollback-hold.is-holding::before {
+  animation: drawer-rollback-hold 1.2s linear forwards;
+}
+
+@keyframes drawer-rollback-hold {
+  to { transform: scaleX(1); }
+}
+
+.drawer-step-diff {
+  border-top: 1px solid var(--line-soft);
+}
+
+.drawer-step-diff-summary {
+  padding: 8px 14px;
+  color: var(--ink-faint);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.drawer-step-diff-content {
+  max-height: 480px;
+  overflow: auto;
+  padding: 0 14px 12px;
+  color: var(--ink-faint);
+  font-size: 11px;
+}
+
+.step-diff-reasons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin: 2px 0 10px;
+}
+
+.step-diff-reason {
+  padding: 2px 6px;
+  border: 1px solid var(--line-soft);
+  border-radius: 999px;
+  color: var(--ink-faint);
+  text-decoration: none;
+}
+
+.step-diff-reason--linked {
+  color: var(--accent);
+  cursor: pointer;
+}
+
+.step-diff-file + .step-diff-file {
+  margin-top: 12px;
+}
+
+.step-diff-file h4 {
+  margin: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--line-soft);
+  border-bottom: 0;
+  border-radius: 5px 5px 0 0;
+  color: var(--ink);
+  font-size: 11px;
+}
+
+.step-diff-code,
+.step-diff-stat {
+  margin: 0;
+  padding: 8px;
+  overflow-x: auto;
+  border: 1px solid var(--line-soft);
+  background: var(--paper);
+  color: var(--ink);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.step-diff-line {
+  display: block;
+  min-width: max-content;
+  white-space: pre;
+}
+
+.step-diff-line--add {
+  background: var(--status-ok-wash);
+  color: var(--status-ok);
+}
+
+.step-diff-line--del {
+  background: var(--danger-wash);
+  color: var(--danger);
+}
+
+.step-diff-line--hunk {
+  color: var(--accent);
+}
+
+.step-diff-line--meta {
+  color: var(--ink-faint);
+}
+
+.step-diff-hint,
+.step-diff-empty {
+  margin: 0 0 8px;
+  color: var(--ink-faint);
+}
+
+/* Live runner output */
+.drawer-live-output {
+  margin-bottom: 18px;
+}
+
+.drawer-live-output > summary {
+  list-style: none;
+}
+
+.drawer-live-output > summary::-webkit-details-marker {
+  display: none;
+}
+
+.drawer-live-output-tabs {
+  display: flex;
+  gap: 4px;
+  margin: 0 0 6px;
+  overflow-x: auto;
+}
+
+.drawer-live-output-tab {
+  padding: 4px 8px;
+  border: 1px solid var(--line-soft);
+  border-radius: 6px;
+  background: var(--paper);
+  color: var(--ink-faint);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.drawer-live-output-tab.is-active {
+  border-color: var(--accent);
+  color: var(--ink);
+}
+
+.drawer-live-output-status {
+  margin: 0 0 6px;
+  color: var(--ink-faint);
+  font-size: 11px;
+}
+
+.drawer-live-output-container {
+  position: relative;
+  max-height: 320px;
+  overflow-y: auto;
+  background: var(--paper);
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+}
+
+.drawer-live-output-pre {
+  min-height: 48px;
+  margin: 0;
+  padding: 12px;
+  color: var(--ink);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--font-mono, ui-monospace, 'SF Mono', SFMono-Regular, Menlo, monospace);
+}
+
+/* Persisted redacted log fallback for legacy runners. */
 .drawer-log-tail {
   margin-bottom: 12px;
 }

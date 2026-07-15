@@ -1,12 +1,17 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { access, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { test } from 'node:test';
 
 import { runRunnerInvocation } from '../lib/runner-process.mjs';
+import {
+  LIVE_OUTPUT_FILE_MAX_BYTES,
+  LIVE_OUTPUT_MAX_BYTES,
+  readLiveOutputSnapshot,
+} from '../lib/live-output.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -38,3 +43,70 @@ test('runner execution aborts and reaps its process group', async (t) => {
   assert.ok(Date.now() - startedAt < 5_000);
   assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' });
 });
+
+test('live output stays bounded and is deleted after completion, failure, and stop', async (t) => {
+  const repo = await mkdtemp(path.join(tmpdir(), 'campaigns-live-output-'));
+  t.after(() => rm(repo, { recursive: true, force: true }));
+  await execFileAsync('git', ['-C', repo, 'init', '-b', 'main']);
+
+  for (const outcome of ['completion', 'failure', 'stop']) {
+    const livePath = path.join(repo, 'live-output', `${outcome}.json`);
+    const logPath = path.join(repo, `${outcome}.log`);
+    const stopPath = path.join(repo, `${outcome}.stop`);
+    const ending = outcome === 'stop'
+      ? 'setInterval(() => {}, 1000);'
+      : `setTimeout(() => process.exit(${outcome === 'failure' ? 2 : 0}), 250);`;
+    const run = runRunnerInvocation({
+      args: ['-e', `process.stdout.write('AUTH_SECRET=raw-secret\\n' + Array.from({ length: 200 }, () => 'x'.repeat(1024)).join('\\n')); ${ending}`],
+      command: process.execPath,
+      env: process.env,
+      outputPath: null,
+      stdin: null,
+    }, {
+      containmentRoot: repo,
+      cwd: repo,
+      logPath,
+      stopRequestPath: outcome === 'stop' ? stopPath : null,
+      stopGraceMs: 20,
+      watchdog: { minimum_runtime_ms: 60_000, stall_window_ms: 60_000 },
+      liveOutput: {
+        filePath: livePath,
+        runId: 'bounded-run',
+        stepId: `1.${outcome.length}`,
+        invocationId: outcome,
+      },
+    });
+
+    const snapshot = await waitFor(async () => {
+      try {
+        const value = await readLiveOutputSnapshot(livePath, {
+          runId: 'bounded-run',
+          stepId: `1.${outcome.length}`,
+          invocationId: outcome,
+        });
+        return value.end_cursor > LIVE_OUTPUT_MAX_BYTES ? value : null;
+      } catch {
+        return null;
+      }
+    });
+    assert.equal(snapshot.data.length, LIVE_OUTPUT_MAX_BYTES);
+    assert.ok((await stat(livePath)).size <= LIVE_OUTPUT_FILE_MAX_BYTES);
+    if (outcome === 'stop') await writeFile(stopPath, '{}\n', 'utf8');
+
+    const result = await run;
+    assert.equal(result.stop?.requested ?? false, outcome === 'stop');
+    assert.equal(result.exitCode === 0, outcome === 'completion');
+    await assert.rejects(access(livePath), { code: 'ENOENT' });
+    assert.doesNotMatch(await readFile(logPath, 'utf8'), /raw-secret/);
+  }
+});
+
+async function waitFor(check, timeoutMs = 3_000) {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    const value = await check();
+    if (value) return value;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error(`Timed out after ${timeoutMs}ms.`);
+}

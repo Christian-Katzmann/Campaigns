@@ -83,6 +83,7 @@ test('successful terminal histories cannot become halted', () => {
     event: 'step_completed',
     step_id: '1.1',
     receipt_path: '/tmp/chaos-run/receipts/1.1.md',
+    commit_range: { base_oid: '1'.repeat(40), head_oid: '2'.repeat(40) },
   });
   state = transitionRunState(state, { event: 'run_reached_final_review' });
   state = transitionRunState(state, { event: 'final_review_started' });
@@ -110,12 +111,13 @@ test('rendered board status DOM exposes attention for human review, caps, and st
   const originalDocument = globalThis.document;
   globalThis.document = fakeDocument();
   try {
-    const { renderAutomateStatusContent } = await import('../public/modules/automate-drawer.mjs');
+    const { renderAutomateStatusContent, renderDrawerReceipts } = await import('../public/modules/automate-drawer.mjs');
     const { renderLaneChip } = await import('../public/modules/render.mjs');
     const expectedLabels = {
       awaiting_human_review: 'Awaiting review',
       cap_reached: 'Cap reached',
       stopped_by_user: 'Stopped by user',
+      rollback_conflict: 'Rollback needs attention',
     };
 
     for (const [status, label] of Object.entries(expectedLabels)) {
@@ -134,6 +136,28 @@ test('rendered board status DOM exposes attention for human review, caps, and st
     assert.match(lane.outerHTML, /meta-lane/);
     assert.match(lane.outerHTML, /public\/modules\/\*\*/);
     assert.match(lane.outerHTML, /test\/\*\.test\.mjs/);
+
+    const receipts = renderDrawerReceipts({
+      steps: [{
+        id: '1.2',
+        name: 'Diff viewer',
+        status: 'done',
+        receipt: '# Complete',
+        diff_url: '/api/run/step-diff?id=campaign-a&step=1.2',
+      }],
+      rollback: {
+        available: true,
+        targets: [{
+          step_id: '1.2',
+          boundary_step_id: '1.2',
+          reset_steps: ['1.3'],
+          includes_parallel_group: false,
+        }],
+      },
+    }, true);
+    assert.match(receipts.outerHTML, /drawer-step-diff/);
+    assert.match(receipts.outerHTML, />Diff<\/summary>/);
+    assert.match(receipts.outerHTML, />Rollback to here<\/button>/);
   } finally {
     globalThis.document = originalDocument;
   }

@@ -13,6 +13,7 @@ import {
   getAutomateState,
   getEngineRunLedger,
   nudgeAutomateState,
+  resolveEngineLiveOutput,
   rerunAutomateFinalize,
 } from './lib/automate-providers.mjs';
 import {
@@ -26,6 +27,8 @@ import {
   statSpritesheet,
 } from './lib/companion-pets.mjs';
 import { httpError, readJsonBody, sendJson, sendStatic } from './lib/http.mjs';
+import { readLiveOutputSnapshot } from './lib/live-output.mjs';
+import { buildStepDiff } from './lib/step-diff.mjs';
 import { resolveCampaignConfig } from './lib/config.mjs';
 import { estimateCampaign } from './lib/estimate.mjs';
 import { hasUnifiedRunLedgers, loadUnifiedLessons, readUnifiedRunLedgers } from './lib/lessons.mjs';
@@ -39,6 +42,7 @@ import {
   runCampaign,
 } from './lib/pump.mjs';
 import { RecoveryError, recoverCampaign } from './lib/recovery.mjs';
+import { RollbackError, rollbackCampaign } from './lib/rollback.mjs';
 import { createRunnerRegistry, loadRunnerRegistry, runnerCapabilities } from './lib/runners.mjs';
 import {
   normalizeRegistryCollections,
@@ -117,6 +121,7 @@ const COMPANION_STATUS_BY_SOURCE = {
   halted: 'halted',
   abandoned: 'halted',
   stopped_by_user: 'halted',
+  rollback_conflict: 'stalled',
   failed: 'failed',
   completed: 'completed',
   complete: 'completed',
@@ -263,6 +268,16 @@ const server = createServer(async (request, response) => {
       return;
     }
 
+    if (url.pathname === '/api/run/live-output' && request.method === 'GET') {
+      await sendRunLiveOutput(url, request, response);
+      return;
+    }
+
+    if (url.pathname === '/api/run/step-diff' && request.method === 'GET') {
+      await sendRunStepDiff(url, response);
+      return;
+    }
+
     if (url.pathname === '/api/companion-state' && request.method === 'GET') {
       await sendCompanionState(response);
       return;
@@ -298,6 +313,11 @@ const server = createServer(async (request, response) => {
 
     if (url.pathname === '/api/run/recover' && request.method === 'POST') {
       await handleRunRecover(request, response);
+      return;
+    }
+
+    if (url.pathname === '/api/run/rollback' && request.method === 'POST') {
+      await handleRunRollback(request, response);
       return;
     }
 
@@ -2136,6 +2156,181 @@ async function sendAutomateState(url, response) {
   sendJson(response, 200, states);
 }
 
+async function sendRunLiveOutput(url, request, response) {
+  if (!isLoopbackAddress(request.socket.remoteAddress)) {
+    sendJson(response, 403, { error: 'Live output is available on loopback only.' });
+    return;
+  }
+  const id = url.searchParams.get('id');
+  const stepId = url.searchParams.get('step');
+  const invocationId = url.searchParams.get('invocation');
+  if (!id || !stepId || !invocationId) {
+    sendJson(response, 400, { error: 'Expected id, step, and invocation.' });
+    return;
+  }
+
+  const registry = await readRegistry();
+  const entry = registry.campaigns.find((campaign) => campaign.id === id);
+  if (!entry) {
+    sendJson(response, 404, { error: 'Campaign not found.' });
+    return;
+  }
+  const live = await resolveEngineLiveOutput(entry.filePath, {
+    registryId: entry.id,
+    stepId,
+    invocationId,
+  });
+  if (!live) {
+    sendJson(response, 404, { error: 'Live output is not active for this worker.' });
+    return;
+  }
+
+  let initial;
+  try {
+    initial = await readLiveOutputSnapshot(live.path, {
+      runId: live.run_id,
+      stepId,
+      invocationId,
+    });
+  } catch (error) {
+    if (error.code === 'ENOENT') {
+      sendJson(response, 410, { error: 'Live output has ended.' });
+      return;
+    }
+    throw error;
+  }
+
+  response.writeHead(200, {
+    'content-type': 'text/event-stream; charset=utf-8',
+    'cache-control': 'no-cache, no-transform',
+    connection: 'keep-alive',
+    'x-accel-buffering': 'no',
+  });
+  response.flushHeaders?.();
+
+  const requestedCursor = url.searchParams.get('cursor') ?? request.headers['last-event-id'];
+  let cursor = /^\d+$/.test(String(requestedCursor ?? '')) ? Number(requestedCursor) : 0;
+  let lastHeartbeatAt = Date.now();
+  let timer = null;
+  let closed = false;
+  let backpressured = false;
+
+  const writeEvent = (event, data, eventId = null) => {
+    if (closed) return;
+    const frame = `${eventId == null ? '' : `id: ${eventId}\n`}event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+    backpressured = !response.write(frame);
+  };
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    if (timer) clearTimeout(timer);
+  };
+  const finish = (event, data) => {
+    writeEvent(event, data, cursor);
+    close();
+    response.end();
+  };
+  const sendSnapshot = (snapshot) => {
+    let offset = cursor - snapshot.start_cursor;
+    let event = 'chunk';
+    if (cursor < snapshot.start_cursor || cursor > snapshot.end_cursor) {
+      offset = 0;
+      event = 'reset';
+    }
+    if (cursor === snapshot.end_cursor) return;
+    const data = snapshot.data.subarray(Math.max(0, offset));
+    cursor = snapshot.end_cursor;
+    writeEvent(event, { text: data.toString('utf8'), cursor }, cursor);
+  };
+
+  writeEvent('ready', {
+    run_id: live.run_id,
+    step_id: stepId,
+    invocation_id: invocationId,
+    cursor: initial.end_cursor,
+  });
+  sendSnapshot(initial);
+
+  await new Promise((resolve) => {
+    response.once('close', () => {
+      close();
+      resolve();
+    });
+    response.on('drain', () => { backpressured = false; });
+
+    const poll = async () => {
+      if (closed) return;
+      try {
+        if (!backpressured) {
+          const snapshot = await readLiveOutputSnapshot(live.path, {
+            runId: live.run_id,
+            stepId,
+            invocationId,
+          });
+          sendSnapshot(snapshot);
+          if (Date.now() - lastHeartbeatAt >= 10_000) {
+            response.write(': keep-alive\n\n');
+            lastHeartbeatAt = Date.now();
+          }
+        }
+      } catch (error) {
+        if (error.code === 'ENOENT') finish('end', { cursor });
+        else finish('error', { message: 'Live output transport failed.' });
+        resolve();
+        return;
+      }
+      timer = setTimeout(poll, 100);
+      timer.unref?.();
+    };
+    timer = setTimeout(poll, 100);
+    timer.unref?.();
+  });
+}
+
+async function sendRunStepDiff(url, response) {
+  const id = url.searchParams.get('id');
+  const stepId = url.searchParams.get('step');
+  if (!id || !stepId) {
+    sendJson(response, 400, { error: 'Expected id and step.' });
+    return;
+  }
+  const registry = await readRegistry();
+  const entry = registry.campaigns.find((campaign) => campaign.id === id);
+  if (!entry) {
+    sendJson(response, 404, { error: 'Campaign not found.' });
+    return;
+  }
+  const ledger = await getEngineRunLedger(entry.filePath, entry.id);
+  const step = ledger?.steps?.find((candidate) => candidate.id === stepId);
+  if (!ledger || step?.status !== 'completed' || !step.commit_range) {
+    sendJson(response, 404, { error: 'No committed diff range exists for this step.' });
+    return;
+  }
+  try {
+    const rendered = await buildStepDiff({
+      repoRoot: ledger.run.identity.source.repo_root,
+      baseOid: step.commit_range.base_oid,
+      headOid: step.commit_range.head_oid,
+      findings: ledger.review.findings ?? [],
+      reasonTags: [...ledger.review.reasons, ...ledger.review.raw_tags],
+      anchorPrefix: step.id,
+    });
+    sendJson(response, 200, {
+      step_id: step.id,
+      range: step.commit_range,
+      ...rendered,
+    });
+  } catch (error) {
+    sendJson(response, 409, { error: `Could not render Step ${stepId} diff: ${error.message}` });
+  }
+}
+
+function isLoopbackAddress(address) {
+  return address === '::1'
+    || address === '127.0.0.1'
+    || String(address ?? '').startsWith('::ffff:127.');
+}
+
 /* ------------------------------ API: companion state ------------------------ */
 
 // Read-only aggregate for the Campaign Companion. Turns the registry + the
@@ -2559,6 +2754,43 @@ async function handleRunRecover(request, response) {
     });
   } catch (error) {
     if (error instanceof RecoveryError) {
+      sendJson(response, 409, { ok: false, error: error.message });
+      return;
+    }
+    throw error;
+  }
+}
+
+async function handleRunRollback(request, response) {
+  const payload = await readJsonBody(request);
+  if (typeof payload.id !== 'string' || typeof payload.to !== 'string') {
+    sendJson(response, 400, { error: 'Expected { id: string, to: string }.' });
+    return;
+  }
+
+  const registry = await readRegistry();
+  const entry = registry.campaigns.find((campaign) => campaign.id === payload.id);
+  if (!entry) {
+    sendJson(response, 404, { error: 'Campaign not found.' });
+    return;
+  }
+  if (activeCampaignRuns.has(entry.id)) {
+    sendJson(response, 409, { ok: false, error: 'This campaign is still running. Stop it before rolling back.' });
+    return;
+  }
+
+  try {
+    const result = await rollbackCampaign(entry.filePath, { to: payload.to });
+    sendJson(response, 200, {
+      ok: true,
+      message: result.message,
+      to: result.to,
+      boundary: result.boundary,
+      reset_steps: result.resetSteps,
+      receipt_path: result.receiptPath,
+    });
+  } catch (error) {
+    if (error instanceof RollbackError) {
       sendJson(response, 409, { ok: false, error: error.message });
       return;
     }

@@ -26,11 +26,20 @@ import {
 } from './estimate-ui.mjs';
 
 const DRAWER_WIDTH_KEY = 'campaigns-drawer-width:v1';
+const LIVE_OUTPUT_CLIENT_MAX_CHARS = 64 * 1024;
+const ROLLBACK_HOLD_MS = 1_200;
 
 const drawerState = {
   open: false,
   width: 420,
 };
+
+const liveOutputState = {
+  selectedKey: null,
+  streams: new Map(),
+};
+
+const stepDiffCache = new Map();
 
 export function initAutomateDrawer() {
   const drawer = document.querySelector('#automate-drawer');
@@ -213,6 +222,7 @@ export function handleAutomateVisibility() {
     automateState.libraryTimer = null;
     automateState.campaignTimer = null;
     automateState.elapsedTimer = null;
+    closeLiveOutputStreams();
   } else {
     startAutomatePolling();
   }
@@ -237,6 +247,7 @@ export async function fetchCampaignAutomateState() {
     const prev = automateState.current;
     const next = await response.json();
     automateState.current = next;
+    syncLiveOutputStreams(next);
 
     const prevStatus = automateDisplayStatus(prev);
     const nextStatus = automateDisplayStatus(next);
@@ -333,6 +344,7 @@ export function renderAutomateStatusContent(el, data) {
     awaiting_human_review: 'Awaiting review',
     cap_reached: 'Cap reached',
     stopped_by_user: 'Stopped by user',
+    rollback_conflict: 'Rollback needs attention',
   }[displayStatus];
 
   const text = prefix ? `${prefix} · ${unitLabel}` : elapsed ? `${unitLabel} · ${elapsed}` : unitLabel;
@@ -456,15 +468,196 @@ export function renderDrawerBody(data) {
     children.push(renderDrawerCurrentStep(data));
   }
 
+  const liveOutput = renderDrawerLiveOutput(data);
+  if (liveOutput) children.push(liveOutput);
+
   children.push(renderDrawerTimeline(data));
   children.push(renderDrawerReceipts(data, isCompleted));
 
   // Raw log: collapsed by default — debugging fallback, not primary signal.
-  if (!isCompleted && isActive && data.current_step_log != null) {
+  if (!isCompleted && isActive && !liveOutput && data.current_step_log != null) {
     children.push(renderDrawerLogTail(data));
   }
 
   body.replaceChildren(...children);
+}
+
+export function syncLiveOutputStreams(data) {
+  const descriptors = Array.isArray(data?.live_outputs) ? data.live_outputs : [];
+  const activeKeys = new Set(descriptors.map(liveOutputKey));
+  for (const [key, stream] of liveOutputState.streams) {
+    if (activeKeys.has(key)) continue;
+    stream.source?.close();
+    liveOutputState.streams.delete(key);
+  }
+  if (!activeKeys.has(liveOutputState.selectedKey)) {
+    liveOutputState.selectedKey = activeKeys.values().next().value ?? null;
+  }
+
+  for (const descriptor of descriptors) {
+    const key = liveOutputKey(descriptor);
+    if (liveOutputState.streams.has(key)) continue;
+    const stream = {
+      descriptor,
+      source: null,
+      text: '',
+      cursor: 0,
+      paused: false,
+      hadOutput: false,
+      status: 'Connecting…',
+      errors: 0,
+    };
+    liveOutputState.streams.set(key, stream);
+    if (typeof EventSource !== 'function') {
+      stream.status = 'Live output is unavailable in this browser.';
+      continue;
+    }
+    const source = new EventSource(descriptor.url);
+    stream.source = source;
+    source.addEventListener('ready', () => {
+      stream.errors = 0;
+      stream.status = stream.hadOutput ? 'Live' : 'No live output for this runner yet.';
+      updateLiveOutputDom(key);
+    });
+    source.addEventListener('chunk', (event) => applyLiveOutputEvent(key, event, false));
+    source.addEventListener('reset', (event) => applyLiveOutputEvent(key, event, true));
+    source.addEventListener('end', () => {
+      source.close();
+      stream.status = stream.hadOutput
+        ? 'Step finished. Loading redacted receipt…'
+        : 'No live output for this runner.';
+      updateLiveOutputDom(key);
+      window.setTimeout(fetchCampaignAutomateState, 250);
+    });
+    source.addEventListener('error', () => {
+      stream.errors += 1;
+      stream.status = 'Reconnecting…';
+      if (stream.errors >= 3) {
+        source.close();
+        stream.status = stream.hadOutput
+          ? 'Live output ended. Loading redacted receipt…'
+          : 'No live output for this runner.';
+        window.setTimeout(fetchCampaignAutomateState, 250);
+      }
+      updateLiveOutputDom(key);
+    });
+  }
+}
+
+function applyLiveOutputEvent(key, event, reset) {
+  const stream = liveOutputState.streams.get(key);
+  if (!stream) return;
+  let payload;
+  try {
+    payload = JSON.parse(event.data);
+  } catch {
+    return;
+  }
+  const incoming = typeof payload.text === 'string' ? payload.text : '';
+  stream.text = reset ? incoming : `${stream.text}${incoming}`;
+  if (stream.text.length > LIVE_OUTPUT_CLIENT_MAX_CHARS) {
+    stream.text = stream.text.slice(-LIVE_OUTPUT_CLIENT_MAX_CHARS);
+  }
+  stream.cursor = Number.isSafeInteger(payload.cursor) ? payload.cursor : stream.cursor;
+  stream.hadOutput ||= incoming.length > 0;
+  stream.status = stream.hadOutput ? 'Live' : 'No live output for this runner yet.';
+  updateLiveOutputDom(key);
+}
+
+function closeLiveOutputStreams() {
+  for (const stream of liveOutputState.streams.values()) stream.source?.close();
+  liveOutputState.streams.clear();
+  liveOutputState.selectedKey = null;
+}
+
+function liveOutputKey(descriptor) {
+  return `${descriptor.step_id}:${descriptor.invocation_id}`;
+}
+
+export function renderDrawerLiveOutput(data) {
+  const descriptors = Array.isArray(data?.live_outputs) ? data.live_outputs : [];
+  if (!isAutomateRunning(data) || descriptors.length === 0) return null;
+  const keys = descriptors.map(liveOutputKey);
+  if (!keys.includes(liveOutputState.selectedKey)) liveOutputState.selectedKey = keys[0];
+  const selectedKey = liveOutputState.selectedKey;
+  const selectedDescriptor = descriptors.find((descriptor) => liveOutputKey(descriptor) === selectedKey);
+  const selected = liveOutputState.streams.get(selectedKey) ?? {
+    descriptor: selectedDescriptor,
+    text: '',
+    paused: false,
+    status: 'Connecting…',
+  };
+
+  const wrapper = element('details', { className: 'drawer-live-output' });
+  wrapper.open = true;
+  wrapper.dataset.liveOutputKey = selectedKey;
+  wrapper.append(element('summary', { className: 'drawer-section-title', text: 'Live output' }));
+
+  const tabs = element('div', { className: 'drawer-live-output-tabs' });
+  tabs.setAttribute('role', 'tablist');
+  for (const descriptor of descriptors) {
+    const key = liveOutputKey(descriptor);
+    const tab = element('button', {
+      className: `drawer-live-output-tab${key === selectedKey ? ' is-active' : ''}`,
+      text: `Step ${descriptor.step_id}`,
+      type: 'button',
+    });
+    tab.setAttribute('role', 'tab');
+    tab.setAttribute('aria-selected', String(key === selectedKey));
+    tab.title = descriptor.runner || '';
+    tab.addEventListener('click', () => {
+      liveOutputState.selectedKey = key;
+      renderDrawerBody(automateState.current);
+    });
+    tabs.append(tab);
+  }
+  wrapper.append(tabs);
+
+  const status = element('p', { className: 'drawer-live-output-status', text: selected.status });
+  const container = element('div', { className: 'drawer-live-output-container' });
+  const pre = element('pre', { className: 'drawer-live-output-pre', text: selected.text });
+  const rejoin = element('button', {
+    className: 'drawer-log-rejoin drawer-live-output-rejoin',
+    text: '↓ new',
+    type: 'button',
+    hidden: !selected.paused,
+  });
+  rejoin.hidden = !selected.paused;
+  rejoin.addEventListener('click', () => {
+    selected.paused = false;
+    container.scrollTop = container.scrollHeight;
+    rejoin.hidden = true;
+  });
+  container.addEventListener('scroll', () => {
+    const atBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 30;
+    selected.paused = !atBottom;
+    if (atBottom) rejoin.hidden = true;
+  });
+  container.append(pre, rejoin);
+  wrapper.append(status, container);
+  requestAnimationFrame(() => {
+    if (!selected.paused) container.scrollTop = container.scrollHeight;
+  });
+  return wrapper;
+}
+
+function updateLiveOutputDom(key) {
+  const wrapper = document.querySelector('.drawer-live-output');
+  if (!wrapper || wrapper.dataset.liveOutputKey !== key) return;
+  const stream = liveOutputState.streams.get(key);
+  if (!stream) return;
+  const pre = wrapper.querySelector('.drawer-live-output-pre');
+  const status = wrapper.querySelector('.drawer-live-output-status');
+  const container = wrapper.querySelector('.drawer-live-output-container');
+  const rejoin = wrapper.querySelector('.drawer-live-output-rejoin');
+  if (pre) pre.textContent = stream.text;
+  if (status) status.textContent = stream.status;
+  if (!container) return;
+  if (!stream.paused) {
+    requestAnimationFrame(() => { container.scrollTop = container.scrollHeight; });
+  } else if (rejoin) {
+    rejoin.hidden = false;
+  }
 }
 
 export function renderDrawerNow(data) {
@@ -594,6 +787,7 @@ export function renderDrawerStatusPill(data) {
     awaiting_human_review: 'Awaiting review',
     cap_reached: 'Cap reached',
     stopped_by_user: 'Stopped by user',
+    rollback_conflict: 'Rollback needs attention',
   }[status] ?? status;
   const pill = element('div', { className: `drawer-status-pill drawer-status-pill--${status}` });
   pill.append(
@@ -1139,10 +1333,160 @@ export function renderDrawerReceipts(data, isCompleted) {
       details.append(element('p', { className: 'drawer-receipt-empty', text: 'No receipt available.' }));
     }
 
+    if (step.diff_url) details.append(renderStepDiffExpander(step));
+
+    const rollbackTarget = data.rollback?.available
+      ? data.rollback.targets?.find((target) => target.step_id === step.id)
+      : null;
+    if (rollbackTarget) details.append(renderStepRollbackAction(data, step, rollbackTarget));
+
     wrapper.append(details);
   }
 
   return wrapper;
+}
+
+export function renderStepRollbackAction(data, step, target) {
+  const action = element('div', { className: 'drawer-step-rollback' });
+  const button = element('button', {
+    className: 'button button-danger drawer-step-rollback-button',
+    type: 'button',
+    text: 'Rollback to here',
+  });
+  button.addEventListener?.('click', () => showRollbackConfirmModal(data, step, target));
+  action.append(button);
+  return action;
+}
+
+export function showRollbackConfirmModal(data, step, target) {
+  document.getElementById('nudge-confirm-modal')?.remove();
+  const overlay = element('div', { className: 'nudge-confirm-modal', id: 'nudge-confirm-modal' });
+  const card = element('div', { className: 'nudge-confirm-card drawer-rollback-confirm' });
+  const boundary = target.boundary_step_id;
+  const parallelNote = target.includes_parallel_group
+    ? ` Step ${step.id} belongs to a parallel group, so the whole group through Step ${boundary} stays.`
+    : '';
+  card.append(
+    element('h3', { className: 'nudge-confirm-title', text: `Rollback to Step ${step.id}` }),
+    element('p', {
+      className: 'nudge-confirm-desc',
+      text: `This reverts ${target.reset_steps.map((id) => `Step ${id}`).join(', ')}, unchecks them, and resumes after Step ${boundary}.${parallelNote}`,
+    }),
+  );
+
+  const footer = element('div', { className: 'nudge-confirm-footer' });
+  const cancel = element('button', { className: 'button', type: 'button', text: 'Cancel' });
+  const hold = element('button', {
+    className: 'button button-danger drawer-rollback-hold',
+    type: 'button',
+    text: 'Hold to rollback',
+  });
+  let timer = null;
+  let completed = false;
+
+  const cancelHold = () => {
+    if (completed) return;
+    clearTimeout(timer);
+    timer = null;
+    hold.classList.remove('is-holding');
+  };
+  const confirm = async () => {
+    if (completed) return;
+    completed = true;
+    clearTimeout(timer);
+    hold.classList.remove('is-holding');
+    hold.disabled = true;
+    cancel.disabled = true;
+    hold.textContent = 'Rolling back…';
+    const result = await executeRollback(state.id, step.id);
+    overlay.remove();
+    if (result.ok) {
+      showToast(result.message || `Rolled back to Step ${boundary}.`);
+      playAudioFeedback('tick');
+      await fetchCampaignAutomateState();
+    } else {
+      showToast(result.error || result.message || 'Rollback failed.');
+    }
+  };
+  const beginHold = (event) => {
+    if (completed || hold.disabled || timer) return;
+    event.preventDefault();
+    hold.classList.add('is-holding');
+    timer = window.setTimeout(confirm, ROLLBACK_HOLD_MS);
+  };
+
+  cancel.addEventListener('click', () => overlay.remove());
+  hold.addEventListener('pointerdown', beginHold);
+  hold.addEventListener('pointerup', cancelHold);
+  hold.addEventListener('pointercancel', cancelHold);
+  hold.addEventListener('pointerleave', cancelHold);
+  hold.addEventListener('keydown', (event) => {
+    if (event.key === ' ' || event.key === 'Enter') beginHold(event);
+  });
+  hold.addEventListener('keyup', (event) => {
+    if (event.key === ' ' || event.key === 'Enter') cancelHold();
+  });
+  hold.addEventListener('blur', cancelHold);
+  footer.append(cancel, hold);
+  card.append(footer);
+  overlay.append(card);
+  overlay.addEventListener('click', (event) => {
+    if (event.target === overlay) overlay.remove();
+  });
+  overlay.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') overlay.remove();
+  });
+  document.body.append(overlay);
+  hold.focus();
+}
+
+export async function executeRollback(id, to) {
+  try {
+    const response = await fetch('/api/run/rollback', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id, to }),
+    });
+    return await response.json();
+  } catch (error) {
+    return { ok: false, error: error.message };
+  }
+}
+
+export function renderStepDiffExpander(step) {
+  const diff = document.createElement('details');
+  diff.className = 'drawer-step-diff';
+  diff.id = `drawer-step-diff-${String(step.id).replace(/[^a-z0-9_-]+/gi, '-')}`;
+  diff.append(element('summary', { className: 'drawer-step-diff-summary', text: 'Diff' }));
+  const content = element('div', { className: 'drawer-step-diff-content' });
+  content.textContent = 'Open to load the committed step diff.';
+  diff.append(content);
+  diff.addEventListener?.('toggle', () => {
+    if (diff.open) void loadStepDiff(step.diff_url, content);
+  });
+  return diff;
+}
+
+export async function loadStepDiff(url, content) {
+  if (!url || !content || content.dataset?.loaded === 'true') return;
+  content.textContent = 'Loading diff…';
+  try {
+    let pending = stepDiffCache.get(url);
+    if (!pending) {
+      pending = fetch(url).then(async (response) => {
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || 'Diff request failed.');
+        return payload;
+      });
+      stepDiffCache.set(url, pending);
+    }
+    const payload = await pending;
+    content.innerHTML = payload.html;
+    if (content.dataset) content.dataset.loaded = 'true';
+  } catch (error) {
+    stepDiffCache.delete(url);
+    content.textContent = error.message || 'Could not load this diff.';
+  }
 }
 
 export function renderDrawerLogTail(data) {

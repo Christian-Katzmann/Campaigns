@@ -59,11 +59,22 @@ function worker(id = `worker-${clock}`) {
     invocation_id: id,
     pid: 1234,
     log_path: `/state/runs/a/${id}.log`,
+    live_output_path: `/state/runs/a/live-output/${id}.json`,
   };
 }
 
 function move(state, event, fields = {}) {
-  return transitionRunState(state, { event, at: at(), ...fields });
+  return transitionRunState(state, {
+    event,
+    at: at(),
+    ...(event === 'step_completed' ? {
+      commit_range: {
+        base_oid: '1'.repeat(40),
+        head_oid: '2'.repeat(40),
+      },
+    } : {}),
+    ...fields,
+  });
 }
 
 function completeSteps(state) {
@@ -113,7 +124,7 @@ test('version-1 ledgers upgrade with cap defaults and the explicit stop status',
   }
 
   const upgraded = upgradeRunState(old);
-  assert.equal(upgraded.schema_version, 5);
+  assert.equal(upgraded.schema_version, 7);
   assert.equal(upgraded.config.worktree_enabled, false);
   assert.equal(upgraded.config.max_parallel_steps, 2);
   assert.equal(upgraded.artifacts.worktree, null);
@@ -127,6 +138,11 @@ test('version-1 ledgers upgrade with cap defaults and the explicit stop status',
   assert.equal(upgraded.steps[0].model, null);
   assert.equal(upgraded.steps[0].effort, null);
   assert.equal(upgraded.steps[0].lane, null);
+  assert.equal(upgraded.steps[0].commit_range, null);
+  assert.equal(upgraded.steps[0].parallel_group, null);
+  assert.deepEqual(upgraded.review.findings, []);
+  assert.equal(upgraded.rollback, null);
+  assert.deepEqual(upgraded.rollbacks, []);
   assertValidRunState(upgraded);
 });
 
@@ -168,6 +184,44 @@ test('completed steps retain the actual runner, model, and effort', () => {
   assertValidRunState(state);
 });
 
+test('completed steps own immutable net ranges and stable parallel membership', () => {
+  let state = move(stateWithSteps(['1.1', '1.2']), 'run_started');
+  state = move(state, 'step_started', { step_id: '1.1', worker: worker('parallel-1') });
+  state = move(state, 'step_started', { step_id: '1.2', worker: worker('parallel-2') });
+  const group = { id: 'group-1', step_ids: ['1.1', '1.2'] };
+  state = move(state, 'step_completed', {
+    step_id: '1.1',
+    receipt_path: '/state/runs/a/receipts/1.1.md',
+    parallel_group: group,
+  });
+  state = move(state, 'step_completed', {
+    step_id: '1.2',
+    receipt_path: '/state/runs/a/receipts/1.2.md',
+    parallel_group: group,
+  });
+
+  assert.deepEqual(state.steps[0].commit_range, {
+    base_oid: '1'.repeat(40),
+    head_oid: '2'.repeat(40),
+  });
+  assert.deepEqual(state.steps[0].parallel_group, group);
+  assert.deepEqual(state.steps[1].parallel_group, group);
+  assert.deepEqual(state.history.at(-1).details.commit_range, state.steps[1].commit_range);
+  assertValidRunState(state);
+});
+
+test('active worker metadata carries only the ephemeral live transport path', () => {
+  let state = move(stateWithSteps(), 'run_started');
+  state = move(state, 'step_started', { step_id: '1.1', worker: worker('live-worker') });
+  assert.equal(
+    state.workers[0].live_output_path,
+    '/state/runs/a/live-output/live-worker.json',
+  );
+  assert.equal(state.worker.live_output_path, state.workers[0].live_output_path);
+  assert.doesNotMatch(JSON.stringify(state.workers[0]), /raw-secret|data_base64/);
+  assertValidRunState(state);
+});
+
 test('runs every normal step and review transition through merge', () => {
   let state = completeSteps(stateWithSteps(['1.1', '1.2']));
   assert.equal(state.run.status, 'awaiting_review');
@@ -175,8 +229,10 @@ test('runs every normal step and review transition through merge', () => {
   state = move(state, 'final_review_started');
   state = move(state, 'final_review_needs_work', {
     reasons: ['acceptance-miss'],
+    findings: [{ reason: 'acceptance-miss', paths: ['lib/pump.mjs'] }],
     review_path: '/state/runs/a/final-review.md',
   });
+  assert.deepEqual(state.review.findings, [{ reason: 'acceptance-miss', paths: ['lib/pump.mjs'] }]);
   state = move(state, 'final_rework_completed', {
     attempt: 1,
     commit_sha: 'abc123',
@@ -375,9 +431,65 @@ test('all audit taxonomy events have a first-class schema name', () => {
     'stopped_by_user',
     'step_reset_by_recover',
     'step_continued_by_recover',
+    'rollback_started',
+    'rollback_conflicted',
+    'rollback_completed',
   ]) {
     assert.ok(RUN_EVENT_NAMES.includes(event), event);
   }
+});
+
+test('rollback is a first-class transaction that resets later steps and keeps its audit trail', () => {
+  let state = completeSteps(stateWithSteps(['1.1', '1.2']));
+  const startedAt = at();
+  const rollback = {
+    id: 'rollback-1',
+    status: 'intent',
+    source_status: state.run.status,
+    to_step_id: '1.1',
+    boundary_step_id: '1.1',
+    step_ids: ['1.2'],
+    start_oid: '3'.repeat(40),
+    published_head: null,
+    execution_branch: 'campaign/a',
+    worktree_path: '/repo-worktrees/a',
+    temporary_branch: 'campaigns/rollback-1',
+    temporary_worktree_path: '/state/runs/a/rollback-1',
+    operations: [{
+      id: 'step:1.2',
+      kind: 'step',
+      step_ids: ['1.2'],
+      ranges: [{ step_id: '1.2', base_oid: '1'.repeat(40), head_oid: '2'.repeat(40) }],
+      commits: [{ oid: '2'.repeat(40), mainline: null, revert_oid: null }],
+    }],
+    started_at: startedAt,
+    updated_at: startedAt,
+    markdown_commit_oid: null,
+    receipt_path: '/state/runs/a/receipts/rollback-1.md',
+    completed_at: null,
+    conflict: null,
+  };
+
+  state = move(state, 'rollback_started', { step_id: '1.1', rollback });
+  assert.equal(state.run.status, 'rolling_back');
+  state = move(state, 'rollback_git_completed', {
+    step_id: '1.1',
+    published_head: '4'.repeat(40),
+  });
+  state = move(state, 'rollback_markdown_completed', { step_id: '1.1' });
+  state = move(state, 'rollback_completed', {
+    step_id: '1.1',
+    receipt_path: rollback.receipt_path,
+  });
+
+  assert.equal(state.run.status, 'running');
+  assert.equal(state.steps[0].status, 'completed');
+  assert.equal(state.steps[1].status, 'pending');
+  assert.equal(state.steps[1].commit_range, null);
+  assert.equal(state.rollback, null);
+  assert.equal(state.rollbacks.at(-1).status, 'completed');
+  assert.equal(state.rollbacks.at(-1).receipt_path, rollback.receipt_path);
+  assertValidRunState(state);
 });
 
 test('completed and merged runs can never become halted', () => {
