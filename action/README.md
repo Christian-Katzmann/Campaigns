@@ -7,6 +7,8 @@ Campaigns commit as the action. Pin `uses:` to a full commit SHA. Do not install
 ```yaml
 permissions:
   contents: read
+  checks: write
+  pull-requests: write
 
 steps:
   - uses: actions/checkout@<full-commit-sha>
@@ -35,6 +37,11 @@ keys remain inherited environment values, are registered with GitHub masking
 before any child runner starts, and never enter arguments or config. Interactive
 subscription login does not carry into an ephemeral GitHub runner; use an API
 key with billing and limits appropriate for CI.
+
+On a same-repo PR, the action maintains one sticky Campaigns comment and one
+check run on the PR head SHA. The comment summarizes every step, the final
+verdict or cap reason, and links to the uploaded evidence. Minimal workflow
+permissions are `contents: read`, `checks: write`, and `pull-requests: write`.
 
 The action always uploads the share-safe evidence surfaces from its deterministic
 temporary state directory:

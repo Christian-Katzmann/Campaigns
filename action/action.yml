@@ -91,3 +91,12 @@ runs:
           ${{ steps.preflight.outputs.state-dir }}/events.jsonl
           ${{ steps.preflight.outputs.state-dir }}/receipts/
           ${{ steps.preflight.outputs.state-dir }}/final-review.md
+
+    - name: Publish PR receipt and check run
+      if: ${{ always() && github.event_name == 'pull_request' }}
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ github.token }}
+        STATE_DIR: ${{ steps.preflight.outputs.state-dir }}
+        ARTIFACT_URL: ${{ steps.artifacts.outputs.artifact-url }}
+      run: node "$GITHUB_ACTION_PATH/report-pr.mjs"

@@ -95,13 +95,14 @@ test('preflight masks inherited secrets before reporting success and writes dete
   assert.match(outputs, new RegExp(`campaign-path=${escapeRegex(result.campaignPath)}`));
 });
 
-test('composite metadata gates trust before install, runs the checked-out engine, and always uploads four surfaces', async () => {
+test('composite metadata gates trust, uploads evidence, then publishes the PR report', async () => {
   const metadata = await readFile(path.resolve('action/action.yml'), 'utf8');
   const preflight = metadata.indexOf('Mask secrets and enforce PR trust');
   const install = metadata.indexOf('Install pinned runner CLI');
   const launch = metadata.indexOf('node "$GITHUB_ACTION_PATH/../bin/campaigns.mjs"');
+  const report = metadata.indexOf('node "$GITHUB_ACTION_PATH/report-pr.mjs"');
 
-  assert.ok(preflight >= 0 && preflight < install && install < launch);
+  assert.ok(preflight >= 0 && preflight < install && install < launch && launch < report);
   assert.match(metadata, /actions\/setup-node@[0-9a-f]{40}/);
   assert.match(metadata, /actions\/upload-artifact@[0-9a-f]{40}/);
   assert.match(metadata, /if: \$\{\{ always\(\) \}\}/);
@@ -111,7 +112,19 @@ test('composite metadata gates trust before install, runs the checked-out engine
   for (const cap of ['max_steps', 'max_minutes', 'max_cost_usd']) {
     assert.match(metadata, new RegExp(`${cap}:[\\s\\S]{0,120}required: true`));
   }
+  assert.match(metadata, /github\.event_name == 'pull_request'/);
+  assert.match(metadata, /GITHUB_TOKEN: \$\{\{ github\.token \}\}/);
+  assert.doesNotMatch(metadata, /\/statuses\//);
   assert.doesNotMatch(metadata, /timeline\.(?:jsonl|md)/);
+});
+
+test('action guide documents the minimal PR permissions and safe event', async () => {
+  const guide = await readFile(path.resolve('action/README.md'), 'utf8');
+  for (const permission of ['contents: read', 'checks: write', 'pull-requests: write']) {
+    assert.match(guide, new RegExp(permission));
+  }
+  assert.match(guide, /`pull_request` event only/);
+  assert.match(guide, /`pull_request_target`.*refused/);
 });
 
 function validInput() {
