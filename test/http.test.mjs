@@ -9,6 +9,7 @@ import { after, test } from 'node:test';
 
 import { parseCampaignPlan, runPathsForCampaign } from '../lib/pump.mjs';
 import { createRunState, transitionRunState, validateRunState } from '../lib/run-state.mjs';
+import { persistRunState } from '../lib/run-state-store.mjs';
 import {
   parseMarkdown,
   replaceFencedBlockContent,
@@ -855,7 +856,7 @@ Review the diff fixture.
     findings: [{ reason: 'acceptance-miss', paths: ['lib/a.js'] }],
     review_path: paths.finalReviewPath,
   });
-  await writeFile(paths.statePath, `${JSON.stringify(state, null, 2)}\n`, 'utf8');
+  await persistRunState(paths.statePath, state);
 
   const textResponse = await fetch(`${baseUrl}/api/run/step-diff?id=${registered.id}&step=1.1`);
   const text = await textResponse.json();
@@ -885,7 +886,7 @@ Review the diff fixture.
     reasons: ['operator rollback'],
     review_path: paths.finalReviewPath,
   });
-  await writeFile(paths.statePath, `${JSON.stringify(state, null, 2)}\n`, 'utf8');
+  await persistRunState(paths.statePath, state);
   const rollbackResponse = await fetch(`${baseUrl}/api/run/rollback`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },

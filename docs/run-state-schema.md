@@ -15,6 +15,36 @@ covers the portable record shape. Campaigns additionally applies
 one worker per running step, completed-step receipts, and review/run status
 agreement.
 
+## Journal and projection contract
+
+Native runs write `journal.jsonl` first. Each line is one versioned event with
+an increasing sequence, the previous line's SHA-256 hash, and its own SHA-256
+hash. The first `run_initialized` event contains the validated run state and the
+full initial campaign Markdown. Later `state_persisted` events carry the
+resulting state at each durable boundary. Engine-applied checkbox and rollback
+writes use `document_transition` with the before/after Markdown hashes and full
+resulting Markdown.
+
+`foldRunJournal()` is the pure authority for rebuilding `state.json` and the
+board replay timeline. The campaign Markdown remains the live progress source
+of truth; journal document copies are replay evidence, not a file-repair source.
+Writers append and `fsync` one line before rebuilding projections. On resume,
+only an unterminated final line may be discarded; corruption in an earlier or
+newline-terminated line is rejected.
+
+Runs created before journals existed import the current validated ledger as one
+`snapshot_imported` event labelled `non_historical_snapshot`. Existing
+`events.jsonl` is never treated as source history. Exact document replay is
+therefore `native_journal` only; imported runs are `snapshot_forward_only`.
+
+The journal contains full campaign Markdown and is local replay evidence, not a
+share-safe artifact. State payloads are redacted before append. CI continues to
+publish only the redacted projections and receipts documented below.
+
+A one-step fixture with four durable boundaries is about 10 KiB. V1 never
+truncates the journal; snapshot-assisted compaction is future work if long-run
+measurements justify it.
+
 ## Migration contract
 
 `upgradeRunState()` owns the complete version-to-version chain. Every Campaigns
@@ -28,8 +58,8 @@ forward migration in `upgradeRunState()`, and keep old fixture coverage.
 
 ## Structured event log
 
-Each valid state write also writes a redacted `events.jsonl` beside
-`state.json`. It is a deterministic projection of the ledger's ordered
+Each valid journal write rebuilds redacted `state.json` and `events.jsonl`.
+`events.jsonl` is a deterministic projection of the folded state's ordered
 `history`, so sequences cannot be duplicated or reordered.
 
 Every line follows `#/$defs/engine_event` in the published schema:
@@ -43,8 +73,8 @@ Required fields are `event`, `at`, `run_id`, and positive integer `sequence`.
 events use the normalized usage shape in `#/$defs/runner_usage`; all token/cost
 fields are present and are explicitly `null` when the CLI does not report them.
 
-State and event writes pass through `lib/redaction.mjs`. Logs and ledgers are
-still local execution records, not a place to deliberately store secrets.
+State and event projections pass through `lib/redaction.mjs`. Logs and ledgers
+are still local execution records, not a place to deliberately store secrets.
 
 ## OTel mapping
 

@@ -35,11 +35,13 @@ Schema version 8 adds the configured reviewer snapshot plus the selected
 reviewer runner, family, and ladder tier. Version 7 ledgers migrate as
 same-family review because that was the only previous behavior.
 
-The current structural contract is published at
+The current projection contract is published at
 `schema/run-state.schema.json`. All ledger readers use the same upgrade,
-validation, and atomic persistence path. A redacted `events.jsonl` beside the
-ledger projects `history` into the documented observability envelope without
-introducing a second state authority.
+validation, journal-fold, and atomic projection path. Native runs append
+integrity-linked events to `journal.jsonl` and `fsync` before rebuilding the
+redacted `state.json` and `events.jsonl` projections. Existing snapshot ledgers
+import as one explicitly non-historical event; their old event projection is
+never promoted into fictional source history.
 
 The campaign markdown remains the progress source of truth. The run state is an
 execution ledger: it records attempts, worker activity, review/recovery state,
@@ -174,9 +176,16 @@ stable while runner-specific raw output belongs in the receipt or failure tail.
 
 ### Timeline and receipts
 
-The structured timeline is `history` inside the state document. Status and the
-event that caused it can therefore be written atomically and cannot drift across
-two files.
+The structured execution timeline remains `history` inside the projected state
+document. The journal is the durable write model: every state boundary is one
+linked event, and folding it reproduces the validated state before either
+published projection is written.
+
+Native journals also start with the full campaign Markdown and record each
+engine-applied checkbox or rollback transition with before/after hashes and the
+full resulting Markdown. These copies support exact replay but never replace
+the live campaign file as progress source of truth. Snapshot imports support
+exact replay only from the import point forward.
 
 Receipt bodies and worker logs stay as separate files. They are unbounded,
 human-readable evidence; folding them into frequently-polled state would make
@@ -205,6 +214,7 @@ engine writes the receipt only after it verifies the marker, then applies the
   validation contract.
 - The halted-but-completed bug is rejected both when transitioning and when
   loading an externally corrupted ledger.
-- The pump must persist state by atomically writing the whole validated document.
+- The pump must append and sync one journal event before rebuilding the
+  validated state and event projections.
 - Adding or changing lifecycle states requires a schema-version change, reducer
   transition, and tests; direct status mutation is unsupported.
