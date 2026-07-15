@@ -113,7 +113,12 @@ test('version-1 ledgers upgrade with cap defaults and the explicit stop status',
   }
 
   const upgraded = upgradeRunState(old);
-  assert.equal(upgraded.schema_version, 3);
+  assert.equal(upgraded.schema_version, 5);
+  assert.equal(upgraded.config.worktree_enabled, false);
+  assert.equal(upgraded.config.max_parallel_steps, 2);
+  assert.equal(upgraded.artifacts.worktree, null);
+  assert.deepEqual(upgraded.artifacts.parallel_worktrees, []);
+  assert.deepEqual(upgraded.workers, []);
   assert.equal(upgraded.run.status, 'stopped_by_user');
   assert.equal(upgraded.config.max_steps_per_run, 50);
   assert.equal(upgraded.config.max_run_minutes, 360);
@@ -121,7 +126,26 @@ test('version-1 ledgers upgrade with cap defaults and the explicit stop status',
   assert.equal(upgraded.steps[0].runner, null);
   assert.equal(upgraded.steps[0].model, null);
   assert.equal(upgraded.steps[0].effort, null);
+  assert.equal(upgraded.steps[0].lane, null);
   assertValidRunState(upgraded);
+});
+
+test('version-4 single-worker ledgers migrate to the active worker collection', () => {
+  let state = move(stateWithSteps(['1.1']), 'run_started');
+  state = move(state, 'step_started', { step_id: '1.1', worker: worker('legacy-worker') });
+  const old = structuredClone(state);
+  old.schema_version = 4;
+  delete old.run.current_step_ids;
+  delete old.workers;
+  delete old.config.max_parallel_steps;
+  delete old.artifacts.parallel_worktrees;
+  for (const step of old.steps) delete step.parallel;
+
+  const upgraded = upgradeRunState(old);
+  assert.deepEqual(upgraded.run.current_step_ids, ['1.1']);
+  assert.equal(upgraded.workers[0].step_id, '1.1');
+  assert.equal(upgraded.workers[0].invocation_id, 'legacy-worker');
+  assert.deepEqual(validateRunState(upgraded), { valid: true, errors: [] });
 });
 
 test('completed steps retain the actual runner, model, and effort', () => {
@@ -418,11 +442,37 @@ test('key illegal step and review transitions throw without mutating state', () 
     /expected running/,
   );
   assert.throws(
-    () => move(stepRunning, 'step_started', { step_id: '1.2', worker: worker() }),
-    /another step is already running/,
+    () => move(stepRunning, 'step_started', { step_id: '1.1', worker: worker() }),
+    /expected pending/,
   );
   assert.throws(() => move(running, 'run_reached_final_review'), /unfinished steps/);
   assert.equal(running.steps[0].status, 'pending');
+});
+
+test('parallel ledgers track and settle multiple active workers independently', () => {
+  let state = move(stateWithSteps(['1.1', '1.2']), 'run_started');
+  state = move(state, 'step_started', { step_id: '1.1', worker: worker('parallel-1') });
+  state = move(state, 'step_started', { step_id: '1.2', worker: worker('parallel-2') });
+
+  assert.deepEqual(state.run.current_step_ids, ['1.1', '1.2']);
+  assert.deepEqual(state.workers.map((entry) => entry.step_id), ['1.1', '1.2']);
+  assert.equal(state.run.current_step_id, '1.1');
+  assert.equal(state.worker.invocation_id, 'parallel-1');
+
+  state = move(state, 'step_failed', {
+    step_id: '1.2',
+    failure: { code: 'worker_exit', message: 'failed', retryable: true },
+  });
+  assert.equal(state.run.status, 'running');
+  assert.deepEqual(state.run.current_step_ids, ['1.1']);
+
+  state = move(state, 'step_completed', {
+    step_id: '1.1',
+    receipt_path: '/state/runs/a/receipts/1.1.md',
+  });
+  assert.equal(state.run.status, 'failed');
+  assert.deepEqual(state.workers, []);
+  assert.deepEqual(validateRunState(state), { valid: true, errors: [] });
 });
 
 test('force merge without an explicit operator choice is illegal', () => {

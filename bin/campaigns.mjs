@@ -40,12 +40,15 @@ Options:
   --branch <name>       Branch to check out or create before the first step
   --config <path>       Extra config file, after project and user config
   --state-dir <path>    Run-ledger directory
+  --no-worktree         Run directly on the campaign branch
   --registry-id <id>    Campaign registry identity
   --max-steps-per-run <count>
                          Stop before starting more than this many steps
   --max-run-minutes <minutes>
                          Stop when the total run-time cap is reached
   --stop-grace-ms <ms>  Grace period before terminating the worker group
+  --max-parallel-steps <count>
+                         Concurrent same-phase step workers (default 2)
   --force-merge-unreviewed
                          Merge after review failure (explicit escape hatch)
   -h, --help            Show this help
@@ -251,6 +254,7 @@ function parseOptions(args, command) {
     ['--max-steps-per-run', 'maxStepsPerRun'],
     ['--max-run-minutes', 'maxRunMinutes'],
     ['--stop-grace-ms', 'stopGraceMs'],
+    ['--max-parallel-steps', 'maxParallelSteps'],
   ];
   const names = new Map(command === 'recover'
     ? [['--state-dir', 'runsDir']]
@@ -261,6 +265,10 @@ function parseOptions(args, command) {
   for (let index = 0; index < args.length; index += 1) {
     if (command === 'run' && args[index] === '--force-merge-unreviewed') {
       options.forceMergeUnreviewed = true;
+      continue;
+    }
+    if (command === 'run' && args[index] === '--no-worktree') {
+      options.noWorktree = true;
       continue;
     }
     const key = names.get(args[index]);
@@ -282,7 +290,7 @@ function parseDoctorOptions(args) {
       continue;
     }
     optionArgs.push(argument);
-    if (argument === '--force-merge-unreviewed') continue;
+    if (argument === '--force-merge-unreviewed' || argument === '--no-worktree') continue;
     if (!args[index + 1]) throw new Error(`Unknown or incomplete option: ${argument}`);
     optionArgs.push(args[index + 1]);
     index += 1;

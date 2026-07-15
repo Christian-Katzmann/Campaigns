@@ -411,3 +411,85 @@ Second prompt.
   assert.match(providerState.steps[0].receipt, /First receipt/);
   assert.equal(providerState.timeline_events.at(-1).event, 'run_reached_final_review');
 });
+
+test('engine provider exposes every concurrent step and log', async (t) => {
+  const sandbox = await mkdtemp(path.join(tmpdir(), 'campaigns-engine-parallel-provider-'));
+  const repo = path.join(sandbox, 'repo');
+  const campaignPath = path.join(repo, 'campaign.md');
+  const runsDir = path.join(sandbox, 'runs');
+  const runDir = path.join(runsDir, 'parallel-run');
+  const receiptsDir = path.join(runDir, 'receipts');
+  const previousRunsDir = process.env.CAMPAIGNS_RUNS_DIR;
+  t.after(async () => {
+    if (previousRunsDir === undefined) delete process.env.CAMPAIGNS_RUNS_DIR;
+    else process.env.CAMPAIGNS_RUNS_DIR = previousRunsDir;
+    await rm(sandbox, { recursive: true, force: true });
+  });
+  process.env.CAMPAIGNS_RUNS_DIR = runsDir;
+  await mkdir(repo, { recursive: true });
+  await mkdir(receiptsDir, { recursive: true });
+  await writeFile(campaignPath, `# Parallel
+
+## Progress checklist
+
+- [ ] Step 1.1 — First
+- [ ] Step 1.2 — Second
+- [ ] Final review
+
+## Step 1.1 — First
+
+\`\`\`text
+First prompt.
+\`\`\`
+
+## Step 1.2 — Second
+
+\`\`\`text
+Second prompt.
+\`\`\`
+`, 'utf8');
+  const logOne = path.join(runDir, '1.1.log');
+  const logTwo = path.join(runDir, '1.2.log');
+  await writeFile(logOne, 'first worker log\n', 'utf8');
+  await writeFile(logTwo, 'second worker log\n', 'utf8');
+
+  let state = createRunState({
+    id: 'parallel-run',
+    identity: {
+      registry_id: 'parallel-registry',
+      source: { campaign_path: campaignPath, repo_root: repo },
+      execution: { campaign_path: campaignPath, repo_root: repo, branch: 'main' },
+    },
+    steps: [
+      { id: '1.1', name: 'First', phase: '1' },
+      { id: '1.2', name: 'Second', phase: '1' },
+    ],
+    config: {
+      runner: 'claude',
+      model: 'fixture',
+      effort: 'high',
+      watchdog: { minimum_runtime_ms: 60_000, stall_window_ms: 60_000 },
+    },
+    artifacts: { run_dir: runDir, receipts_dir: receiptsDir, final_review_path: null },
+  });
+  state = transitionRunState(state, { event: 'run_started' });
+  state = transitionRunState(state, {
+    event: 'step_started',
+    step_id: '1.1',
+    worker: { runner: 'claude', invocation_id: 'parallel-1', pid: null, log_path: logOne },
+  });
+  state = transitionRunState(state, {
+    event: 'step_started',
+    step_id: '1.2',
+    worker: { runner: 'claude', invocation_id: 'parallel-2', pid: null, log_path: logTwo },
+  });
+  await writeFile(path.join(runDir, 'state.json'), `${JSON.stringify(state, null, 2)}\n`, 'utf8');
+  await writeFile(path.join(runDir, 'run.lock'), `${JSON.stringify({ pid: process.pid })}\n`, 'utf8');
+
+  const providerState = await getAutomateState(campaignPath, { registryId: 'parallel-registry' });
+  assert.deepEqual(providerState.current_steps.map((step) => step.id), ['1.1', '1.2']);
+  assert.equal(providerState.current_step.id, '1.1');
+  assert.match(providerState.current_step_logs['1.1'], /first worker log/);
+  assert.match(providerState.current_step_logs['1.2'], /second worker log/);
+  assert.match(providerState.current_step_log, /Step 1\.1 — First[\s\S]*Step 1\.2 — Second/);
+});

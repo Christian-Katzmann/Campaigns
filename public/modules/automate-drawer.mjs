@@ -241,7 +241,7 @@ export async function fetchCampaignAutomateState() {
     const prevStatus = automateDisplayStatus(prev);
     const nextStatus = automateDisplayStatus(next);
     const statusChanged = prevStatus !== nextStatus;
-    const stepChanged = (prev?.current_step?.id || null) !== (next?.current_step?.id || null);
+    const stepChanged = activeStepSignature(prev) !== activeStepSignature(next);
     const timelineChanged = (prev?.timeline_events?.length || 0) !== (next?.timeline_events?.length || 0);
     const logChanged = (prev?.current_step_log?.length || 0) !== (next?.current_step_log?.length || 0);
     const completedChanged = completedStepSignature(prev) !== completedStepSignature(next);
@@ -317,8 +317,11 @@ export function updateAutomateStatusLine() {
 }
 
 export function renderAutomateStatusContent(el, data) {
-  const unit = data.current_step || { id: data.current_step_id };
-  const unitLabel = formatAutomateUnitLabel(unit);
+  const activeSteps = currentAutomateSteps(data);
+  const unit = activeSteps[0] || { id: data.current_step_id };
+  const unitLabel = activeSteps.length > 1
+    ? `${activeSteps.length} parallel steps`
+    : formatAutomateUnitLabel(unit);
   const elapsed = formatAutomateElapsed(data.current_step?.started_at);
   const displayStatus = automateDisplayStatus(data);
   const prefix = {
@@ -338,7 +341,18 @@ export function renderAutomateStatusContent(el, data) {
     automateIndicator(displayStatus),
     element('span', { className: 'automate-status-text', text }),
   );
-  el.title = data.current_step?.name || data.current_step_name || '';
+  el.title = activeSteps.length > 1
+    ? activeSteps.map((step) => `Step ${step.id} — ${step.name || ''}`).join('\n')
+    : data.current_step?.name || data.current_step_name || '';
+}
+
+function activeStepSignature(data) {
+  return currentAutomateSteps(data).map((step) => step.id).join('|');
+}
+
+function currentAutomateSteps(data) {
+  if (Array.isArray(data?.current_steps) && data.current_steps.length > 0) return data.current_steps;
+  return data?.current_step ? [data.current_step] : [];
 }
 
 export function formatAutomateElapsed(startedAt) {
@@ -455,9 +469,42 @@ export function renderDrawerBody(data) {
 
 export function renderDrawerNow(data) {
   const isActive = isAutomateRunning(data);
-  if (!isActive || !data.current_step) return null;
+  const activeSteps = currentAutomateSteps(data);
+  if (!isActive || activeSteps.length === 0) return null;
 
-  const step = data.current_step;
+  if (activeSteps.length > 1) {
+    const block = element('section', { className: 'drawer-now drawer-now--parallel' });
+    block.append(element('div', {
+      className: 'drawer-section-title',
+      text: `${activeSteps.length} parallel steps`,
+    }));
+    const eta = renderDrawerEta(data);
+    if (eta) block.append(eta);
+    for (const parallelStep of activeSteps) {
+      const row = element('div', { className: 'drawer-now-parallel-step' });
+      const elapsed = element('span', {
+        className: 'drawer-now-elapsed',
+        text: formatAutomateElapsed(parallelStep.started_at) || '0m',
+      });
+      elapsed.dataset.stepId = parallelStep.id;
+      row.append(
+        element('span', { className: 'drawer-now-step-id', text: formatAutomateUnitLabel(parallelStep) }),
+        element('span', { className: 'drawer-now-step-name', text: parallelStep.name || '' }),
+        elapsed,
+      );
+      const live = data.live_activities?.[parallelStep.id];
+      if (live?.latest_text) {
+        row.append(element('p', {
+          className: 'drawer-now-voice',
+          text: live.latest_text.length > 220 ? `${live.latest_text.slice(0, 220)}…` : live.latest_text,
+        }));
+      }
+      block.append(row);
+    }
+    return block;
+  }
+
+  const step = activeSteps[0];
   const live = data.live_activity;
 
   const block = element('section', { className: 'drawer-now' });
@@ -962,8 +1009,11 @@ export async function executeFinalizeAbandon(id) {
 export function tickDrawerElapsed() {
   const data = automateState.current;
   if (!data?.current_step) return;
-  const el = document.querySelector('.drawer-now-elapsed');
-  if (el) el.textContent = formatAutomateElapsed(data.current_step.started_at) || '0m';
+  const steps = currentAutomateSteps(data);
+  for (const el of document.querySelectorAll('.drawer-now-elapsed')) {
+    const step = steps.find((candidate) => candidate.id === el.dataset.stepId) ?? steps[0];
+    if (step) el.textContent = formatAutomateElapsed(step.started_at) || '0m';
+  }
   const eta = document.querySelector('.drawer-eta');
   if (eta) {
     const next = renderDrawerEta(data);

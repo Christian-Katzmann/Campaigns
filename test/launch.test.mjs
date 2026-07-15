@@ -36,6 +36,7 @@ after(async () => {
 
 test('launch commits only the campaign, rejects a duplicate, and reaches completed', async () => {
   const fixture = await createFixture('complete', { delayMs: 400, trackedCampaign: false });
+  const worktreesBefore = worktreePaths(await git(fixture.repo, ['worktree', 'list', '--porcelain']));
   const server = await startServer({
     campaignFile: fixture.campaignPath,
     port: 0,
@@ -67,6 +68,18 @@ test('launch commits only the campaign, rejects a duplicate, and reaches complet
       return state?.status === 'completed' ? state : null;
     }, 8_000);
     assert.equal(completed.status, 'completed');
+
+    const paths = runPathsForCampaign(fixture.campaignPath, runsDir);
+    const ledger = await waitFor(async () => {
+      const state = JSON.parse(await readFile(paths.statePath, 'utf8'));
+      return state.artifacts.worktree?.pruned_at ? state : null;
+    }, 2_000);
+    const receipt = await readFile(path.join(paths.receiptsDir, '1.1-1.md'), 'utf8');
+    const worktreesAfter = worktreePaths(await git(fixture.repo, ['worktree', 'list', '--porcelain']));
+    assert.notEqual(ledger.run.identity.execution.repo_root, ledger.run.identity.source.repo_root);
+    assert.match(receipt, new RegExp(`RUNNER_CWD=${escapeRegex(ledger.run.identity.execution.repo_root)}`));
+    assert.ok(ledger.artifacts.worktree.pruned_at);
+    assert.deepEqual(worktreesAfter, worktreesBefore);
 
     const finalEstimate = await fetch(`${baseUrl}/api/estimate?id=${document.id}`).then((response) => response.json());
     assert.equal(finalEstimate.remainingSteps, 0);
@@ -190,7 +203,7 @@ function fakeRunnerConfig(delayMs) {
       process.exit(2);
     }
     const output = prompt.includes('campaigns.step_completed')
-      ? prompt
+      ? 'RUNNER_CWD=' + process.cwd() + '\\n' + prompt
       : 'Verdict: APPROVED\\nReasons:\\n\\nLaunch fixture passed.';
     setTimeout(() => process.stdout.write(output), ${delayMs});
   `;
@@ -275,4 +288,12 @@ function closeServer(server) {
 
 function git(cwd, args) {
   return execFileAsync('git', ['-C', cwd, ...args]).then(({ stdout }) => stdout.trim());
+}
+
+function worktreePaths(porcelain) {
+  return String(porcelain).split('\n').filter((line) => line.startsWith('worktree '));
+}
+
+function escapeRegex(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }

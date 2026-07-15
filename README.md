@@ -91,7 +91,8 @@ Any markdown file opens. These conventions unlock the execution board:
 | `### Phase N — Title` | A phase on the board |
 | `- [ ] Step N.M — Name` | An executable step |
 | `## Step N.M — Name` | The step's detail section |
-| `Model:` and `Parallel:` | Runner guidance shown with the step |
+| `Model:` and `Parallel:` | Runner and scheduling guidance shown with the step |
+| ``Lane: `public/**`, `test/**` `` | Backtick-quoted repo-relative write globs used to prove parallel steps are disjoint |
 | A fenced block inside the step | The prompt sent to the agent |
 | `- [ ] Final review` + `## Final review` | One campaign-level release gate |
 

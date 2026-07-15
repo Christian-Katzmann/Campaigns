@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { access, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -14,6 +14,7 @@ import {
   replaceFencedBlockContent,
   replaceStepModelValue,
 } from '../public/lib/parser.mjs';
+import { sortWorktrees } from '../public/lib/worktrees.mjs';
 
 const execFileAsync = promisify(execFile);
 const projectRoot = path.resolve('.');
@@ -362,6 +363,191 @@ test('plan campaign endpoint drafts, validates, registers, salvages failures, an
   assert.equal(server.listening, false);
 });
 
+test('worktrees API lists owners, caches sizes, and safely removes orphans and live engine runs', async (t) => {
+  const fixtureRoot = path.join(root, 'worktrees-http-fixture');
+  const repo = path.join(fixtureRoot, 'repo');
+  const campaignsDir = path.join(repo, 'campaigns');
+  const liveCampaignPath = path.join(campaignsDir, 'live-worktrees-fixture.md');
+  const orphanCampaignPath = path.join(campaignsDir, 'orphan-worktrees-fixture.md');
+  const orphanPath = path.join(fixtureRoot, 'codex-orphan');
+  const externalPath = path.join(fixtureRoot, 'external');
+  const lockedPath = path.join(fixtureRoot, 'locked');
+  const config = fakeRunnerConfig();
+  config.run.stop_grace_ms = 100;
+  config.watchdog = { minimum_runtime_ms: 0, stall_window_ms: 60_000 };
+  config.runners.fake.args = [
+    '-e',
+    'setTimeout(() => process.stdout.write(process.argv[1]), 20000)',
+    '{prompt}',
+  ];
+
+  await mkdir(campaignsDir, { recursive: true });
+  await git(repo, ['init', '-b', 'main']);
+  await git(repo, ['config', 'user.name', 'Campaigns Test']);
+  await git(repo, ['config', 'user.email', 'campaigns@example.test']);
+  await writeFile(liveCampaignPath, fixtureCampaign(), 'utf8');
+  await writeFile(orphanCampaignPath, fixtureCampaign(), 'utf8');
+  await writeFile(path.join(repo, '.campaigns.json'), `${JSON.stringify(config, null, 2)}\n`, 'utf8');
+  await git(repo, ['add', '.']);
+  await git(repo, ['commit', '-m', 'Add worktrees HTTP fixture']);
+
+  const server = await startServer({
+    campaignFile: liveCampaignPath,
+    port: 0,
+    host: '127.0.0.1',
+    watchStops: false,
+    writePortFile: false,
+  });
+  t.after(() => closeServer(server));
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+  const liveCampaign = await fetch(`${baseUrl}/api/document`).then((response) => response.json());
+  const orphanCampaign = await fetch(`${baseUrl}/api/registry`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ filePath: orphanCampaignPath }),
+  }).then((response) => response.json());
+
+  const started = await fetch(`${baseUrl}/api/run/start`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ id: liveCampaign.id }),
+  });
+  assert.equal(started.status, 202);
+  await waitFor(async () => {
+    const payload = await fetch(`${baseUrl}/api/worktrees`).then((response) => response.json());
+    return payload.worktrees?.find((row) => row.owner.backend === 'engine' && row.status === 'live') ?? null;
+  }, 8_000);
+
+  await git(repo, ['worktree', 'add', '-b', 'codex/orphan-fixture', orphanPath, 'main']);
+  await git(repo, ['worktree', 'add', '-b', 'external/fixture', externalPath, 'main']);
+  await git(repo, ['worktree', 'add', '-b', 'locked/fixture', lockedPath, 'main']);
+  await git(repo, ['worktree', 'lock', '--reason', 'fixture lock', lockedPath]);
+  const externalWorker = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
+    cwd: externalPath,
+    stdio: 'ignore',
+  });
+  await new Promise((resolve, reject) => {
+    externalWorker.once('spawn', resolve);
+    externalWorker.once('error', reject);
+  });
+  t.after(async () => {
+    if (externalWorker.exitCode !== null) return;
+    externalWorker.kill('SIGTERM');
+    await new Promise((resolve) => externalWorker.once('exit', resolve));
+  });
+  const [orphanCanonical, externalCanonical, lockedCanonical] = await Promise.all([
+    realpath(orphanPath),
+    realpath(externalPath),
+    realpath(lockedPath),
+  ]);
+  const codexRunDir = path.join(repo, 'reports', 'campaign-automation', 'orphan-worktrees-fixture');
+  await mkdir(codexRunDir, { recursive: true });
+  await writeFile(path.join(codexRunDir, 'state.json'), `${JSON.stringify({
+    campaign: {
+      registry_id: orphanCampaign.id,
+      status: 'completed',
+      source_campaign_path: orphanCampaignPath,
+      campaign_path: path.join(orphanPath, 'campaigns', path.basename(orphanCampaignPath)),
+      repo_path: orphanPath,
+      run_dir: codexRunDir,
+      created_at: new Date().toISOString(),
+      worktree: {
+        base_repo_path: repo,
+        path: orphanPath,
+        branch: 'codex/orphan-fixture',
+      },
+    },
+    phase: 'complete',
+    status: 'completed',
+    history: [],
+    receipts: [],
+  }, null, 2)}\n`, 'utf8');
+
+  const firstResponse = await fetch(`${baseUrl}/api/worktrees`);
+  const first = await firstResponse.json();
+  assert.equal(firstResponse.status, 200);
+  assert.equal(first.scope, 'registered-campaign-repositories');
+  const engineLive = first.worktrees.find((row) => row.owner.backend === 'engine' && row.status === 'live');
+  const orphan = first.worktrees.find((row) => row.path === orphanCanonical);
+  const external = first.worktrees.find((row) => row.path === externalCanonical);
+  const locked = first.worktrees.find((row) => row.path === lockedCanonical);
+  const primary = first.worktrees.find((row) => row.primary);
+  assert.ok(engineLive);
+  assert.equal(engineLive.repo_name, path.basename(repo));
+  assert.equal(typeof engineLive.owner.run_id, 'string');
+  assert.equal(engineLive.owner.campaign_id, liveCampaign.id);
+  assert.equal(orphan.branch, 'codex/orphan-fixture');
+  assert.equal(orphan.owner.backend, 'codex');
+  assert.equal(orphan.status, 'orphan');
+  assert.equal(orphan.size_cached, false);
+  assert.ok(orphan.size_bytes > 0);
+  assert.ok(orphan.last_touched_at);
+  assert.equal(external.owner.backend, 'external');
+  assert.equal(external.status, 'live');
+  assert.equal(locked.status, 'locked');
+  assert.equal(primary.status, 'primary');
+  assert.equal(primary.deletable, false);
+
+  const second = await fetch(`${baseUrl}/api/worktrees`).then((response) => response.json());
+  assert.equal(second.worktrees.find((row) => row.path === orphanCanonical).size_cached, true);
+
+  const unconfirmedLive = await fetch(`${baseUrl}/api/worktrees`, {
+    method: 'DELETE',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ path: engineLive.path }),
+  });
+  assert.equal(unconfirmedLive.status, 409);
+  assert.equal((await unconfirmedLive.json()).confirmationRequired, true);
+
+  const externalLiveDelete = await fetch(`${baseUrl}/api/worktrees`, {
+    method: 'DELETE',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ path: externalPath, confirm: true }),
+  });
+  assert.equal(externalLiveDelete.status, 409);
+  assert.equal((await externalLiveDelete.json()).code, 'external_live');
+
+  const bulk = await fetch(`${baseUrl}/api/worktrees`, {
+    method: 'DELETE',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ paths: [primary.path, engineLive.path, externalPath, lockedPath] }),
+  }).then((response) => response.json());
+  assert.deepEqual(bulk.removed, []);
+  assert.equal(bulk.skipped.length, 4);
+
+  const orphanDelete = await fetch(`${baseUrl}/api/worktrees`, {
+    method: 'DELETE',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ path: orphanPath }),
+  });
+  assert.equal(orphanDelete.status, 200);
+  assert.equal((await orphanDelete.json()).removed, orphanCanonical);
+  assert.doesNotMatch(await git(repo, ['worktree', 'list', '--porcelain']), new RegExp(escapeRegex(orphanPath)));
+
+  const confirmedLive = await fetch(`${baseUrl}/api/worktrees`, {
+    method: 'DELETE',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ path: engineLive.path, confirm: true }),
+  });
+  assert.equal(confirmedLive.status, 200);
+  assert.equal((await confirmedLive.json()).stopped, true);
+  assert.doesNotMatch(await git(repo, ['worktree', 'list', '--porcelain']), new RegExp(escapeRegex(engineLive.path)));
+
+  const indexHtml = await readFile(path.join(projectRoot, 'public', 'index.html'), 'utf8');
+  assert.match(indexHtml, /id="worktrees-panel"/);
+  assert.match(indexHtml, /data-worktree-sort="size"/);
+  assert.match(indexHtml, /data-worktree-sort="age"/);
+  assert.deepEqual(
+    sortWorktrees([
+      { path: 'small', size_bytes: 1, last_touched_at: '2026-01-01T00:00:00Z' },
+      { path: 'large', size_bytes: 2, last_touched_at: '2026-01-02T00:00:00Z' },
+    ], 'size').map((row) => row.path),
+    ['large', 'small'],
+  );
+
+  await closeServer(server);
+});
+
 test('campaigns run completes through the CLI with a fake runner and valid state', async () => {
   const fixtureRoot = path.join(root, 'cli-fixture');
   const repo = path.join(fixtureRoot, 'repo');
@@ -385,6 +571,7 @@ test('campaigns run completes through the CLI with a fake runner and valid state
     configPath,
     '--state-dir',
     runsDir,
+    '--no-worktree',
   ], {
     cwd: repo,
     timeout: 20_000,
@@ -401,6 +588,8 @@ test('campaigns run completes through the CLI with a fake runner and valid state
     { runner: 'fake', model: 'fake-model', effort: 'none' },
   );
   assert.equal(state.history.at(-1).event, 'final_review_approved');
+  assert.equal(state.config.worktree_enabled, false);
+  assert.equal(state.artifacts.worktree, null);
   assert.match(await readFile(campaignPath, 'utf8'), /- \[x\] Step 1\.1/);
   assert.equal(await git(repo, ['status', '--short']), '');
 });
@@ -421,6 +610,20 @@ function closeServer(server) {
 
 function git(cwd, args) {
   return execFileAsync('git', ['-C', cwd, ...args]).then(({ stdout }) => stdout.trim());
+}
+
+async function waitFor(check, timeoutMs = 5_000) {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    const value = await check();
+    if (value) return value;
+    await new Promise((resolve) => setTimeout(resolve, 30));
+  }
+  throw new Error(`Timed out after ${timeoutMs}ms.`);
+}
+
+function escapeRegex(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function fixtureCampaign() {
@@ -564,6 +767,7 @@ FORWARD SWEEP: before checking this step off, do a quick pass over the campaign'
 
 Model: ${modelValue}
 Parallel: NO
+Lane: \`src/prepare/**\`
 
 ${stepPrompt('Prepare the release.')}
 
@@ -571,6 +775,7 @@ ${stepPrompt('Prepare the release.')}
 
 Model: ${modelValue}
 Parallel: NO
+Lane: \`src/ship/**\`
 
 ${stepPrompt('Ship the release.')}
 

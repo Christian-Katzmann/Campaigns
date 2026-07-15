@@ -247,6 +247,15 @@
           </section>
 
           <section class="settings-section">
+            <h3>Repositories</h3>
+            <button id="worktrees-button" class="button button-quiet settings-panel-button" type="button" aria-controls="worktrees-panel" aria-expanded="false">
+              <span>Worktrees</span>
+              <span aria-hidden="true">→</span>
+            </button>
+            <p class="field-desc">Inspect isolated campaign and agent checkouts.</p>
+          </section>
+
+          <section class="settings-section">
             <h3>Diagnostics</h3>
             <div id="library-lessons" class="library-lessons library-lessons--settings" hidden></div>
           </section>
@@ -255,6 +264,29 @@
           <a id="feature-request-link" class="settings-feature-link" target="_blank" rel="noopener noreferrer" hidden>Suggest a feature ↗</a>
         </footer>
       </div>
+    </div>
+
+    <div id="worktrees-panel" class="worktrees-panel" hidden>
+      <div class="worktrees-panel-backdrop" data-action="close-worktrees"></div>
+      <section class="worktrees-panel-dialog" role="dialog" aria-modal="true" aria-labelledby="worktrees-title" tabindex="-1">
+        <header class="worktrees-panel-header">
+          <div>
+            <p class="eyebrow">Repositories</p>
+            <h2 id="worktrees-title">Worktrees</h2>
+          </div>
+          <button class="settings-close-button" type="button" data-action="close-worktrees" aria-label="Close worktrees">&times;</button>
+        </header>
+        <div class="worktrees-toolbar">
+          <div class="worktrees-sort" role="group" aria-label="Sort worktrees">
+            <button class="button button-quiet" type="button" data-worktree-sort="size" aria-pressed="false">Size</button>
+            <button class="button button-quiet" type="button" data-worktree-sort="age" aria-pressed="true">Age</button>
+          </div>
+          <button id="worktrees-refresh" class="button button-quiet" type="button">Refresh</button>
+          <button id="worktrees-cleanup" class="button button-quiet" type="button" disabled>No orphans</button>
+        </div>
+        <p class="worktrees-help">Scans Git repositories containing registered campaign files. Live and primary worktrees stay protected.</p>
+        <div id="worktrees-list" class="worktrees-list" aria-live="polite"></div>
+      </section>
     </div>
 
     <aside id="automate-drawer" class="automate-drawer" hidden>

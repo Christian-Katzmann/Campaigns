@@ -24,9 +24,11 @@ import {
   isNewShapeCampaign,
   linkChecksToSteps,
   parseExecutableChecks,
+  parseLaneValue,
   parseMarkdown,
   replaceStepModelValue,
   progressChecklistBlocks,
+  stripStepMetaBlocks,
 } from '../public/lib/parser.mjs';
 
 function read(relativeFromRepoRoot) {
@@ -159,6 +161,36 @@ test('model metadata is primary-first and round-trips a dropdown-written value',
   assert.equal(step.model.primary, 'GPT-5.6-Sol · Extra High');
   assert.equal(step.model.alternate, 'Fable 5 · High');
   assert.match(edited, /^Model: GPT-5\.6-Sol · Extra High \/ Fable 5 · High$/m);
+});
+
+test('Lane metadata normalizes repo-relative globs and is stripped from body prose', () => {
+  const markdown = `# Lane fixture
+
+## Step 1.1 — Split work
+
+Model: GPT-5.6-Sol · High
+Parallel: YES — with Step 1.2
+Lane: \`./public/modules/**\`, \`test/*.test.mjs\`
+
+Keep this body prose.
+`;
+  const blocks = parseMarkdown(markdown);
+  const [section] = extractStepSections(blocks, markdown);
+
+  assert.deepEqual(section.lane, { globs: ['public/modules/**', 'test/*.test.mjs'] });
+  const stripped = stripStepMetaBlocks(blocks, [section]);
+  assert.equal(stripped.some((block) => /^(?:Model|Parallel|Lane):/m.test(block.text || '')), false);
+  assert.equal(stripped.some((block) => block.text === 'Keep this body prose.'), true);
+});
+
+test('Lane metadata requires clean backtick-quoted repo-relative globs', () => {
+  assert.deepEqual(parseLaneValue('`src/api/**`, `test/api/*.test.mjs`'), {
+    globs: ['src/api/**', 'test/api/*.test.mjs'],
+  });
+  assert.equal(parseLaneValue('src/api/**'), null);
+  assert.equal(parseLaneValue('`../outside/**`'), null);
+  assert.equal(parseLaneValue('`src/[abc`'), null);
+  assert.equal(parseLaneValue('`src/**` — except `src/private/**`'), null);
 });
 
 test('sample: checks link to their step sections', () => {

@@ -424,6 +424,7 @@ export function extractStepSections(blocks, markdown) {
       title: block.text,
       model: meta?.model || null,
       parallel: meta?.parallel || null,
+      lane: meta?.lane || null,
       metaLineStart: meta?.metaLineStart ?? null,
       metaLineEnd: meta?.metaLineEnd ?? null,
     });
@@ -432,20 +433,21 @@ export function extractStepSections(blocks, markdown) {
 }
 
 /**
- * Scan up to the first 5 non-empty lines after a step heading for `Model:`
- * and `Parallel:` metadata lines. Stop as soon as a non-empty line matches
+ * Scan up to the first 5 non-empty lines after a step heading for `Model:`,
+ * `Parallel:`, and `Lane:` metadata lines. Stop as soon as a non-empty line matches
  * neither pattern. Tolerates blank lines between the heading and the
- * metadata, and tolerates the two lines being in reversed order.
+ * metadata, and tolerates the three lines in any order.
  *
- * Returns `{ model, parallel, metaLineStart, metaLineEnd }` — line indices
+ * Returns `{ model, parallel, lane, metaLineStart, metaLineEnd }` — line indices
  * are the first/last line consumed (inclusive), so callers can strip those
- * source lines from the rendered body. `model` / `parallel` are `null` when
+ * source lines from the rendered body. `model` / `parallel` / `lane` are `null` when
  * the corresponding line was absent.
  */
 export function parseStepMetadata(lines, fromLine) {
   const matched = [];
   let model = null;
   let parallel = null;
+  let lane = null;
   let nonEmptySeen = 0;
 
   for (let i = fromLine; i < lines.length && nonEmptySeen < 5; i += 1) {
@@ -476,18 +478,29 @@ export function parseStepMetadata(lines, fromLine) {
       continue;
     }
 
+    const laneMatch = raw.match(/^\s*Lane:\s*(.*)$/i);
+    if (laneMatch) {
+      matched.push(i);
+      if (!lane) {
+        const parsed = parseLaneValue(laneMatch[1]);
+        if (parsed) lane = parsed;
+      }
+      continue;
+    }
+
     // First non-empty line that matches neither label — stop scanning so the
     // step body never gets eaten.
     break;
   }
 
   if (matched.length === 0) {
-    return { model: null, parallel: null, metaLineStart: null, metaLineEnd: null };
+    return { model: null, parallel: null, lane: null, metaLineStart: null, metaLineEnd: null };
   }
 
   return {
     model,
     parallel,
+    lane,
     metaLineStart: Math.min(...matched),
     metaLineEnd: Math.max(...matched),
   };
@@ -566,6 +579,57 @@ export function parseParallelValue(rawValue) {
     if (!siblingSteps.includes(match[1])) siblingSteps.push(match[1]);
   }
   return { isParallel: true, siblingSteps };
+}
+
+export function parseLaneValue(rawValue) {
+  const value = String(rawValue || '').trim();
+  if (!value) return null;
+
+  const matches = [...value.matchAll(/`([^`\r\n]+)`/g)];
+  if (matches.length === 0) return null;
+  if (value.slice(0, matches[0].index).trim()) return null;
+
+  const globs = [];
+  for (const [index, match] of matches.entries()) {
+    if (index > 0) {
+      const previous = matches[index - 1];
+      const gapStart = previous.index + previous[0].length;
+      if (!/^\s*,\s*$/.test(value.slice(gapStart, match.index))) return null;
+    }
+    const normalized = normalizeLaneGlob(match[1]);
+    if (!normalized) return null;
+    if (!globs.includes(normalized)) globs.push(normalized);
+  }
+
+  const last = matches.at(-1);
+  if (value.slice(last.index + last[0].length).trim()) return null;
+  return globs.length > 0 ? { globs } : null;
+}
+
+function normalizeLaneGlob(rawGlob) {
+  let glob = String(rawGlob || '').trim();
+  while (glob.startsWith('./')) glob = glob.slice(2);
+  glob = glob.replace(/\/$/, '');
+  if (
+    !glob
+    || glob.startsWith('/')
+    || /^[A-Za-z]:[\\/]/.test(glob)
+    || glob.includes('\\')
+    || glob.includes('//')
+    || glob.split('/').some((segment) => segment === '..' || segment === '.')
+  ) return null;
+
+  let bracketOpen = false;
+  for (const character of glob) {
+    if (character === '[') {
+      if (bracketOpen) return null;
+      bracketOpen = true;
+    } else if (character === ']') {
+      if (!bracketOpen) return null;
+      bracketOpen = false;
+    }
+  }
+  return bracketOpen ? null : glob;
 }
 
 export function findSkillNearby(blocks, fromIndex) {
@@ -695,7 +759,7 @@ export function stripFinalReviewBlocks(blocks, finalReview) {
 
 /**
  * Remove paragraph blocks whose source lines were consumed as step metadata
- * (`Model:` / `Parallel:`). The chips render the same info under the step
+ * (`Model:` / `Parallel:` / `Lane:`). The chips render the same info under the step
  * heading — we don't want the raw lines duplicating it in the body DOM.
  *
  * Only drop a paragraph if its entire line range is covered by a step's

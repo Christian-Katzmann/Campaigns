@@ -62,6 +62,12 @@ test('draft validation requires parser-complete structure and the selected chip 
       && error.statusCode === 422
       && /selected default Model chip/.test(error.message),
   );
+  assert.throws(
+    () => validateDraftedCampaign(markdown.replace('Lane: `src/prepare/**`\n', ''), { modelValue }),
+    (error) => error instanceof PlannerDraftError
+      && error.statusCode === 422
+      && /valid Lane declaration/.test(error.message),
+  );
   assert.equal(normalizePlannerMarkdown(`\`\`\`markdown\n${markdown}\n\`\`\``), markdown.trim());
 });
 
@@ -96,6 +102,7 @@ FORWARD SWEEP: before checking this step off, do a quick pass over the campaign'
 
 Model: ${modelValue}
 Parallel: NO
+Lane: \`src/prepare/**\`
 
 ${prompt('Prepare the result.')}
 
@@ -103,6 +110,7 @@ ${prompt('Prepare the result.')}
 
 Model: ${modelValue}
 Parallel: NO
+Lane: \`src/ship/**\`
 
 ${prompt('Ship the result.')}
 

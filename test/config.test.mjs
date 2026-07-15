@@ -18,7 +18,7 @@ test('config precedence is bundled, project, user, explicit, env, then CLI', asy
   const fixture = await makeFixture(t);
   const explicitPath = path.join(fixture.root, 'extra.json');
   await writeJson(path.join(fixture.repo, '.campaigns.json'), {
-    run: { max_run_minutes: 10 },
+    run: { max_run_minutes: 10, max_parallel_steps: 1 },
   });
   await writeJson(path.join(fixture.userConfigDir, 'config.json'), {
     run: { max_run_minutes: 20 },
@@ -34,12 +34,15 @@ test('config precedence is bundled, project, user, explicit, env, then CLI', asy
     env: {
       CAMPAIGNS_CONFIG_DIR: fixture.userConfigDir,
       CAMPAIGNS_MAX_RUN_MINUTES: '40',
+      CAMPAIGNS_MAX_PARALLEL_STEPS: '3',
     },
-    cli: { maxRunMinutes: '50' },
+    cli: { maxRunMinutes: '50', maxParallelSteps: '4' },
   });
 
   assert.equal(resolved.config.run.max_run_minutes, 50);
   assert.equal(resolved.effective.maxRunMinutes, 50);
+  assert.equal(resolved.effective.maxParallelSteps, 4);
+  assert.equal(resolved.sources['run.max_parallel_steps'], 'cli:--max-parallel-steps');
   assert.equal(resolved.sources['run.max_run_minutes'], 'cli:--max-run-minutes');
   assert.deepEqual(resolved.files.map(({ kind, loaded }) => [kind, loaded]), [
     ['bundled', true],

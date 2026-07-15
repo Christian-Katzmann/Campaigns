@@ -3053,6 +3053,14 @@ details.step-group[data-completed="true"] .step-meta {
   white-space: nowrap;
 }
 
+.meta-lane-label {
+  font-weight: 650;
+}
+
+.meta-lane-globs {
+  font-family: var(--mono);
+}
+
 /* Model chip — two segments (Claude Code + Codex) split by a thin divider.
    Each segment leads with a tiny mono glyph in a distinct tone so the eye
    can tell the agents apart at a glance. */
@@ -3634,6 +3642,271 @@ details.doc-section[open] .doc-section-chevron {
 .settings-field-group strong {
   font-size: 15px;
   display: block;
+}
+
+.settings-panel-button {
+  width: 100%;
+  justify-content: space-between;
+  border-color: var(--line);
+  background: var(--paper);
+}
+
+/* ---------- Worktrees panel ---------- */
+
+.worktrees-panel {
+  position: fixed;
+  inset: 0;
+  z-index: 1100;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+
+.worktrees-panel[hidden] {
+  display: none;
+}
+
+.worktrees-panel-backdrop {
+  position: absolute;
+  inset: 0;
+  background: color-mix(in srgb, var(--ink) 36%, transparent);
+  backdrop-filter: blur(3px);
+}
+
+.worktrees-panel-dialog {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: min(920px, 100%);
+  max-height: min(760px, calc(100vh - 48px));
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--page) 90%, var(--paper));
+  box-shadow: var(--drawer-shadow);
+  color: var(--ink);
+}
+
+.worktrees-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 18px 20px 14px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.worktrees-panel-header .eyebrow {
+  margin: 0 0 3px;
+}
+
+.worktrees-panel-header h2 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 720;
+}
+
+.worktrees-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.worktrees-sort {
+  display: flex;
+  gap: 4px;
+  margin-right: auto;
+}
+
+.worktrees-sort [aria-pressed="true"] {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--ink);
+}
+
+.worktrees-sort [aria-pressed="true"]::after {
+  content: " ↓";
+}
+
+.worktrees-sort [aria-pressed="true"][data-direction="asc"]::after {
+  content: " ↑";
+}
+
+.worktrees-help {
+  margin: 0;
+  padding: 10px 20px;
+  border-bottom: 1px solid var(--line-soft);
+  color: var(--ink-faint);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.worktrees-list {
+  min-height: 140px;
+  overflow-y: auto;
+  padding: 4px 20px 18px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--line) transparent;
+}
+
+.worktrees-empty {
+  margin: 0;
+  padding: 48px 12px;
+  text-align: center;
+  color: var(--ink-faint);
+  font-size: 13px;
+}
+
+.worktrees-empty--error {
+  color: var(--danger);
+}
+
+.worktree-row {
+  display: grid;
+  grid-template-columns: minmax(220px, 1.5fr) minmax(250px, 1fr) auto;
+  align-items: center;
+  gap: 18px;
+  padding: 13px 4px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.worktree-row-main {
+  min-width: 0;
+}
+
+.worktree-row-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.worktree-row-title strong {
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 14px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.worktree-repo,
+.worktree-path {
+  display: block;
+  overflow: hidden;
+  margin-top: 3px;
+  color: var(--ink-faint);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.worktree-path {
+  font-family: var(--mono);
+}
+
+.worktree-status {
+  flex: 0 0 auto;
+  padding: 2px 7px;
+  border-radius: 100px;
+  background: var(--hover-wash);
+  color: var(--ink-faint);
+  font-size: 10px;
+  font-weight: 720;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.worktree-status--live {
+  background: var(--status-ok-wash);
+  color: var(--status-ok);
+}
+
+.worktree-status--orphan {
+  background: var(--status-warn-wash);
+  color: var(--status-warn);
+}
+
+.worktree-status--locked,
+.worktree-status--held {
+  background: var(--danger-wash);
+  color: var(--danger);
+}
+
+.worktree-row-facts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.worktree-fact {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.worktree-fact-label {
+  color: var(--ink-faint);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.worktree-fact strong {
+  overflow: hidden;
+  color: var(--ink-soft);
+  font-size: 11px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.worktree-row-actions {
+  width: 112px;
+  text-align: right;
+}
+
+.worktree-remove {
+  color: var(--danger);
+}
+
+.worktree-remove--live {
+  color: var(--status-warn);
+}
+
+@media (max-width: 760px) {
+  .worktrees-panel {
+    padding: 0;
+  }
+
+  .worktrees-panel-dialog {
+    width: 100%;
+    max-height: 100%;
+    height: 100%;
+    border: 0;
+    border-radius: 0;
+  }
+
+  .worktrees-toolbar {
+    flex-wrap: wrap;
+  }
+
+  .worktree-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 10px;
+  }
+
+  .worktree-row-facts {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+
+  .worktree-row-actions {
+    width: auto;
+  }
 }
 
 .input-with-button {
@@ -4248,6 +4521,24 @@ body.theme-signal {
   align-items: baseline;
   gap: 8px;
   margin-bottom: 10px;
+}
+
+.drawer-now--parallel > .drawer-section-title {
+  margin-bottom: 10px;
+}
+
+.drawer-now-parallel-step {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 8px;
+  padding: 9px 0;
+  border-top: 1px solid var(--line-soft);
+}
+
+.drawer-now-parallel-step .drawer-now-voice {
+  grid-column: 1 / -1;
+  margin: 2px 0 0;
 }
 
 .drawer-now-step-id {
@@ -5766,6 +6057,8 @@ body.away-open {
 .prompt-summary:focus-visible,
 .phase-summary:focus-visible,
 .settings-select:focus-visible,
+.settings-panel-button:focus-visible,
+.worktrees-panel button:focus-visible,
 .switch input:focus-visible + .slider,
 .step-link:focus-visible {
   outline: 2px solid var(--accent);
@@ -5824,6 +6117,7 @@ html {
   .toast,
   .resume-card,
   .settings-drawer,
+  .worktrees-panel,
   .automate-drawer,
   .conflict-modal,
   .confetti-canvas,

@@ -1,15 +1,19 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 
 import {
   buildStepRunnerInvocation,
+  globPrefix,
+  laneGlobsOverlap,
   parseCampaignPlan,
   PumpLockError,
   requestCampaignStop,
+  resolveParallelLaneSafety,
+  resolveParallelStepGroup,
   runCampaign,
   runExecutableChecks,
   runPathsForCampaign,
@@ -54,6 +58,53 @@ test('parseCampaignPlan attaches one and several executable checks', () => {
     `Create the second fixture result.\n${severalChecks}`,
   );
   assert.equal(parseCampaignPlan(severalChecksMarkdown).steps[1].checks.length, 3);
+});
+
+test('parallel metadata reaches the engine plan and only reciprocal same-phase links group', () => {
+  const markdown = parallelCampaignMarkdown();
+  const plan = parseCampaignPlan(markdown);
+  assert.deepEqual(plan.steps[0].parallel, { isParallel: true, siblingSteps: ['1.2'] });
+  assert.deepEqual(plan.steps[0].lane, { globs: ['result-1.1.txt'] });
+  assert.deepEqual(resolveParallelStepGroup(plan, '1.1').steps.map((step) => step.id), ['1.1', '1.2']);
+  assert.deepEqual(resolveParallelLaneSafety(resolveParallelStepGroup(plan, '1.1').steps), {
+    safe: true,
+    reason: null,
+  });
+
+  const malformed = parseCampaignPlan(markdown.replace(
+    'Parallel: YES — with Step 1.1',
+    'Parallel: NO',
+  ));
+  assert.match(resolveParallelStepGroup(malformed, '1.1').reason, /reciprocal/);
+
+  const crossPhase = parseCampaignPlan(markdown.replace(
+    'Parallel: YES — with Step 1.2',
+    'Parallel: YES — with Step 2.1',
+  ));
+  assert.match(resolveParallelStepGroup(crossPhase, '1.1').reason, /across phases/);
+
+  const overlapping = parseCampaignPlan(markdown.replace(
+    'Lane: `result-1.2.txt`',
+    'Lane: `result-1.1.txt`',
+  ));
+  assert.match(
+    resolveParallelLaneSafety(resolveParallelStepGroup(overlapping, '1.1').steps).reason,
+    /overlapping lanes/,
+  );
+
+  const missing = parseCampaignPlan(markdown.replace('Lane: `result-1.2.txt`\n', ''));
+  assert.match(
+    resolveParallelLaneSafety(resolveParallelStepGroup(missing, '1.1').steps).reason,
+    /missing or has an unparseable Lane/,
+  );
+});
+
+test('lane overlap uses campaign-wt glob-prefix semantics', () => {
+  assert.equal(globPrefix('src/components/**/*.tsx'), 'src/components/');
+  assert.equal(laneGlobsOverlap('src/left/**', 'src/right/**'), false);
+  assert.equal(laneGlobsOverlap('src/**', 'src/api/**'), true);
+  assert.equal(laneGlobsOverlap('**', 'docs/**'), true);
+  assert.equal(laneGlobsOverlap('src/a*.js', 'src/ab*.js'), false);
 });
 
 test('primary chip segment selects the runner, model, and effort at the invocation seam', async () => {
@@ -228,6 +279,263 @@ test('fake success runner ticks every step, runs final review, and merges', asyn
   const status = await git(fixture.repo, ['status', '--short']);
   assert.equal(status, '');
   assert.equal(await git(fixture.repo, ['log', '-1', '--pretty=%s']), 'Complete campaign step 1.2', status);
+});
+
+test('default runs isolate an ignored campaign, use its canonical source, and prune after finalize', async (t) => {
+  const fixture = await makeFixture(t, {
+    worktree: true,
+    gitignoredCampaign: true,
+    runnerScript: `
+      const fs = require('node:fs');
+      const { execFileSync } = require('node:child_process');
+      const prompt = process.argv[1];
+      const source = prompt.match(/^Campaign: (.+)$/m)?.[1];
+      const step = prompt.match(/^Step: ([^ ]+)/m)?.[1];
+      if (!source || !step || !fs.readFileSync(source, 'utf8').includes('# Fixture campaign')) process.exit(7);
+      const output = 'runner-cwd-' + step + '.txt';
+      fs.writeFileSync(output, process.cwd() + '\\n');
+      execFileSync('git', ['add', output]);
+      execFileSync('git', ['-c', 'commit.gpgSign=false', 'commit', '-m', 'Record isolated runner cwd']);
+      process.stdout.write(prompt);
+    `,
+    reviewScript: `
+      const fs = require('node:fs');
+      const prompt = process.argv[1];
+      const source = prompt.match(/^Campaign source: (.+)$/m)?.[1];
+      if (!source || !fs.existsSync(source)) process.exit(8);
+      process.stdout.write('Verdict: APPROVED\\nReasons:\\n\\nReview cwd: ' + process.cwd() + '\\nCampaign source: ' + source);
+    `,
+  });
+  const before = worktreePaths(await git(fixture.repo, ['worktree', 'list', '--porcelain']));
+
+  const result = await runCampaign(fixture.campaignPath, fixture.options);
+  const after = worktreePaths(await git(fixture.repo, ['worktree', 'list', '--porcelain']));
+  const markdown = await readFile(fixture.campaignPath, 'utf8');
+  const runnerCwd = (await readFile(path.join(fixture.repo, 'runner-cwd-1.1.txt'), 'utf8')).trim();
+  const review = await readFile(result.finalReviewPath, 'utf8');
+  const tracked = await git(fixture.repo, ['ls-tree', '-r', '--name-only', 'HEAD']);
+
+  assert.notEqual(runnerCwd, fixture.repo);
+  assert.equal(path.basename(result.state.run.identity.execution.repo_root), path.basename(runnerCwd));
+  assert.equal(result.state.run.identity.source.campaign_path, await realpath(fixture.campaignPath));
+  assert.match(markdown, /- \[x\] Step 1\.1/);
+  assert.match(review, new RegExp(`Campaign source: ${escapeRegex(result.state.run.identity.source.campaign_path)}`));
+  assert.doesNotMatch(tracked, /(^|\n)campaign\.md$/);
+  assert.deepEqual(after, before);
+  assert.ok(result.state.artifacts.worktree.pruned_at);
+});
+
+test('reciprocal siblings run concurrently to the configured cap, join, and prune', async (t) => {
+  const checkCommand = `node -e "const fs=require('node:fs');const cp=require('node:child_process');const path=require('node:path');for(const id of ['1.1','1.2','1.3'])if(!fs.existsSync('result-'+id+'.txt'))process.exit(8);const gitDir=cp.execFileSync('git',['rev-parse','--git-common-dir'],{encoding:'utf8'}).trim();fs.appendFileSync(path.resolve(gitDir,'parallel-check-count'),'1\\n');process.stdout.write('joined')"`;
+  const fixture = await makeFixture(t, {
+    worktree: true,
+    maxParallelSteps: 2,
+    campaignText: parallelCampaignMarkdown({
+      threeSteps: true,
+      check: { command: checkCommand, expectedOutput: 'joined' },
+    }),
+    runnerScript: `
+      const fs = require('node:fs');
+      const { execFileSync } = require('node:child_process');
+      const prompt = process.argv[1];
+      const step = prompt.match(/^Step: ([^ ]+)/m)[1];
+      const trackerPath = process.env.PARALLEL_TRACKER;
+      const lockPath = trackerPath + '.lock';
+      const pause = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+      const update = (fn) => {
+        while (true) { try { fs.mkdirSync(lockPath); break; } catch { pause(3); } }
+        try {
+          const value = fs.existsSync(trackerPath)
+            ? JSON.parse(fs.readFileSync(trackerPath, 'utf8'))
+            : { active: 0, max: 0, events: [], counts: {} };
+          fn(value);
+          fs.writeFileSync(trackerPath, JSON.stringify(value));
+          return value;
+        } finally { fs.rmdirSync(lockPath); }
+      };
+      const started = update((value) => {
+        value.counts[step] = (value.counts[step] || 0) + 1;
+        if (step === '2.1' && !['1.1','1.2','1.3'].every((id) => value.events.includes('end:' + id))) {
+          value.joinViolation = true;
+        }
+        if (step === '2.1') {
+          const common = execFileSync('git', ['rev-parse', '--git-common-dir'], { encoding: 'utf8' }).trim();
+          const checkCountPath = require('node:path').resolve(common, 'parallel-check-count');
+          const checks = fs.existsSync(checkCountPath)
+            ? fs.readFileSync(checkCountPath, 'utf8').trim().split('\\n').filter(Boolean).length
+            : 0;
+          if (checks !== 1) value.joinViolation = true;
+        }
+        value.active += 1;
+        value.max = Math.max(value.max, value.active);
+        value.events.push('start:' + step);
+      });
+      if (started.joinViolation) process.exit(9);
+      pause(step === '2.1' ? 20 : 180);
+      fs.writeFileSync('result-' + step + '.txt', step + '\\n');
+      execFileSync('git', ['add', 'result-' + step + '.txt']);
+      execFileSync('git', ['-c', 'commit.gpgSign=false', 'commit', '-m', 'Complete ' + step]);
+      update((value) => { value.active -= 1; value.events.push('end:' + step); });
+      process.stdout.write(prompt);
+    `,
+  });
+  const trackerPath = path.join(fixture.root, 'parallel-tracker.json');
+  fixture.options.env.PARALLEL_TRACKER = trackerPath;
+  const before = worktreePaths(await git(fixture.repo, ['worktree', 'list', '--porcelain']));
+
+  const result = await runCampaign(fixture.campaignPath, fixture.options);
+
+  const tracker = JSON.parse(await readFile(trackerPath, 'utf8'));
+  const after = worktreePaths(await git(fixture.repo, ['worktree', 'list', '--porcelain']));
+  assert.equal(tracker.max, 2);
+  assert.equal(tracker.joinViolation, undefined);
+  assert.deepEqual(tracker.counts, { '1.1': 1, '1.2': 1, '1.3': 1, '2.1': 1 });
+  assert.deepEqual(after, before);
+  assert.equal(result.state.config.max_parallel_steps, 2);
+  assert.equal(result.state.steps[0].parallel.is_parallel, true);
+  assert.deepEqual(result.state.steps[0].lane, { globs: ['result-1.1.txt'] });
+  assert.equal(result.state.artifacts.parallel_worktrees.length, 3);
+  assert.ok(result.state.artifacts.parallel_worktrees.every((worktree) => worktree.pruned_at));
+  assert.deepEqual(
+    result.state.history.filter((entry) => entry.event === 'parallel_step_merged').map((entry) => entry.step_id),
+    ['1.1', '1.2', '1.3'],
+  );
+  const checkCount = await readFile(path.join(fixture.repo, '.git', 'parallel-check-count'), 'utf8');
+  assert.equal(checkCount, '1\n1\n');
+});
+
+test('a failed parallel member preserves its clean sibling and retries alone', async (t) => {
+  const fixture = await makeFixture(t, {
+    worktree: true,
+    campaignText: parallelCampaignMarkdown(),
+    runnerScript: `
+      const fs = require('node:fs');
+      const { execFileSync } = require('node:child_process');
+      const prompt = process.argv[1];
+      const step = prompt.match(/^Step: ([^ ]+)/m)[1];
+      const countsPath = process.env.PARALLEL_COUNTS;
+      const lockPath = countsPath + '.lock';
+      const pause = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+      while (true) { try { fs.mkdirSync(lockPath); break; } catch { pause(3); } }
+      const counts = fs.existsSync(countsPath) ? JSON.parse(fs.readFileSync(countsPath, 'utf8')) : {};
+      counts[step] = (counts[step] || 0) + 1;
+      fs.writeFileSync(countsPath, JSON.stringify(counts));
+      fs.rmdirSync(lockPath);
+      if (step === '1.2' && !fs.existsSync(process.env.PARALLEL_FAILURE_ONCE)) {
+        fs.writeFileSync(process.env.PARALLEL_FAILURE_ONCE, 'failed once');
+        process.exit(7);
+      }
+      fs.writeFileSync('result-' + step + '.txt', step + '\\n');
+      execFileSync('git', ['add', 'result-' + step + '.txt']);
+      execFileSync('git', ['-c', 'commit.gpgSign=false', 'commit', '-m', 'Complete ' + step]);
+      process.stdout.write(prompt);
+    `,
+  });
+  const countsPath = path.join(fixture.root, 'parallel-counts.json');
+  fixture.options.env.PARALLEL_COUNTS = countsPath;
+  fixture.options.env.PARALLEL_FAILURE_ONCE = path.join(fixture.root, 'failure-once');
+
+  await assert.rejects(runCampaign(fixture.campaignPath, fixture.options), /Runner exited with code 7/);
+  const paths = runPathsForCampaign(fixture.campaignPath, fixture.runsDir);
+  const failed = JSON.parse(await readFile(paths.statePath, 'utf8'));
+  const markdownAfterFailure = await readFile(fixture.campaignPath, 'utf8');
+  const registeredAfterFailure = worktreePaths(await git(fixture.repo, ['worktree', 'list', '--porcelain']));
+  assert.match(markdownAfterFailure, /- \[x\] Step 1\.1/);
+  assert.match(markdownAfterFailure, /- \[ \] Step 1\.2/);
+  assert.equal(failed.steps.find((step) => step.id === '1.1').status, 'completed');
+  assert.equal(failed.steps.find((step) => step.id === '1.2').status, 'failed');
+  assert.ok(failed.artifacts.parallel_worktrees.every((worktree) => worktree.pruned_at));
+  assert.equal(registeredAfterFailure.some((line) => line.includes('/parallel-')), false);
+  assert.ok(failed.artifacts.worktree.pruned_at);
+  assert.equal(
+    `${await git(fixture.repo, ['show', `${failed.artifacts.worktree.branch}:result-1.1.txt`])}\n`,
+    '1.1\n',
+  );
+
+  const result = await runCampaign(fixture.campaignPath, fixture.options);
+  const counts = JSON.parse(await readFile(countsPath, 'utf8'));
+  assert.ok(['completed', 'merged'].includes(result.state.run.status));
+  assert.deepEqual(counts, { '1.1': 1, '1.2': 2, '2.1': 1 });
+  assert.ok(result.state.history.some((entry) => (
+    entry.event === 'parallel_group_demoted' && /already-completed Step 1\.1/.test(entry.message)
+  )));
+});
+
+test('overlapping and missing lanes demote parallel groups visibly and still complete', async (t) => {
+  for (const [name, campaignText, reason] of [
+    [
+      'overlap',
+      parallelCampaignMarkdown().replace('Lane: `result-1.2.txt`', 'Lane: `result-1.1.txt`'),
+      /overlapping lanes/,
+    ],
+    [
+      'missing',
+      parallelCampaignMarkdown().replace('Lane: `result-1.2.txt`\n', ''),
+      /missing or has an unparseable Lane/,
+    ],
+  ]) {
+    await t.test(name, async (t) => {
+      const fixture = await makeFixture(t, { worktree: true, campaignText });
+      const before = worktreePaths(await git(fixture.repo, ['worktree', 'list', '--porcelain']));
+      const result = await runCampaign(fixture.campaignPath, fixture.options);
+      const after = worktreePaths(await git(fixture.repo, ['worktree', 'list', '--porcelain']));
+      const demotion = result.state.history.find((entry) => entry.event === 'parallel_group_demoted');
+
+      assert.ok(['completed', 'merged'].includes(result.state.run.status));
+      assert.match(demotion?.message || '', reason);
+      assert.deepEqual(after, before);
+    });
+  }
+});
+
+test('stopping a parallel group terminates every worker group and prunes every child worktree', async (t) => {
+  const fixture = await makeFixture(t, {
+    worktree: true,
+    stopGraceMs: 50,
+    campaignText: parallelCampaignMarkdown(),
+    watchdog: { minimum_runtime_ms: 60_000, stall_window_ms: 60_000 },
+    runnerScript: `
+      const fs = require('node:fs');
+      const { spawn } = require('node:child_process');
+      const step = process.argv[1].match(/^Step: ([^ ]+)/m)[1];
+      const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+      fs.writeFileSync(process.env.PARALLEL_PID_DIR + '/' + step + '.json', JSON.stringify({ parent: process.pid, child: child.pid }));
+      setInterval(() => {}, 1000);
+    `,
+  });
+  const pidDir = path.join(fixture.root, 'pids');
+  await mkdir(pidDir);
+  fixture.options.env.PARALLEL_PID_DIR = pidDir;
+  const before = worktreePaths(await git(fixture.repo, ['worktree', 'list', '--porcelain']));
+  const running = runCampaign(fixture.campaignPath, fixture.options);
+  const paths = runPathsForCampaign(fixture.campaignPath, fixture.runsDir);
+  await waitFor(async () => {
+    const active = await readOptional(paths.statePath);
+    return active?.workers?.length === 2
+      && await readTextOptional(path.join(pidDir, '1.1.json'))
+      && await readTextOptional(path.join(pidDir, '1.2.json'));
+  });
+  const active = await readOptional(paths.statePath);
+  const workerPids = active.workers.map((worker) => worker.pid);
+  const processPids = [];
+  for (const stepId of ['1.1', '1.2']) {
+    const value = JSON.parse(await readFile(path.join(pidDir, `${stepId}.json`), 'utf8'));
+    processPids.push(value.parent, value.child);
+  }
+
+  await requestCampaignStop(fixture.campaignPath, {
+    runsDir: fixture.runsDir,
+    stopGraceMs: 50,
+    waitTimeoutMs: 4_000,
+  });
+  const result = await running;
+  await waitFor(() => [...workerPids, ...processPids].every((pid) => !isPidAlive(pid)));
+  const after = worktreePaths(await git(fixture.repo, ['worktree', 'list', '--porcelain']));
+
+  assert.equal(result.state.run.status, 'stopped_by_user');
+  assert.deepEqual(result.state.workers, []);
+  assert.ok(result.state.artifacts.parallel_worktrees.every((worktree) => worktree.pruned_at));
+  assert.deepEqual(after, before);
 });
 
 test('a concurrent invocation is refused by the per-campaign PID lock', async (t) => {
@@ -727,8 +1035,11 @@ async function makeFixture(t, {
   maxStepsPerRun = 50,
   maxRunMinutes = 360,
   stopGraceMs = 3_000,
+  maxParallelSteps = 2,
   divergeTarget = false,
   runnerOutputFile = false,
+  worktree = false,
+  gitignoredCampaign = false,
 } = {}) {
   const root = await mkdtemp(path.join(tmpdir(), 'campaigns-pump-'));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -742,6 +1053,7 @@ async function makeFixture(t, {
   await git(repo, ['config', 'user.name', 'Campaigns Test']);
   await git(repo, ['config', 'user.email', 'campaigns@example.test']);
   await writeFile(campaignPath, campaignText ?? campaignMarkdown(firstChecked), 'utf8');
+  if (gitignoredCampaign) await writeFile(path.join(repo, '.gitignore'), 'campaign.md\n', 'utf8');
   await writeConfig(configPath, {
     branch,
     delayMs,
@@ -755,9 +1067,10 @@ async function makeFixture(t, {
     maxStepsPerRun,
     maxRunMinutes,
     stopGraceMs,
+    maxParallelSteps,
     runnerOutputFile,
   });
-  await git(repo, ['add', 'campaign.md']);
+  await git(repo, ['add', gitignoredCampaign ? '.gitignore' : 'campaign.md']);
   await git(repo, ['commit', '-m', 'Add fixture campaign']);
   if (divergeTarget) {
     if (!branch) throw new Error('divergeTarget requires a campaign branch');
@@ -775,6 +1088,7 @@ async function makeFixture(t, {
     options: {
       configPath,
       runsDir,
+      noWorktree: !worktree,
       stdout: silent,
       stderr: silent,
       env: { ...process.env, CAMPAIGNS_CONFIG_DIR: path.join(root, 'user-config') },
@@ -813,6 +1127,70 @@ Review the fixture.
 `;
 }
 
+function parallelCampaignMarkdown({ check = null, threeSteps = false } = {}) {
+  const sibling = threeSteps ? 'Steps 1.2 and 1.3' : 'Step 1.2';
+  const reverse = threeSteps ? 'Steps 1.1 and 1.3' : 'Step 1.1';
+  const third = threeSteps ? `- [ ] Step 1.3 — Third\n` : '';
+  const thirdSection = threeSteps ? `
+## Step 1.3 — Third
+
+Model: Fake · None
+Parallel: YES — with Steps 1.1 and 1.2
+Lane: \`result-1.3.txt\`
+
+\`\`\`text
+Create the third fixture result.
+\`\`\`
+` : '';
+  return `# Parallel fixture campaign
+
+## Progress checklist
+
+### Phase 1 — Parallel build
+
+- [ ] Step 1.1 — First
+- [ ] Step 1.2 — Second
+${third}- [ ] Step 2.1 — Join proof
+- [ ] Final review
+
+## Step 1.1 — First
+
+Model: Fake · None
+Parallel: YES — with ${sibling}
+Lane: \`result-1.1.txt\`
+
+\`\`\`text
+Create the first fixture result.${check ? `\nCHECK: ${JSON.stringify(check)}` : ''}
+\`\`\`
+
+## Step 1.2 — Second
+
+Model: Fake · None
+Parallel: YES — with ${reverse}
+Lane: \`result-1.2.txt\`
+
+\`\`\`text
+Create the second fixture result.
+\`\`\`
+${thirdSection}
+## Step 2.1 — Join proof
+
+Model: Fake · None
+Parallel: NO
+Lane: \`result-2.1.txt\`
+
+\`\`\`text
+Verify the phase joined before this step starts.
+\`\`\`
+
+## Final review
+
+\`\`\`text
+Review the fixture.
+\`\`\`
+`;
+}
+
 async function writeConfig(configPath, {
   branch = null,
   delayMs = 0,
@@ -826,6 +1204,7 @@ async function writeConfig(configPath, {
   maxStepsPerRun = 50,
   maxRunMinutes = 360,
   stopGraceMs = 3_000,
+  maxParallelSteps = 2,
   runnerOutputFile = false,
 } = {}) {
   const stepScript = runnerScript ?? (delayMs > 0
@@ -857,6 +1236,7 @@ async function writeConfig(configPath, {
       max_steps_per_run: maxStepsPerRun,
       max_run_minutes: maxRunMinutes,
       stop_grace_ms: stopGraceMs,
+      max_parallel_steps: maxParallelSteps,
     },
     review: { maxFixAttempts, forceMergeUnreviewed },
     runners: {
@@ -906,6 +1286,14 @@ async function readTextOptional(filePath) {
     if (error.code === 'ENOENT') return null;
     throw error;
   }
+}
+
+function escapeRegex(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function worktreePaths(porcelain) {
+  return String(porcelain).split('\n').filter((line) => line.startsWith('worktree '));
 }
 
 function isPidAlive(pid) {
