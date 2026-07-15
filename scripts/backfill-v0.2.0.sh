@@ -21,7 +21,8 @@ fi
 
 cd "$root"
 test -f "$notes"
-test -z "$(git status --porcelain --untracked-files=no)"
+test -z "$(git status --porcelain)"
+git fetch --prune origin
 git merge-base --is-ancestor "$commit" origin/main
 gh auth status >/dev/null
 

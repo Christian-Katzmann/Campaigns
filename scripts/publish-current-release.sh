@@ -26,7 +26,8 @@ fi
 
 test -f "$notes"
 test "$(git branch --show-current)" = main
-test -z "$(git status --porcelain --untracked-files=no)"
+test -z "$(git status --porcelain)"
+git fetch --prune origin
 commit="$(git rev-parse HEAD)"
 test "$commit" = "$(git rev-parse origin/main)"
 npm view campaigns-app@0.2.0 version >/dev/null
