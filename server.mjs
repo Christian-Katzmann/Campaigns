@@ -59,6 +59,12 @@ import {
   sanitizeNotificationSettings,
   stopWatcherFingerprint,
 } from './lib/notifications.mjs';
+import {
+  WorktreeOperationError,
+  cleanupOrphanWorktrees,
+  discoverWorktrees,
+  removeWorktree,
+} from './lib/worktrees.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
@@ -174,6 +180,16 @@ const server = createServer(async (request, response) => {
 
     if (url.pathname === '/api/workflows' && request.method === 'GET') {
       await sendWorkflows(response);
+      return;
+    }
+
+    if (url.pathname === '/api/worktrees' && request.method === 'GET') {
+      await sendWorktrees(response);
+      return;
+    }
+
+    if (url.pathname === '/api/worktrees' && request.method === 'DELETE') {
+      await deleteWorktreeEndpoint(request, response);
       return;
     }
 
@@ -1094,6 +1110,64 @@ async function sendCampaignIcon(url, response) {
 async function sendWorkflows(response) {
   const workflows = await discoverWorkflows();
   sendJson(response, 200, { workflows });
+}
+
+/* ------------------------------ API: worktrees ------------------------------ */
+
+async function sendWorktrees(response) {
+  const registry = await readRegistry();
+  const worktrees = await discoverWorktrees(registry.campaigns);
+  sendJson(response, 200, {
+    scope: 'registered-campaign-repositories',
+    worktrees: worktrees.map(publicWorktree),
+  });
+}
+
+async function deleteWorktreeEndpoint(request, response) {
+  const payload = await readJsonBody(request);
+  const registry = await readRegistry();
+
+  if (payload.cleanup === 'orphans' || Array.isArray(payload.paths)) {
+    const result = await cleanupOrphanWorktrees(registry.campaigns, {
+      paths: Array.isArray(payload.paths) ? payload.paths : null,
+    });
+    sendJson(response, 200, result);
+    return;
+  }
+
+  if (typeof payload.path !== 'string' || payload.path.trim() === '') {
+    sendJson(response, 400, { error: 'Expected { path: string } or { cleanup: "orphans" }.' });
+    return;
+  }
+
+  try {
+    const result = await removeWorktree(registry.campaigns, payload.path, {
+      confirm: payload.confirm === true,
+    });
+    sendJson(response, 200, result);
+  } catch (error) {
+    if (!(error instanceof WorktreeOperationError)) throw error;
+    sendJson(response, error.statusCode, {
+      error: error.message,
+      code: error.code,
+      confirmationRequired: error.confirmationRequired,
+    });
+  }
+}
+
+function publicWorktree(row) {
+  return {
+    ...row,
+    owner: {
+      backend: row.owner.backend,
+      run_id: row.owner.run_id,
+      campaign_id: row.owner.campaign_id,
+      campaign_path: row.owner.campaign_path,
+      campaign_name: row.owner.campaign_name,
+      status: row.owner.status,
+      live: row.owner.live,
+    },
+  };
 }
 
 async function discoverWorkflows() {

@@ -13,6 +13,7 @@ import {
 import { initSwitcher } from './modules/switcher.mjs';
 import { loadPrefs } from './modules/prefs-store.mjs';
 import { initSettings } from './modules/settings.mjs';
+import { initWorktreesPanel } from './modules/worktrees.mjs';
 import {
   fetchCampaignAutomateState,
   initAutomateDrawer,
@@ -137,6 +138,7 @@ async function initialize() {
   showResumeCardIfNeeded();
   initSwitcher();
   initSettings(payload.app);
+  initWorktreesPanel();
   initAutomateDrawer();
   if (params.get('drawer') === 'activity') {
     await fetchCampaignAutomateState();
