@@ -8,7 +8,7 @@ import { promisify } from 'node:util';
 import { after, test } from 'node:test';
 
 import { parseCampaignPlan, runPathsForCampaign } from '../lib/pump.mjs';
-import { validateRunState } from '../lib/run-state.mjs';
+import { createRunState, transitionRunState, validateRunState } from '../lib/run-state.mjs';
 import {
   parseMarkdown,
   replaceFencedBlockContent,
@@ -592,6 +592,155 @@ test('campaigns run completes through the CLI with a fake runner and valid state
   assert.equal(state.artifacts.worktree, null);
   assert.match(await readFile(campaignPath, 'utf8'), /- \[x\] Step 1\.1/);
   assert.equal(await git(repo, ['status', '--short']), '');
+});
+
+test('step diff endpoint serves exact ledger ranges and bounds large or binary output', async (t) => {
+  const repo = path.join(root, 'step-diff-http-fixture');
+  const campaignPath = path.join(repo, 'campaign.md');
+  await mkdir(repo, { recursive: true });
+  await git(repo, ['init', '-b', 'main']);
+  await git(repo, ['config', 'user.name', 'Campaigns Test']);
+  await git(repo, ['config', 'user.email', 'campaigns@example.test']);
+  await writeFile(campaignPath, `# Diff fixture
+
+## Progress checklist
+
+- [ ] Step 1.1 — Text
+- [ ] Step 1.2 — Large
+- [ ] Step 1.3 — Binary
+- [ ] Final review
+
+## Step 1.1 — Text
+
+\`\`\`text
+Create text files.
+\`\`\`
+
+## Step 1.2 — Large
+
+\`\`\`text
+Create a large file.
+\`\`\`
+
+## Step 1.3 — Binary
+
+\`\`\`text
+Create a binary file.
+\`\`\`
+
+## Final review
+
+\`\`\`text
+Review the diff fixture.
+\`\`\`
+`, 'utf8');
+  await git(repo, ['add', 'campaign.md']);
+  await git(repo, ['commit', '-m', 'Add diff fixture']);
+  const baseOid = await git(repo, ['rev-parse', 'HEAD']);
+  await mkdir(path.join(repo, 'lib'), { recursive: true });
+  await writeFile(path.join(repo, 'lib', 'a.js'), 'export const a = 1;\n', 'utf8');
+  await git(repo, ['add', 'lib/a.js']);
+  await git(repo, ['commit', '-m', 'Add first text file']);
+  await writeFile(path.join(repo, 'lib', 'b.js'), 'export const b = 2;\n', 'utf8');
+  await git(repo, ['add', 'lib/b.js']);
+  await git(repo, ['commit', '-m', 'Add second text file']);
+  const textHeadOid = await git(repo, ['rev-parse', 'HEAD']);
+  await writeFile(path.join(repo, 'huge.txt'), 'x'.repeat(220 * 1024), 'utf8');
+  await git(repo, ['add', 'huge.txt']);
+  await git(repo, ['commit', '-m', 'Add large file']);
+  const largeHeadOid = await git(repo, ['rev-parse', 'HEAD']);
+  await writeFile(path.join(repo, 'blob.bin'), Buffer.from([0, 1, 2, 3, 0, 255]));
+  await git(repo, ['add', 'blob.bin']);
+  await git(repo, ['commit', '-m', 'Add binary file']);
+  const binaryHeadOid = await git(repo, ['rev-parse', 'HEAD']);
+
+  const server = await startServer({
+    campaignFile: campaignPath,
+    port: 0,
+    host: '127.0.0.1',
+    watchStops: false,
+    writePortFile: false,
+  });
+  t.after(() => closeServer(server));
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+  const registered = await fetch(`${baseUrl}/api/document`).then((response) => response.json());
+  const paths = runPathsForCampaign(campaignPath, process.env.CAMPAIGNS_RUNS_DIR);
+  await mkdir(paths.receiptsDir, { recursive: true });
+  let state = createRunState({
+    id: 'step-diff-http-run',
+    identity: {
+      registry_id: registered.id,
+      source: { campaign_path: campaignPath, repo_root: repo },
+      execution: { campaign_path: campaignPath, repo_root: repo, branch: 'main' },
+    },
+    steps: [
+      { id: '1.1', name: 'Text', phase: '1' },
+      { id: '1.2', name: 'Large', phase: '1' },
+      { id: '1.3', name: 'Binary', phase: '1' },
+    ],
+    config: {
+      runner: 'fake',
+      model: 'fake',
+      effort: 'none',
+      watchdog: { minimum_runtime_ms: 1_000, stall_window_ms: 1_000 },
+    },
+    artifacts: {
+      run_dir: paths.runDir,
+      receipts_dir: paths.receiptsDir,
+      final_review_path: paths.finalReviewPath,
+    },
+  });
+  state = transitionRunState(state, { event: 'run_started' });
+  for (const [stepId, range] of [
+    ['1.1', { base_oid: baseOid, head_oid: textHeadOid }],
+    ['1.2', { base_oid: textHeadOid, head_oid: largeHeadOid }],
+    ['1.3', { base_oid: largeHeadOid, head_oid: binaryHeadOid }],
+  ]) {
+    const receiptPath = path.join(paths.receiptsDir, `${stepId}.md`);
+    await writeFile(receiptPath, `# ${stepId}\n`, 'utf8');
+    state = transitionRunState(state, {
+      event: 'step_started',
+      step_id: stepId,
+      worker: { runner: 'fake', invocation_id: `worker-${stepId}`, pid: null, log_path: null },
+    });
+    state = transitionRunState(state, {
+      event: 'step_completed',
+      step_id: stepId,
+      receipt_path: receiptPath,
+      commit_range: range,
+    });
+  }
+  state = transitionRunState(state, { event: 'run_reached_final_review' });
+  state = transitionRunState(state, { event: 'final_review_started' });
+  state = transitionRunState(state, {
+    event: 'final_review_needs_work',
+    reasons: ['acceptance-miss'],
+    findings: [{ reason: 'acceptance-miss', paths: ['lib/a.js'] }],
+    review_path: paths.finalReviewPath,
+  });
+  await writeFile(paths.statePath, `${JSON.stringify(state, null, 2)}\n`, 'utf8');
+
+  const textResponse = await fetch(`${baseUrl}/api/run/step-diff?id=${registered.id}&step=1.1`);
+  const text = await textResponse.json();
+  const expected = (await execFileAsync('git', ['-C', repo, 'diff', baseOid, textHeadOid])).stdout;
+  assert.equal(textResponse.status, 200);
+  assert.equal(text.raw, expected);
+  assert.deepEqual(text.files, ['lib/a.js', 'lib/b.js']);
+  assert.match(text.html, /step-diff-line--add/);
+  assert.match(text.html, /data-diff-path="lib\/a\.js"/);
+  assert.match(text.html, /step-diff-reason--linked/);
+  assert.doesNotMatch(text.html, /git show/);
+
+  const large = await fetch(`${baseUrl}/api/run/step-diff?id=${registered.id}&step=1.2`).then((response) => response.json());
+  assert.equal(large.kind, 'summary');
+  assert.equal(large.reason, 'large');
+  assert.equal(large.raw, null);
+  assert.match(large.html, /Open this range in the terminal/);
+
+  const binary = await fetch(`${baseUrl}/api/run/step-diff?id=${registered.id}&step=1.3`).then((response) => response.json());
+  assert.equal(binary.kind, 'summary');
+  assert.equal(binary.reason, 'binary');
+  assert.doesNotMatch(binary.html, /step-diff-reason--linked/);
 });
 
 function hash(markdown) {

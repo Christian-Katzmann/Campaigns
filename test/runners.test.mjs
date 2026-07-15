@@ -199,7 +199,10 @@ test('a third echo-style runner is added with config only and completes through 
   });
 
   let state = runningStepState();
-  state = transitionRunState(state, classified.transition);
+  state = transitionRunState(state, {
+    ...classified.transition,
+    commit_range: { base_oid: '1'.repeat(40), head_oid: '2'.repeat(40) },
+  });
   assert.equal(processResult.exitCode, 0);
   assert.equal(classified.completed, true);
   assert.equal(state.steps[0].status, 'completed');

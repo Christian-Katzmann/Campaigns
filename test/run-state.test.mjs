@@ -64,7 +64,17 @@ function worker(id = `worker-${clock}`) {
 }
 
 function move(state, event, fields = {}) {
-  return transitionRunState(state, { event, at: at(), ...fields });
+  return transitionRunState(state, {
+    event,
+    at: at(),
+    ...(event === 'step_completed' ? {
+      commit_range: {
+        base_oid: '1'.repeat(40),
+        head_oid: '2'.repeat(40),
+      },
+    } : {}),
+    ...fields,
+  });
 }
 
 function completeSteps(state) {
@@ -114,7 +124,7 @@ test('version-1 ledgers upgrade with cap defaults and the explicit stop status',
   }
 
   const upgraded = upgradeRunState(old);
-  assert.equal(upgraded.schema_version, 5);
+  assert.equal(upgraded.schema_version, 6);
   assert.equal(upgraded.config.worktree_enabled, false);
   assert.equal(upgraded.config.max_parallel_steps, 2);
   assert.equal(upgraded.artifacts.worktree, null);
@@ -128,6 +138,9 @@ test('version-1 ledgers upgrade with cap defaults and the explicit stop status',
   assert.equal(upgraded.steps[0].model, null);
   assert.equal(upgraded.steps[0].effort, null);
   assert.equal(upgraded.steps[0].lane, null);
+  assert.equal(upgraded.steps[0].commit_range, null);
+  assert.equal(upgraded.steps[0].parallel_group, null);
+  assert.deepEqual(upgraded.review.findings, []);
   assertValidRunState(upgraded);
 });
 
@@ -169,6 +182,32 @@ test('completed steps retain the actual runner, model, and effort', () => {
   assertValidRunState(state);
 });
 
+test('completed steps own immutable net ranges and stable parallel membership', () => {
+  let state = move(stateWithSteps(['1.1', '1.2']), 'run_started');
+  state = move(state, 'step_started', { step_id: '1.1', worker: worker('parallel-1') });
+  state = move(state, 'step_started', { step_id: '1.2', worker: worker('parallel-2') });
+  const group = { id: 'group-1', step_ids: ['1.1', '1.2'] };
+  state = move(state, 'step_completed', {
+    step_id: '1.1',
+    receipt_path: '/state/runs/a/receipts/1.1.md',
+    parallel_group: group,
+  });
+  state = move(state, 'step_completed', {
+    step_id: '1.2',
+    receipt_path: '/state/runs/a/receipts/1.2.md',
+    parallel_group: group,
+  });
+
+  assert.deepEqual(state.steps[0].commit_range, {
+    base_oid: '1'.repeat(40),
+    head_oid: '2'.repeat(40),
+  });
+  assert.deepEqual(state.steps[0].parallel_group, group);
+  assert.deepEqual(state.steps[1].parallel_group, group);
+  assert.deepEqual(state.history.at(-1).details.commit_range, state.steps[1].commit_range);
+  assertValidRunState(state);
+});
+
 test('active worker metadata carries only the ephemeral live transport path', () => {
   let state = move(stateWithSteps(), 'run_started');
   state = move(state, 'step_started', { step_id: '1.1', worker: worker('live-worker') });
@@ -188,8 +227,10 @@ test('runs every normal step and review transition through merge', () => {
   state = move(state, 'final_review_started');
   state = move(state, 'final_review_needs_work', {
     reasons: ['acceptance-miss'],
+    findings: [{ reason: 'acceptance-miss', paths: ['lib/pump.mjs'] }],
     review_path: '/state/runs/a/final-review.md',
   });
+  assert.deepEqual(state.review.findings, [{ reason: 'acceptance-miss', paths: ['lib/pump.mjs'] }]);
   state = move(state, 'final_rework_completed', {
     attempt: 1,
     commit_sha: 'abc123',

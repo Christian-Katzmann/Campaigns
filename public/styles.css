@@ -4865,6 +4865,102 @@ h3.drawer-section-title {
   margin: 0;
 }
 
+.drawer-step-diff {
+  border-top: 1px solid var(--line-soft);
+}
+
+.drawer-step-diff-summary {
+  padding: 8px 14px;
+  color: var(--ink-faint);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.drawer-step-diff-content {
+  max-height: 480px;
+  overflow: auto;
+  padding: 0 14px 12px;
+  color: var(--ink-faint);
+  font-size: 11px;
+}
+
+.step-diff-reasons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin: 2px 0 10px;
+}
+
+.step-diff-reason {
+  padding: 2px 6px;
+  border: 1px solid var(--line-soft);
+  border-radius: 999px;
+  color: var(--ink-faint);
+  text-decoration: none;
+}
+
+.step-diff-reason--linked {
+  color: var(--accent);
+  cursor: pointer;
+}
+
+.step-diff-file + .step-diff-file {
+  margin-top: 12px;
+}
+
+.step-diff-file h4 {
+  margin: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--line-soft);
+  border-bottom: 0;
+  border-radius: 5px 5px 0 0;
+  color: var(--ink);
+  font-size: 11px;
+}
+
+.step-diff-code,
+.step-diff-stat {
+  margin: 0;
+  padding: 8px;
+  overflow-x: auto;
+  border: 1px solid var(--line-soft);
+  background: var(--paper);
+  color: var(--ink);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.step-diff-line {
+  display: block;
+  min-width: max-content;
+  white-space: pre;
+}
+
+.step-diff-line--add {
+  background: var(--status-ok-wash);
+  color: var(--status-ok);
+}
+
+.step-diff-line--del {
+  background: var(--danger-wash);
+  color: var(--danger);
+}
+
+.step-diff-line--hunk {
+  color: var(--accent);
+}
+
+.step-diff-line--meta {
+  color: var(--ink-faint);
+}
+
+.step-diff-hint,
+.step-diff-empty {
+  margin: 0 0 8px;
+  color: var(--ink-faint);
+}
+
 /* Live runner output */
 .drawer-live-output {
   margin-bottom: 18px;

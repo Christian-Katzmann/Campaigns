@@ -38,6 +38,8 @@ const liveOutputState = {
   streams: new Map(),
 };
 
+const stepDiffCache = new Map();
+
 export function initAutomateDrawer() {
   const drawer = document.querySelector('#automate-drawer');
   const panel = drawer?.querySelector('.automate-drawer-panel');
@@ -1328,10 +1330,48 @@ export function renderDrawerReceipts(data, isCompleted) {
       details.append(element('p', { className: 'drawer-receipt-empty', text: 'No receipt available.' }));
     }
 
+    if (step.diff_url) details.append(renderStepDiffExpander(step));
+
     wrapper.append(details);
   }
 
   return wrapper;
+}
+
+export function renderStepDiffExpander(step) {
+  const diff = document.createElement('details');
+  diff.className = 'drawer-step-diff';
+  diff.id = `drawer-step-diff-${String(step.id).replace(/[^a-z0-9_-]+/gi, '-')}`;
+  diff.append(element('summary', { className: 'drawer-step-diff-summary', text: 'Diff' }));
+  const content = element('div', { className: 'drawer-step-diff-content' });
+  content.textContent = 'Open to load the committed step diff.';
+  diff.append(content);
+  diff.addEventListener?.('toggle', () => {
+    if (diff.open) void loadStepDiff(step.diff_url, content);
+  });
+  return diff;
+}
+
+export async function loadStepDiff(url, content) {
+  if (!url || !content || content.dataset?.loaded === 'true') return;
+  content.textContent = 'Loading diff…';
+  try {
+    let pending = stepDiffCache.get(url);
+    if (!pending) {
+      pending = fetch(url).then(async (response) => {
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || 'Diff request failed.');
+        return payload;
+      });
+      stepDiffCache.set(url, pending);
+    }
+    const payload = await pending;
+    content.innerHTML = payload.html;
+    if (content.dataset) content.dataset.loaded = 'true';
+  } catch (error) {
+    stepDiffCache.delete(url);
+    content.textContent = error.message || 'Could not load this diff.';
+  }
 }
 
 export function renderDrawerLogTail(data) {

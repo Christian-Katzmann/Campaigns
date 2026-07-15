@@ -281,6 +281,36 @@ test('fake success runner ticks every step, runs final review, and merges', asyn
   assert.equal(await git(fixture.repo, ['log', '-1', '--pretty=%s']), 'Complete campaign step 1.2', status);
 });
 
+test('sequential step ranges span every worker commit and exclude the later checkbox commit', async (t) => {
+  const fixture = await makeFixture(t, {
+    runnerScript: `
+      const fs = require('node:fs');
+      const { execFileSync } = require('node:child_process');
+      const prompt = process.argv[1];
+      const step = prompt.match(/^Step: ([^ ]+)/m)[1];
+      const files = step === '1.1' ? ['first-a.txt', 'first-b.txt'] : ['second.txt'];
+      for (const file of files) {
+        fs.writeFileSync(file, file + '\\n');
+        execFileSync('git', ['add', file]);
+        execFileSync('git', ['-c', 'commit.gpgSign=false', 'commit', '-m', 'Add ' + file]);
+      }
+      process.stdout.write(prompt);
+    `,
+  });
+
+  const result = await runCampaign(fixture.campaignPath, fixture.options);
+  const first = result.state.steps.find((step) => step.id === '1.1').commit_range;
+  const second = result.state.steps.find((step) => step.id === '1.2').commit_range;
+
+  assert.equal(await git(fixture.repo, ['rev-list', '--count', `${first.base_oid}..${first.head_oid}`]), '2');
+  assert.equal(await git(fixture.repo, ['rev-list', '--count', `${second.base_oid}..${second.head_oid}`]), '1');
+  assert.deepEqual(
+    (await git(fixture.repo, ['diff', '--name-only', first.base_oid, first.head_oid])).split('\n'),
+    ['first-a.txt', 'first-b.txt'],
+  );
+  assert.doesNotMatch(await git(fixture.repo, ['diff', '--name-only', first.base_oid, first.head_oid]), /campaign\.md/);
+});
+
 test('default runs isolate an ignored campaign, use its canonical source, and prune after finalize', async (t) => {
   const fixture = await makeFixture(t, {
     worktree: true,
@@ -396,6 +426,15 @@ test('reciprocal siblings run concurrently to the configured cap, join, and prun
   assert.deepEqual(result.state.steps[0].lane, { globs: ['result-1.1.txt'] });
   assert.equal(result.state.artifacts.parallel_worktrees.length, 3);
   assert.ok(result.state.artifacts.parallel_worktrees.every((worktree) => worktree.pruned_at));
+  const parallelSteps = result.state.steps.filter((step) => ['1.1', '1.2', '1.3'].includes(step.id));
+  assert.equal(new Set(parallelSteps.map((step) => step.parallel_group.id)).size, 1);
+  assert.deepEqual(parallelSteps[0].parallel_group.step_ids, ['1.1', '1.2', '1.3']);
+  for (const step of parallelSteps) {
+    assert.equal(
+      await git(fixture.repo, ['diff', '--name-only', step.commit_range.base_oid, step.commit_range.head_oid]),
+      `result-${step.id}.txt`,
+    );
+  }
   assert.deepEqual(
     result.state.history.filter((entry) => entry.event === 'parallel_step_merged').map((entry) => entry.step_id),
     ['1.1', '1.2', '1.3'],

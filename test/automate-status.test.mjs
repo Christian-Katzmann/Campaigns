@@ -385,6 +385,7 @@ Second prompt.
     event: 'step_completed',
     step_id: '1.1',
     receipt_path: receiptOne,
+    commit_range: { base_oid: '1'.repeat(40), head_oid: '2'.repeat(40) },
   });
   state = transitionRunState(state, {
     event: 'step_started',
@@ -395,6 +396,7 @@ Second prompt.
     event: 'step_completed',
     step_id: '1.2',
     receipt_path: receiptTwo,
+    commit_range: { base_oid: '2'.repeat(40), head_oid: '3'.repeat(40) },
   });
   state = transitionRunState(state, { event: 'run_reached_final_review' });
   await writeFile(path.join(runDir, 'state.json'), `${JSON.stringify(state, null, 2)}\n`, 'utf8');
@@ -410,6 +412,12 @@ Second prompt.
   assert.deepEqual(providerState.progress, { done: 2, total: 3 });
   assert.deepEqual(providerState.steps.map((step) => step.status), ['done', 'done']);
   assert.match(providerState.steps[0].receipt, /First receipt/);
+  assert.equal(providerState.steps[0].diff_url, '/api/run/step-diff?id=hello-registry&step=1.1');
+  assert.deepEqual(providerState.steps[0].commit_range, {
+    base_oid: '1'.repeat(40),
+    head_oid: '2'.repeat(40),
+  });
+  assert.deepEqual(providerState.review.findings, []);
   assert.equal(providerState.timeline_events.at(-1).event, 'run_reached_final_review');
 });
 

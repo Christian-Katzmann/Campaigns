@@ -228,6 +228,7 @@ state = transitionRunState(state, {
   event: 'step_completed',
   step_id: '1.1',
   receipt_path: receiptPath,
+  commit_range: { base_oid: '1'.repeat(40), head_oid: '2'.repeat(40) },
   at: at(2),
   message: 'Install path drafted and checked.',
 });

@@ -28,6 +28,7 @@ import {
 } from './lib/companion-pets.mjs';
 import { httpError, readJsonBody, sendJson, sendStatic } from './lib/http.mjs';
 import { readLiveOutputSnapshot } from './lib/live-output.mjs';
+import { buildStepDiff } from './lib/step-diff.mjs';
 import { resolveCampaignConfig } from './lib/config.mjs';
 import { estimateCampaign } from './lib/estimate.mjs';
 import { hasUnifiedRunLedgers, loadUnifiedLessons, readUnifiedRunLedgers } from './lib/lessons.mjs';
@@ -267,6 +268,11 @@ const server = createServer(async (request, response) => {
 
     if (url.pathname === '/api/run/live-output' && request.method === 'GET') {
       await sendRunLiveOutput(url, request, response);
+      return;
+    }
+
+    if (url.pathname === '/api/run/step-diff' && request.method === 'GET') {
+      await sendRunStepDiff(url, response);
       return;
     }
 
@@ -2272,6 +2278,44 @@ async function sendRunLiveOutput(url, request, response) {
     timer = setTimeout(poll, 100);
     timer.unref?.();
   });
+}
+
+async function sendRunStepDiff(url, response) {
+  const id = url.searchParams.get('id');
+  const stepId = url.searchParams.get('step');
+  if (!id || !stepId) {
+    sendJson(response, 400, { error: 'Expected id and step.' });
+    return;
+  }
+  const registry = await readRegistry();
+  const entry = registry.campaigns.find((campaign) => campaign.id === id);
+  if (!entry) {
+    sendJson(response, 404, { error: 'Campaign not found.' });
+    return;
+  }
+  const ledger = await getEngineRunLedger(entry.filePath, entry.id);
+  const step = ledger?.steps?.find((candidate) => candidate.id === stepId);
+  if (!ledger || step?.status !== 'completed' || !step.commit_range) {
+    sendJson(response, 404, { error: 'No committed diff range exists for this step.' });
+    return;
+  }
+  try {
+    const rendered = await buildStepDiff({
+      repoRoot: ledger.run.identity.source.repo_root,
+      baseOid: step.commit_range.base_oid,
+      headOid: step.commit_range.head_oid,
+      findings: ledger.review.findings ?? [],
+      reasonTags: [...ledger.review.reasons, ...ledger.review.raw_tags],
+      anchorPrefix: step.id,
+    });
+    sendJson(response, 200, {
+      step_id: step.id,
+      range: step.commit_range,
+      ...rendered,
+    });
+  } catch (error) {
+    sendJson(response, 409, { error: `Could not render Step ${stepId} diff: ${error.message}` });
+  }
 }
 
 function isLoopbackAddress(address) {

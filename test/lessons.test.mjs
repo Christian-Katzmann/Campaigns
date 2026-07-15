@@ -194,6 +194,7 @@ function fixtureLedger({ id, runner = 'codex', stepCount = 1, outcome }) {
       event: 'step_completed',
       step_id: step.id,
       receipt_path: path.join(root, 'receipts', `${step.id}.md`),
+      commit_range: { base_oid: '1'.repeat(40), head_oid: '2'.repeat(40) },
     });
   }
   state = transitionRunState(state, { event: 'run_reached_final_review' });

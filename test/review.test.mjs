@@ -5,6 +5,7 @@ import {
   REVIEW_REASON_ALIASES,
   REVIEW_REASON_TAGS,
   buildFixPrompt,
+  isValidReviewPath,
   parseReviewOutput,
 } from '../lib/review.mjs';
 
@@ -45,6 +46,7 @@ test('clean APPROVED and NEEDS WORK verdicts parse into structured results', () 
     verdict: 'APPROVED',
     reasons: [],
     raw_tags: [],
+    findings: [],
     issue: null,
   });
   assert.deepEqual(
@@ -54,9 +56,31 @@ test('clean APPROVED and NEEDS WORK verdicts parse into structured results', () 
       verdict: 'NEEDS WORK',
       reasons: ['verification-gap', 'scope-drift'],
       raw_tags: [],
+      findings: [],
       issue: null,
     },
   );
+});
+
+test('structured findings keep canonical reasons and canonical repo-relative paths', () => {
+  const parsed = parseReviewOutput([
+    'Verdict: NEEDS WORK',
+    'Reasons: acceptance-miss',
+    'Findings: [{"reason":"acceptance-miss","paths":["lib/review.mjs","test/review.test.mjs"]}]',
+  ].join('\n'));
+  assert.deepEqual(parsed.findings, [{
+    reason: 'acceptance-miss',
+    paths: ['lib/review.mjs', 'test/review.test.mjs'],
+  }]);
+
+  for (const invalid of ['/tmp/file', '../file', 'lib/../file', 'C:/file', 'lib\\file']) {
+    assert.equal(isValidReviewPath(invalid), false, invalid);
+    assert.equal(parseReviewOutput([
+      'Verdict: NEEDS WORK',
+      'Reasons: acceptance-miss',
+      `Findings: [{"reason":"acceptance-miss","paths":[${JSON.stringify(invalid)}]}]`,
+    ].join('\n')).issue, 'invalid-findings');
+  }
 });
 
 test('the canonical 10-tag set and every maintained alias normalize exactly', () => {
