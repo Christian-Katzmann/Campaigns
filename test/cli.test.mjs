@@ -21,6 +21,7 @@ test('campaigns --help keeps the engine commands and documents sample launch', a
   assert.match(stdout, /campaigns lint <campaign\.md>/);
   assert.match(stdout, /campaigns config doctor \[campaign\.md\]/);
   assert.match(stdout, /--no-worktree/);
+  assert.match(stdout, /--max-cost-usd/);
   assert.match(stdout, /--to <step>/);
 });
 

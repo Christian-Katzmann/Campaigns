@@ -49,6 +49,8 @@ Options:
                          Stop before starting more than this many steps
   --max-run-minutes <minutes>
                          Stop when the total run-time cap is reached
+  --max-cost-usd <amount>
+                         Stop before another runner once reported spend reaches this cap
   --stop-grace-ms <ms>  Grace period before terminating the worker group
   --to <step>            Keep work through this step and rewind everything after it
   --max-parallel-steps <count>
@@ -269,6 +271,7 @@ function parseOptions(args, command) {
     ['--registry-id', 'registryId'],
     ['--max-steps-per-run', 'maxStepsPerRun'],
     ['--max-run-minutes', 'maxRunMinutes'],
+    ['--max-cost-usd', 'maxCostUsd'],
     ['--stop-grace-ms', 'stopGraceMs'],
     ['--max-parallel-steps', 'maxParallelSteps'],
   ];

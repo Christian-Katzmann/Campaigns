@@ -34,14 +34,17 @@ test('config precedence is bundled, project, user, explicit, env, then CLI', asy
     env: {
       CAMPAIGNS_CONFIG_DIR: fixture.userConfigDir,
       CAMPAIGNS_MAX_RUN_MINUTES: '40',
+      CAMPAIGNS_MAX_COST_USD: '1.25',
       CAMPAIGNS_MAX_PARALLEL_STEPS: '3',
     },
-    cli: { maxRunMinutes: '50', maxParallelSteps: '4' },
+    cli: { maxRunMinutes: '50', maxCostUsd: '0.75', maxParallelSteps: '4' },
   });
 
   assert.equal(resolved.config.run.max_run_minutes, 50);
   assert.equal(resolved.effective.maxRunMinutes, 50);
   assert.equal(resolved.effective.maxParallelSteps, 4);
+  assert.equal(resolved.effective.maxCostUsd, 0.75);
+  assert.equal(resolved.sources['run.max_cost_usd'], 'cli:--max-cost-usd');
   assert.equal(resolved.sources['run.max_parallel_steps'], 'cli:--max-parallel-steps');
   assert.equal(resolved.sources['run.max_run_minutes'], 'cli:--max-run-minutes');
   assert.deepEqual(resolved.files.map(({ kind, loaded }) => [kind, loaded]), [

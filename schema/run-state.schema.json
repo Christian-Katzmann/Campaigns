@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/Christian-Katzmann/Campaigns/blob/main/schema/run-state.schema.json",
   "title": "Campaigns unified run state",
-  "description": "Structural schema for Campaigns run-state version 8. Runtime validation also enforces state-machine and cross-record invariants.",
+  "description": "Structural schema for Campaigns run-state version 9. Runtime validation also enforces state-machine and cross-record invariants.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -22,7 +22,7 @@
     "history"
   ],
   "properties": {
-    "schema_version": { "const": 8 },
+    "schema_version": { "const": 9 },
     "run": { "$ref": "#/$defs/run" },
     "config": { "$ref": "#/$defs/config" },
     "cursor": { "$ref": "#/$defs/cursor" },
@@ -135,6 +135,7 @@
         "preflight_campaign_invalid",
         "step_started",
         "check_failed",
+        "check_fix_finished",
         "step_completed",
         "step_skipped",
         "step_failed",
@@ -254,6 +255,7 @@
         "force_merge_unreviewed",
         "max_steps_per_run",
         "max_run_minutes",
+        "max_cost_usd",
         "stop_grace_ms",
         "max_parallel_steps",
         "worktree_enabled"
@@ -276,6 +278,7 @@
         "force_merge_unreviewed": { "type": "boolean" },
         "max_steps_per_run": { "type": "integer", "minimum": 1 },
         "max_run_minutes": { "type": "number", "exclusiveMinimum": 0 },
+        "max_cost_usd": { "type": ["number", "null"], "exclusiveMinimum": 0 },
         "stop_grace_ms": { "type": "integer", "minimum": 1 },
         "max_parallel_steps": { "type": "integer", "minimum": 1 },
         "worktree_enabled": { "type": "boolean" }

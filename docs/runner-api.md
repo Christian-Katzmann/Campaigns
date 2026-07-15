@@ -72,6 +72,11 @@ non-negative number. When input and output are present, Campaigns derives a
 missing total. Every runner result event carries all four normalized fields,
 using explicit `null` values when the CLI or plugin does not report them.
 
+`--max-cost-usd` requires the selected worker, reviewer, and fix runner to have
+a `cost_usd` field mapping. Campaigns refuses a runner without that mapping
+before spawning it. A mapped runner should emit cost on every invocation; the
+ledger sums the normalized values rather than estimating from token counts.
+
 ## Complete Gemini example
 
 Directory:

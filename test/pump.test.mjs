@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdtemp, mkdir, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, mkdir, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
@@ -161,6 +161,62 @@ test('runnerPaths plugin drives a fixture campaign without core runner configura
     total_tokens: 150,
     cost_usd: 0.0042,
   });
+});
+
+test('reported runner spend reaches the dollar cap before a later invocation starts', async (t) => {
+  const fixture = await makeFixture(t, { maxCostUsd: 1, costUsd: 0.6 });
+
+  const result = await runCampaign(fixture.campaignPath, fixture.options);
+  const starts = result.state.history.filter((entry) => entry.event === 'step_started');
+  const cap = result.state.history.at(-1);
+
+  assert.equal(result.state.run.status, 'cap_reached');
+  assert.deepEqual(starts.map((entry) => entry.step_id), ['1.1', '1.2']);
+  assert.equal(result.state.history.some((entry) => entry.event === 'final_review_started'), false);
+  assert.equal(cap.event, 'cap_reached');
+  assert.equal(cap.details.cap, 'max_cost_usd');
+  assert.equal(cap.details.total_cost_usd, 1.2);
+  assert.equal(result.state.steps.find((step) => step.id === '1.2').status, 'completed');
+});
+
+test('a mandatory dollar cap refuses runners without a cost mapping before launch', async (t) => {
+  const fixture = await makeFixture(t, { maxCostUsd: 1 });
+
+  await assert.rejects(
+    runCampaign(fixture.campaignPath, fixture.options),
+    /has no cost_usd usage mapping/,
+  );
+  assert.equal(
+    await readTextOptional(runPathsForCampaign(fixture.campaignPath, fixture.runsDir).statePath),
+    null,
+  );
+});
+
+test('action-style capped harness completes and persists only redacted upload surfaces', async (t) => {
+  const sentinel = 'sentinel-action-secret';
+  const fixture = await makeFixture(t, {
+    maxStepsPerRun: 3,
+    maxRunMinutes: 20,
+    maxCostUsd: 1,
+    costUsd: 0.1,
+    runnerScript: `process.stdout.write('AUTH_SECRET=${sentinel}\\n'+process.argv[1])`,
+  });
+
+  const result = await runCampaign(fixture.campaignPath, fixture.options);
+  const surfaces = [
+    result.statePath,
+    result.eventsPath,
+    result.receiptsDir,
+    result.finalReviewPath,
+  ];
+  for (const surface of surfaces) assert.equal(await pathExistsForTest(surface), true);
+  const persisted = (await readFilesRecursively(result.runDir))
+    .map((file) => file.contents)
+    .join('\n');
+
+  assert.equal(result.state.run.status, 'completed');
+  assert.doesNotMatch(persisted, new RegExp(sentinel));
+  assert.match(persisted, /\[REDACTED\]/);
 });
 
 test('final review defaults to another available family and uses that runner defaults', async (t) => {
@@ -1180,6 +1236,8 @@ async function makeFixture(t, {
   forceMergeUnreviewed = false,
   maxStepsPerRun = 50,
   maxRunMinutes = 360,
+  maxCostUsd = null,
+  costUsd = null,
   stopGraceMs = 3_000,
   maxParallelSteps = 2,
   reviewer = 'fake',
@@ -1214,6 +1272,8 @@ async function makeFixture(t, {
     forceMergeUnreviewed,
     maxStepsPerRun,
     maxRunMinutes,
+    maxCostUsd,
+    costUsd,
     stopGraceMs,
     maxParallelSteps,
     reviewer,
@@ -1393,6 +1453,8 @@ async function writeConfig(configPath, {
   forceMergeUnreviewed = false,
   maxStepsPerRun = 50,
   maxRunMinutes = 360,
+  maxCostUsd = null,
+  costUsd = null,
   stopGraceMs = 3_000,
   maxParallelSteps = 2,
   reviewer = 'fake',
@@ -1408,6 +1470,7 @@ async function writeConfig(configPath, {
   const executableCheckFixScript = checkFixScript
     ?? "process.stdout.write('No executable-check fix commit produced.')";
   const script = `
+    ${costUsd == null ? '' : `process.stdout.write(JSON.stringify({type:'usage',cost_usd:${costUsd}})+'\\n');`}
     if (process.argv[1].includes('campaigns.step_completed')) {
       ${stepScript}
     } else if (process.argv[1].startsWith('Fix the executable-check failures')) {
@@ -1427,6 +1490,7 @@ async function writeConfig(configPath, {
       branch,
       max_steps_per_run: maxStepsPerRun,
       max_run_minutes: maxRunMinutes,
+      max_cost_usd: maxCostUsd,
       stop_grace_ms: stopGraceMs,
       max_parallel_steps: maxParallelSteps,
     },
@@ -1445,6 +1509,15 @@ async function writeConfig(configPath, {
           marker: { type: 'campaigns.step_completed', version: 1, status: 'completed' },
           sources: [{ kind: 'text' }],
         },
+        ...(costUsd == null ? {} : {
+          usage: {
+            sources: [{
+              kind: 'jsonl',
+              match: { type: 'usage' },
+              fields: { cost_usd: 'cost_usd' },
+            }],
+          },
+        }),
       },
       ...additionalRunners,
     },
@@ -1478,6 +1551,15 @@ async function readTextOptional(filePath) {
   } catch (error) {
     if (error.code === 'ENOENT') return null;
     throw error;
+  }
+}
+
+async function pathExistsForTest(filePath) {
+  try {
+    await access(filePath);
+    return true;
+  } catch {
+    return false;
   }
 }
 

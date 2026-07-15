@@ -5,6 +5,10 @@ Campaigns publishes the current unified ledger as
 `RUN_STATE_VERSION` in `lib/run-state.mjs` are the authority; the published
 schema's `schema_version.const` matches them.
 
+`config.max_cost_usd` is either `null` for no local dollar cap or a positive
+number. Cost enforcement sums the normalized `cost_usd` values already recorded
+under `history[].details.usage`; `cap_reached` records the limit and final total.
+
 Consumers should validate the document before using it. The JSON Schema
 covers the portable record shape. Campaigns additionally applies
 `validateRunState()` for transition-chain and cross-record invariants such as

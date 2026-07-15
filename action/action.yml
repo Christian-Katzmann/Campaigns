@@ -1,0 +1,93 @@
+name: Campaigns in CI
+description: Run a Campaigns markdown plan with mandatory step, time, and dollar caps.
+inputs:
+  campaign:
+    description: Campaign markdown path relative to the checked-out repository.
+    required: true
+  runner:
+    description: Supported cost-reporting runner. Currently claude.
+    required: true
+  model:
+    description: Optional runner model override.
+    required: false
+  effort:
+    description: Optional runner effort override.
+    required: false
+  runner_cli_version:
+    description: Exact supported runner CLI semver to install.
+    required: true
+  max_steps:
+    description: Positive maximum implementation steps for this run.
+    required: true
+  max_minutes:
+    description: Positive maximum elapsed run minutes.
+    required: true
+  max_cost_usd:
+    description: Positive maximum runner-reported spend in USD.
+    required: true
+outputs:
+  state-dir:
+    description: Deterministic directory containing the redacted run ledger.
+    value: ${{ steps.preflight.outputs.state-dir }}
+  artifact-url:
+    description: URL of the uploaded run evidence.
+    value: ${{ steps.artifacts.outputs.artifact-url }}
+runs:
+  using: composite
+  steps:
+    - name: Mask secrets and enforce PR trust
+      id: preflight
+      shell: bash
+      env:
+        INPUT_CAMPAIGN: ${{ inputs.campaign }}
+        INPUT_RUNNER: ${{ inputs.runner }}
+        INPUT_MODEL: ${{ inputs.model }}
+        INPUT_EFFORT: ${{ inputs.effort }}
+        INPUT_RUNNER_CLI_VERSION: ${{ inputs.runner_cli_version }}
+        INPUT_MAX_STEPS: ${{ inputs.max_steps }}
+        INPUT_MAX_MINUTES: ${{ inputs.max_minutes }}
+        INPUT_MAX_COST_USD: ${{ inputs.max_cost_usd }}
+      run: node "$GITHUB_ACTION_PATH/preflight.mjs"
+
+    - name: Set up Node 20
+      uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      with:
+        node-version: '20'
+
+    - name: Install pinned runner CLI
+      shell: bash
+      env:
+        INPUT_RUNNER: ${{ inputs.runner }}
+        INPUT_RUNNER_CLI_VERSION: ${{ inputs.runner_cli_version }}
+      run: node "$GITHUB_ACTION_PATH/install-runner.mjs"
+
+    - name: Run campaign
+      id: campaign
+      shell: bash
+      env:
+        CAMPAIGN_FILE: ${{ steps.preflight.outputs.campaign-path }}
+        RUNS_ROOT: ${{ steps.preflight.outputs.runs-root }}
+        RUNNER: ${{ inputs.runner }}
+        MODEL: ${{ inputs.model }}
+        EFFORT: ${{ inputs.effort }}
+        MAX_STEPS: ${{ inputs.max_steps }}
+        MAX_MINUTES: ${{ inputs.max_minutes }}
+        MAX_COST_USD: ${{ inputs.max_cost_usd }}
+      run: |
+        args=(run "$CAMPAIGN_FILE" --runner "$RUNNER" --no-worktree --state-dir "$RUNS_ROOT" --max-steps-per-run "$MAX_STEPS" --max-run-minutes "$MAX_MINUTES" --max-cost-usd "$MAX_COST_USD")
+        if [[ -n "$MODEL" ]]; then args+=(--model "$MODEL"); fi
+        if [[ -n "$EFFORT" ]]; then args+=(--effort "$EFFORT"); fi
+        node "$GITHUB_ACTION_PATH/../bin/campaigns.mjs" "${args[@]}"
+
+    - name: Upload redacted run evidence
+      id: artifacts
+      if: ${{ always() }}
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      with:
+        name: ${{ steps.preflight.outputs.artifact-name }}
+        if-no-files-found: warn
+        path: |
+          ${{ steps.preflight.outputs.state-dir }}/state.json
+          ${{ steps.preflight.outputs.state-dir }}/events.jsonl
+          ${{ steps.preflight.outputs.state-dir }}/receipts/
+          ${{ steps.preflight.outputs.state-dir }}/final-review.md
