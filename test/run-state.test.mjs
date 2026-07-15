@@ -113,7 +113,9 @@ test('version-1 ledgers upgrade with cap defaults and the explicit stop status',
   }
 
   const upgraded = upgradeRunState(old);
-  assert.equal(upgraded.schema_version, 3);
+  assert.equal(upgraded.schema_version, 4);
+  assert.equal(upgraded.config.worktree_enabled, false);
+  assert.equal(upgraded.artifacts.worktree, null);
   assert.equal(upgraded.run.status, 'stopped_by_user');
   assert.equal(upgraded.config.max_steps_per_run, 50);
   assert.equal(upgraded.config.max_run_minutes, 360);

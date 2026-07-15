@@ -1,13 +1,17 @@
 import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { test } from 'node:test';
 
-import { runCampaign, runPathsForCampaign } from '../lib/pump.mjs';
+import {
+  runCampaign,
+  runPathsForCampaign,
+  sweepExpiredExecutionWorktree,
+} from '../lib/pump.mjs';
 import { recoverCampaign } from '../lib/recovery.mjs';
 import {
   createRunState,
@@ -198,7 +202,46 @@ test('POST /api/run/stop records the explicit user-stop status', async (t) => {
   assert.equal(state.history.at(-1).event, 'stopped_by_user');
 });
 
-async function makeFixture(t) {
+test('awaiting-human cleanup holds until its deadline, then prunes and retains the branch', async (t) => {
+  const now = Date.parse('2026-07-15T12:00:00.000Z');
+  const fixture = await makeFixture(t, { reviewOutput: 'missing verdict' });
+  const result = await runCampaign(fixture.campaignPath, {
+    ...fixture.runOptions,
+    noWorktree: false,
+    now,
+    awaitingHumanCleanupMs: 1_000,
+  });
+  const branch = result.state.artifacts.worktree.branch;
+  const worktreePath = result.state.artifacts.worktree.path;
+
+  assert.equal(result.state.run.status, 'awaiting_human_review');
+  assert.equal(result.state.artifacts.worktree.cleanup_deadline, '2026-07-15T12:00:01.000Z');
+  await sweepExpiredExecutionWorktree(result.state, result.statePath, { now: now + 999 });
+  assert.match(await git(fixture.repo, ['worktree', 'list', '--porcelain']), new RegExp(escapeRegex(worktreePath)));
+
+  await sweepExpiredExecutionWorktree(result.state, result.statePath, { now: now + 1_001 });
+  assert.doesNotMatch(await git(fixture.repo, ['worktree', 'list', '--porcelain']), new RegExp(escapeRegex(worktreePath)));
+  await git(fixture.repo, ['show-ref', '--verify', '--quiet', `refs/heads/${branch}`]);
+  assert.ok(result.state.artifacts.worktree.pruned_at);
+});
+
+test('killed-run recovery adopts a clean worktree or prunes it while retaining its branch', async (t) => {
+  const clean = await makeFixture(t);
+  const cleanPaths = await writeRunningState(clean, { runningStep: true, worktree: true });
+  const cleanResult = await recoverCampaign(clean.campaignPath, { runsDir: clean.runsDir });
+  assert.ok(cleanResult.actions.includes('adopted_execution_worktree'));
+  assert.match(await git(clean.repo, ['worktree', 'list', '--porcelain']), new RegExp(escapeRegex(cleanPaths.executionPath)));
+
+  const dirty = await makeFixture(t);
+  const dirtyPaths = await writeRunningState(dirty, { runningStep: true, worktree: true });
+  await writeFile(path.join(dirtyPaths.executionPath, 'partial.txt'), 'preserved\n', 'utf8');
+  const dirtyResult = await recoverCampaign(dirty.campaignPath, { runsDir: dirty.runsDir });
+  assert.ok(dirtyResult.actions.includes('pruned_execution_worktree_retained_branch'));
+  assert.doesNotMatch(await git(dirty.repo, ['worktree', 'list', '--porcelain']), new RegExp(escapeRegex(dirtyPaths.executionPath)));
+  assert.equal(await git(dirty.repo, ['show', `${dirtyPaths.executionBranch}:partial.txt`]), 'preserved');
+});
+
+async function makeFixture(t, { reviewOutput = null } = {}) {
   const root = await mkdtemp(path.join(tmpdir(), 'campaigns-recovery-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const repo = path.join(root, 'repo');
@@ -230,7 +273,7 @@ Complete the recovery fixture.
 Review the fixture.
 \`\`\`
 `, 'utf8');
-  await writeFile(configPath, `${JSON.stringify(fakeRunnerConfig(), null, 2)}\n`, 'utf8');
+  await writeFile(configPath, `${JSON.stringify(fakeRunnerConfig(reviewOutput), null, 2)}\n`, 'utf8');
   await git(repo, ['add', 'campaign.md']);
   await git(repo, ['commit', '-m', 'Add recovery fixture']);
   return {
@@ -242,6 +285,7 @@ Review the fixture.
     runOptions: {
       configPath,
       runsDir,
+      noWorktree: true,
       stdout: silent,
       stderr: silent,
       env: { ...process.env, CAMPAIGNS_CONFIG_DIR: path.join(root, 'user-config') },
@@ -249,19 +293,38 @@ Review the fixture.
   };
 }
 
-async function writeRunningState(fixture, { runningStep = false } = {}) {
+async function writeRunningState(fixture, { runningStep = false, worktree = false } = {}) {
   const paths = runPathsForCampaign(fixture.campaignPath, fixture.runsDir);
   await mkdir(paths.receiptsDir, { recursive: true });
   await mkdir(paths.logsDir, { recursive: true });
+  let executionPath = fixture.repo;
+  let executionBranch = 'main';
+  let worktreeArtifact = null;
+  if (worktree) {
+    executionPath = path.join(paths.runDir, 'execution worktree');
+    executionBranch = `campaigns/recovery-${path.basename(fixture.root)}`;
+    await git(fixture.repo, ['worktree', 'add', '-b', executionBranch, executionPath, 'main']);
+    executionPath = await realpath(executionPath);
+    worktreeArtifact = {
+      path: executionPath,
+      branch: executionBranch,
+      base_branch: 'main',
+      created_at: '2026-07-15T12:00:00.000Z',
+      cleanup_deadline: null,
+      pruned_at: null,
+    };
+    paths.executionPath = executionPath;
+    paths.executionBranch = executionBranch;
+  }
   let state = createRunState({
     id: 'recovery-fixture-run',
     identity: {
       registry_id: 'fixture-campaign',
       source: { campaign_path: fixture.campaignPath, repo_root: fixture.repo },
       execution: {
-        campaign_path: fixture.campaignPath,
-        repo_root: fixture.repo,
-        branch: 'main',
+        campaign_path: path.join(executionPath, 'campaign.md'),
+        repo_root: executionPath,
+        branch: executionBranch,
       },
     },
     steps: [{ id: '1.1', name: 'Recoverable task', phase: '1' }],
@@ -270,11 +333,13 @@ async function writeRunningState(fixture, { runningStep = false } = {}) {
       model: 'fake-model',
       effort: 'none',
       watchdog: { minimum_runtime_ms: 0, stall_window_ms: 1_000 },
+      worktree_enabled: worktree,
     },
     artifacts: {
       run_dir: paths.runDir,
       receipts_dir: paths.receiptsDir,
       final_review_path: paths.finalReviewPath,
+      worktree: worktreeArtifact,
     },
   });
   state = transitionRunState(state, { event: 'run_started' });
@@ -304,7 +369,8 @@ async function writeDeadLock(lockPath, campaignPath) {
   }, null, 2)}\n`, 'utf8');
 }
 
-function fakeRunnerConfig() {
+function fakeRunnerConfig(reviewOutput = null) {
+  const finalOutput = reviewOutput ?? 'Verdict: APPROVED\nReasons:\n\nRecovery is complete.';
   return {
     schemaVersion: 1,
     defaultRunner: 'fake',
@@ -318,7 +384,7 @@ function fakeRunnerConfig() {
           `process.stdout.write(
             process.argv[1].includes('campaigns.step_completed')
               ? process.argv[1]
-              : 'Verdict: APPROVED\\nReasons:\\n\\nRecovery is complete.'
+              : ${JSON.stringify(finalOutput)}
           )`,
           '{prompt}',
         ],
@@ -333,6 +399,10 @@ function fakeRunnerConfig() {
       },
     },
   };
+}
+
+function escapeRegex(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 async function waitForServerPort(child) {

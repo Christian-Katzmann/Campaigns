@@ -8,6 +8,23 @@ Install the engine with `npm install --global campaigns-app`. For a zero-install
 look at the bundled sample board, run `npx campaigns-app`; add `--no-open --port
 0` for an unattended smoke test. The installed executable remains `campaigns`.
 
+## Worktree isolation
+
+Runs use a dedicated Git worktree by default. Campaigns creates it below the
+run-ledger directory, branches it from the campaign branch, and runs every step,
+check, fix, and final review there. The canonical campaign markdown stays in the
+parent checkout; only the pump updates its checkboxes.
+
+Finalize fast-forwards the execution branch into the campaign branch, safely
+merges the campaign branch into the default branch, and removes the execution
+worktree. Runs awaiting human review keep the worktree until their persisted
+cleanup deadline; status polling removes it after expiry while retaining the
+branch. `campaigns recover` either reuses a clean interrupted worktree or saves
+its changes on the execution branch before pruning it.
+
+Use `campaigns run <campaign.md> --no-worktree` only when direct execution on the
+campaign branch is intentional.
+
 ## Executable checks
 
 A step can declare machine-checkable acceptance criteria inside its fenced
@@ -137,10 +154,10 @@ cleanup.
 
 ## Containment
 
-The execution root is the canonical, real-path Git root containing the campaign
-file. `--repo <path>` may declare that root explicitly. The pump refuses to
-start if the campaign file or worker working directory resolves outside it;
-this also catches symlinks that escape the repository.
+The source root is the canonical, real-path Git root containing the campaign
+file. `--repo <path>` may declare that root explicitly. The worker root is the
+engine-created worktree unless `--no-worktree` is set. Campaigns records both
+locations and contains each worker to its execution root.
 
 This is a path and process-containment contract, not an agent sandbox. Campaigns
 chooses the worker's cwd and rejects paths outside the repo. What the worker CLI

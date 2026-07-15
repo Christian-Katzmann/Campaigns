@@ -40,6 +40,7 @@ Options:
   --branch <name>       Branch to check out or create before the first step
   --config <path>       Extra config file, after project and user config
   --state-dir <path>    Run-ledger directory
+  --no-worktree         Run directly on the campaign branch
   --registry-id <id>    Campaign registry identity
   --max-steps-per-run <count>
                          Stop before starting more than this many steps
@@ -263,6 +264,10 @@ function parseOptions(args, command) {
       options.forceMergeUnreviewed = true;
       continue;
     }
+    if (command === 'run' && args[index] === '--no-worktree') {
+      options.noWorktree = true;
+      continue;
+    }
     const key = names.get(args[index]);
     if (!key || !args[index + 1]) throw new Error(`Unknown or incomplete option: ${args[index]}`);
     options[key] = args[index + 1];
@@ -282,7 +287,7 @@ function parseDoctorOptions(args) {
       continue;
     }
     optionArgs.push(argument);
-    if (argument === '--force-merge-unreviewed') continue;
+    if (argument === '--force-merge-unreviewed' || argument === '--no-worktree') continue;
     if (!args[index + 1]) throw new Error(`Unknown or incomplete option: ${argument}`);
     optionArgs.push(args[index + 1]);
     index += 1;

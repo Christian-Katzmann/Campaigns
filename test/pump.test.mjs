@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
@@ -228,6 +228,50 @@ test('fake success runner ticks every step, runs final review, and merges', asyn
   const status = await git(fixture.repo, ['status', '--short']);
   assert.equal(status, '');
   assert.equal(await git(fixture.repo, ['log', '-1', '--pretty=%s']), 'Complete campaign step 1.2', status);
+});
+
+test('default runs isolate an ignored campaign, use its canonical source, and prune after finalize', async (t) => {
+  const fixture = await makeFixture(t, {
+    worktree: true,
+    gitignoredCampaign: true,
+    runnerScript: `
+      const fs = require('node:fs');
+      const { execFileSync } = require('node:child_process');
+      const prompt = process.argv[1];
+      const source = prompt.match(/^Campaign: (.+)$/m)?.[1];
+      const step = prompt.match(/^Step: ([^ ]+)/m)?.[1];
+      if (!source || !step || !fs.readFileSync(source, 'utf8').includes('# Fixture campaign')) process.exit(7);
+      const output = 'runner-cwd-' + step + '.txt';
+      fs.writeFileSync(output, process.cwd() + '\\n');
+      execFileSync('git', ['add', output]);
+      execFileSync('git', ['-c', 'commit.gpgSign=false', 'commit', '-m', 'Record isolated runner cwd']);
+      process.stdout.write(prompt);
+    `,
+    reviewScript: `
+      const fs = require('node:fs');
+      const prompt = process.argv[1];
+      const source = prompt.match(/^Campaign source: (.+)$/m)?.[1];
+      if (!source || !fs.existsSync(source)) process.exit(8);
+      process.stdout.write('Verdict: APPROVED\\nReasons:\\n\\nReview cwd: ' + process.cwd() + '\\nCampaign source: ' + source);
+    `,
+  });
+  const before = worktreePaths(await git(fixture.repo, ['worktree', 'list', '--porcelain']));
+
+  const result = await runCampaign(fixture.campaignPath, fixture.options);
+  const after = worktreePaths(await git(fixture.repo, ['worktree', 'list', '--porcelain']));
+  const markdown = await readFile(fixture.campaignPath, 'utf8');
+  const runnerCwd = (await readFile(path.join(fixture.repo, 'runner-cwd-1.1.txt'), 'utf8')).trim();
+  const review = await readFile(result.finalReviewPath, 'utf8');
+  const tracked = await git(fixture.repo, ['ls-tree', '-r', '--name-only', 'HEAD']);
+
+  assert.notEqual(runnerCwd, fixture.repo);
+  assert.equal(path.basename(result.state.run.identity.execution.repo_root), path.basename(runnerCwd));
+  assert.equal(result.state.run.identity.source.campaign_path, await realpath(fixture.campaignPath));
+  assert.match(markdown, /- \[x\] Step 1\.1/);
+  assert.match(review, new RegExp(`Campaign source: ${escapeRegex(result.state.run.identity.source.campaign_path)}`));
+  assert.doesNotMatch(tracked, /(^|\n)campaign\.md$/);
+  assert.deepEqual(after, before);
+  assert.ok(result.state.artifacts.worktree.pruned_at);
 });
 
 test('a concurrent invocation is refused by the per-campaign PID lock', async (t) => {
@@ -729,6 +773,8 @@ async function makeFixture(t, {
   stopGraceMs = 3_000,
   divergeTarget = false,
   runnerOutputFile = false,
+  worktree = false,
+  gitignoredCampaign = false,
 } = {}) {
   const root = await mkdtemp(path.join(tmpdir(), 'campaigns-pump-'));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -742,6 +788,7 @@ async function makeFixture(t, {
   await git(repo, ['config', 'user.name', 'Campaigns Test']);
   await git(repo, ['config', 'user.email', 'campaigns@example.test']);
   await writeFile(campaignPath, campaignText ?? campaignMarkdown(firstChecked), 'utf8');
+  if (gitignoredCampaign) await writeFile(path.join(repo, '.gitignore'), 'campaign.md\n', 'utf8');
   await writeConfig(configPath, {
     branch,
     delayMs,
@@ -757,7 +804,7 @@ async function makeFixture(t, {
     stopGraceMs,
     runnerOutputFile,
   });
-  await git(repo, ['add', 'campaign.md']);
+  await git(repo, ['add', gitignoredCampaign ? '.gitignore' : 'campaign.md']);
   await git(repo, ['commit', '-m', 'Add fixture campaign']);
   if (divergeTarget) {
     if (!branch) throw new Error('divergeTarget requires a campaign branch');
@@ -775,6 +822,7 @@ async function makeFixture(t, {
     options: {
       configPath,
       runsDir,
+      noWorktree: !worktree,
       stdout: silent,
       stderr: silent,
       env: { ...process.env, CAMPAIGNS_CONFIG_DIR: path.join(root, 'user-config') },
@@ -906,6 +954,14 @@ async function readTextOptional(filePath) {
     if (error.code === 'ENOENT') return null;
     throw error;
   }
+}
+
+function escapeRegex(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function worktreePaths(porcelain) {
+  return String(porcelain).split('\n').filter((line) => line.startsWith('worktree '));
 }
 
 function isPidAlive(pid) {

@@ -26,6 +26,11 @@ there are no runner-specific fields.
 Schema version 2 adds the `cap_reached` and `stopped_by_user` lifecycle states
 plus the run-cap and stop-grace config snapshot.
 
+Schema version 4 adds the worktree-mode config snapshot and persisted execution
+worktree metadata: path, branch, campaign base branch, creation time, optional
+human-review cleanup deadline, and prune time. Older ledgers upgrade as direct
+mode with no worktree metadata.
+
 The campaign markdown remains the progress source of truth. The run state is an
 execution ledger: it records attempts, worker activity, review/recovery state,
 and evidence paths without becoming a second campaign plan.

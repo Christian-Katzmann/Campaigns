@@ -385,6 +385,7 @@ test('campaigns run completes through the CLI with a fake runner and valid state
     configPath,
     '--state-dir',
     runsDir,
+    '--no-worktree',
   ], {
     cwd: repo,
     timeout: 20_000,
@@ -401,6 +402,8 @@ test('campaigns run completes through the CLI with a fake runner and valid state
     { runner: 'fake', model: 'fake-model', effort: 'none' },
   );
   assert.equal(state.history.at(-1).event, 'final_review_approved');
+  assert.equal(state.config.worktree_enabled, false);
+  assert.equal(state.artifacts.worktree, null);
   assert.match(await readFile(campaignPath, 'utf8'), /- \[x\] Step 1\.1/);
   assert.equal(await git(repo, ['status', '--short']), '');
 });
